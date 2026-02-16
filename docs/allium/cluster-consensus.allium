@@ -1,0 +1,280 @@
+-- allium: 1
+-- cluster-consensus.allium
+-- Scope: VSR-based consensus, view changes, repair, and state sync behavior.
+-- Includes: normal prepare/commit flow, quorum gating, view change, WAL/grid/client-reply repair,
+--           checkpoint-aware state sync and deterministic recovery constraints.
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum ReplicaRole { primary | backup }
+enum ReplicaStatus { normal | view_change | recovering_head | syncing }
+enum PrepareStatus { prepared | committed }
+enum ViewChangeStatus { collecting_svc | collecting_dvc | repairing | starting_view | forfeited }
+enum SyncStatus {
+    installing_checkpoint |
+    repairing_replies |
+    repairing_grid |
+    syncing_forest |
+    completed
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity Cluster {
+    cluster_id: Integer
+    replica_count: Integer
+
+    replication_quorum: Integer
+    view_change_quorum: Integer
+    nack_quorum: Integer
+
+    replicas: Replica with cluster = this
+    prepares: Prepare with cluster = this
+
+    latest_committed_op: Integer
+    latest_checkpoint_id: String
+}
+
+entity Replica {
+    cluster: Cluster
+    replica_id: Integer
+
+    role: ReplicaRole
+    status: ReplicaStatus
+    view: Integer
+
+    commit_op: Integer
+    op_head: Integer
+
+    checkpoint_id: String
+    checkpoint_op: Integer
+
+    active: Boolean
+}
+
+entity ClientRequest {
+    cluster: Cluster
+    request_id: Integer
+    client_session_id: Integer
+    operation: String
+    payload_checksum: String
+}
+
+entity Prepare {
+    cluster: Cluster
+    primary: Replica
+    request: ClientRequest
+
+    op: Integer
+    view: Integer
+    prepare_timestamp: Timestamp
+    previous_prepare_checksum: String?
+    checkpoint_id: String
+
+    status: PrepareStatus
+}
+
+entity PrepareAck {
+    prepare: Prepare
+    replica: Replica
+    acked_at: Timestamp
+}
+
+entity ViewChangeRound {
+    cluster: Cluster
+    target_view: Integer
+    new_primary: Replica
+    status: ViewChangeStatus
+    nack_quorum_observed: Boolean
+}
+
+entity StateSync {
+    cluster: Cluster
+    replica: Replica
+    target_checkpoint_id: String
+    sync_op_min: Integer
+    sync_op_max: Integer
+    status: SyncStatus
+}
+
+entity GridRepair {
+    cluster: Cluster
+    replica: Replica
+    block_address: Integer
+    expected_checksum: String
+    repaired_at: Timestamp?
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    default_replica_count: Integer = 6
+    default_replication_quorum: Integer = 3
+    default_view_change_quorum: Integer = 4
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule PrimaryTransformsRequestIntoPrepare {
+    when: RequestReceivedByPrimary(cluster, leader, request)
+
+    requires: leader.cluster = cluster
+    requires: leader.role = primary
+    requires: leader.status = normal
+    requires: leader.active
+
+    ensures: Prepare.created(
+        cluster: cluster,
+        primary: leader,
+        request: request,
+        op: NextOp(leader),
+        view: leader.view,
+        prepare_timestamp: now,
+        previous_prepare_checksum: PreviousPrepareChecksum(cluster),
+        checkpoint_id: leader.checkpoint_id,
+        status: prepared
+    )
+}
+
+rule ReplicaPersistsPrepareAndAcknowledges {
+    when: PrepareDeliveredToReplica(prepare, replica)
+
+    requires: replica.cluster = prepare.cluster
+    requires: replica.active
+
+    ensures: PrepareAck.created(
+        prepare: prepare,
+        replica: replica,
+        acked_at: now
+    )
+}
+
+rule PrimaryCommitsPrepareAfterReplicationQuorum {
+    when: ReplicationQuorumObserved(prepare)
+
+    requires: prepare.status = prepared
+    requires: PrecedingOpsCommitted(prepare.cluster, prepare.op)
+
+    ensures: prepare.status = committed
+
+    ensures: prepare.primary.commit_op = prepare.op
+    ensures: prepare.cluster.latest_committed_op = prepare.op
+
+    ensures: RequestCommitted(request: prepare.request)
+    ensures: ReplyReadyForClient(request: prepare.request)
+    ensures: CommitNoticeBroadcast(prepare: prepare)
+}
+
+rule BackupsAdvanceCommitFromCommitOrSubsequentPrepare {
+    when: BackupLearnsCommit(replica, committed_op)
+
+    requires: replica.role = backup
+    requires: replica.active
+    requires: committed_op > replica.commit_op
+
+    ensures: replica.commit_op = committed_op
+}
+
+rule BackupTriggersStartViewChangeWhenCommitSilencePersists {
+    when: BackupCommitSilenceTimeout(replica)
+
+    requires: replica.role = backup
+    requires: replica.status in {normal, view_change}
+
+    ensures: StartViewChangeBroadcast(replica: replica, target_view: replica.view + 1)
+}
+
+rule ReplicaEntersViewChangeAfterSVCQuorum {
+    when: StartViewChangeQuorumObserved(cluster, target_view)
+
+    let new_primary = PrimaryForView(cluster, target_view)
+
+    ensures: ViewChangeRound.created(
+        cluster: cluster,
+        target_view: target_view,
+        new_primary: new_primary,
+        status: collecting_dvc,
+        nack_quorum_observed: false
+    )
+}
+
+rule NewPrimaryRepairsSuffixBeforeStartingView {
+    when: round: ViewChangeRound.status transitions_to collecting_dvc
+
+    requires: ViewChangeQuorumOfDVCObserved(round)
+
+    ensures: round.status = repairing
+    ensures: JournalHeadersRepairStarted(round: round)
+    ensures: WalRepairStarted(round: round)
+}
+
+rule NewPrimaryStartsViewAfterRepair {
+    when: round: ViewChangeRound.status transitions_to repairing
+
+    requires: RepairCompleted(round)
+
+    ensures: round.status = starting_view
+    ensures: StartViewBroadcast(round: round)
+}
+
+rule TriggerStateSyncWhenWalRepairCannotCatchUp {
+    when: ReplicaDetectedStateSyncNeed(replica, checkpoint_id, sync_op_min, sync_op_max)
+
+    requires: replica.status in {normal, view_change, recovering_head}
+
+    ensures: StateSync.created(
+        cluster: replica.cluster,
+        replica: replica,
+        target_checkpoint_id: checkpoint_id,
+        sync_op_min: sync_op_min,
+        sync_op_max: sync_op_max,
+        status: installing_checkpoint
+    )
+
+    ensures: replica.status = syncing
+}
+
+rule StateSyncRepairsRepliesGridAndForest {
+    when: sync: StateSync.status transitions_to installing_checkpoint
+
+    ensures: sync.status = repairing_replies
+    ensures: SyncClientRepliesStarted(sync: sync)
+    ensures: RepairGridStarted(sync: sync)
+    ensures: SyncForestStarted(sync: sync)
+}
+
+rule StateSyncCompletesAtNextCheckpoint {
+    when: sync: StateSync.status transitions_to syncing_forest
+
+    requires: SyncForestCompleted(sync)
+    requires: NextCheckpointCommitted(sync.replica)
+
+    ensures: sync.status = completed
+    ensures: sync.replica.status = normal
+}
+
+rule RepairGridBlockFromPeers {
+    when: block: GridRepair.repaired_at = null
+
+    requires: MatchingBlockFetchedFromPeer(block)
+
+    ensures: block.repaired_at = now
+}
+
+rule StorageDeterminismMismatchRequiresOperatorIntervention {
+    when: CheckpointMismatchDetected(replica, observed_checkpoint_id)
+
+    ensures: DeterminismViolationDetected(
+        replica: replica,
+        expected_checkpoint_id: replica.checkpoint_id,
+        observed_checkpoint_id: observed_checkpoint_id
+    )
+}

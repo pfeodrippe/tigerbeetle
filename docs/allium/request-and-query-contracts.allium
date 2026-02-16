@@ -1,0 +1,378 @@
+-- allium: 1
+-- request-and-query-contracts.allium
+-- Scope: semantics of TigerBeetle request execution, batch behavior, linked events,
+--        read/query contracts, and filter validation outcomes.
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value AccountCommand {
+    id: Integer
+    ledger: Integer
+    code: Integer
+    user_data_128: Integer
+    user_data_64: Integer
+    user_data_32: Integer
+    imported: Boolean
+    linked: Boolean
+    timestamp: Timestamp?
+}
+
+value TransferCommand {
+    id: Integer
+    debit_account_id: Integer
+    credit_account_id: Integer
+    amount: Integer
+    pending_id: Integer
+    ledger: Integer
+    code: Integer
+    imported: Boolean
+    linked: Boolean
+    timestamp: Timestamp?
+}
+
+value AccountFilter {
+    account_id: Integer
+    user_data_128: Integer
+    user_data_64: Integer
+    user_data_32: Integer
+    code: Integer
+    timestamp_min: Timestamp?
+    timestamp_max: Timestamp?
+    limit: Integer
+    include_debits: Boolean
+    include_credits: Boolean
+    reversed: Boolean
+}
+
+value QueryFilter {
+    user_data_128: Integer
+    user_data_64: Integer
+    user_data_32: Integer
+    ledger: Integer
+    code: Integer
+    timestamp_min: Timestamp?
+    timestamp_max: Timestamp?
+    limit: Integer
+    reversed: Boolean
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum RequestOperation {
+    create_accounts |
+    create_transfers |
+    lookup_accounts |
+    lookup_transfers |
+    get_account_transfers |
+    get_account_balances |
+    query_accounts |
+    query_transfers
+}
+
+enum EventResultCode { ok | exists | linked_event_failed | linked_event_chain_open | rejected }
+
+enum ReplyShape {
+    create_accounts_results |
+    create_transfers_results |
+    lookup_accounts_rows |
+    lookup_transfers_rows |
+    get_account_transfers_rows |
+    get_account_balances_rows |
+    query_accounts_rows |
+    query_transfers_rows
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity CommittedRequest {
+    request_id: Integer
+    client_session_id: Integer
+    operation: RequestOperation
+    committed_at: Timestamp
+
+    account_events: List<AccountCommand>
+    transfer_events: List<TransferCommand>
+    lookup_account_ids: List<Integer>
+    lookup_transfer_ids: List<Integer>
+
+    account_filter: AccountFilter?
+    query_filter: QueryFilter?
+}
+
+entity EventResult {
+    request: CommittedRequest
+    event_index: Integer
+    result: EventResultCode
+    reason: String?
+}
+
+entity RequestReply {
+    request: CommittedRequest
+    shape: ReplyShape
+    row_count: Integer
+    reply_checksum: String
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    default_batch_limit: Integer = 8189
+}
+
+------------------------------------------------------------
+-- Deferred Specifications
+------------------------------------------------------------
+
+deferred ResolveLinkedAccountChains
+deferred ResolveLinkedTransferChains
+deferred ResolveLookupAccounts
+deferred ResolveLookupTransfers
+deferred ResolveGetAccountTransfers
+deferred ResolveGetAccountBalances
+deferred ResolveQueryAccounts
+deferred ResolveQueryTransfers
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule ValidateCreateAccountsBatchImportedMode {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = create_accounts
+    requires: request.account_events.count > 0
+    requires: not BatchUsesSingleImportedMode(request.account_events)
+
+    ensures:
+        for index in EventIndexes(request.account_events):
+            EventResult.created(
+                request: request,
+                event_index: index,
+                result: rejected,
+                reason: "imported_event_expected_or_not_expected"
+            )
+}
+
+rule ValidateCreateTransfersBatchImportedMode {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = create_transfers
+    requires: request.transfer_events.count > 0
+    requires: not BatchUsesSingleImportedMode(request.transfer_events)
+
+    ensures:
+        for index in EventIndexes(request.transfer_events):
+            EventResult.created(
+                request: request,
+                event_index: index,
+                result: rejected,
+                reason: "imported_event_expected_or_not_expected"
+            )
+}
+
+rule RejectCreateAccountsBatchWithOpenLinkedChain {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = create_accounts
+    requires: request.account_events.count > 0
+    requires: LastEventHasLinkedFlag(request.account_events)
+
+    ensures:
+        for index in EventIndexes(OpenLinkedTail(request.account_events)):
+            EventResult.created(
+                request: request,
+                event_index: index,
+                result: linked_event_failed,
+                reason: "linked_event_failed"
+            )
+
+    ensures: EventResult.created(
+        request: request,
+        event_index: request.account_events.count - 1,
+        result: linked_event_chain_open,
+        reason: "linked_event_chain_open"
+    )
+}
+
+rule RejectCreateTransfersBatchWithOpenLinkedChain {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = create_transfers
+    requires: request.transfer_events.count > 0
+    requires: LastEventHasLinkedFlag(request.transfer_events)
+
+    ensures:
+        for index in EventIndexes(OpenLinkedTail(request.transfer_events)):
+            EventResult.created(
+                request: request,
+                event_index: index,
+                result: linked_event_failed,
+                reason: "linked_event_failed"
+            )
+
+    ensures: EventResult.created(
+        request: request,
+        event_index: request.transfer_events.count - 1,
+        result: linked_event_chain_open,
+        reason: "linked_event_chain_open"
+    )
+}
+
+rule ExecuteCreateAccountsRequest {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = create_accounts
+    requires: request.account_events.count > 0
+    requires: BatchUsesSingleImportedMode(request.account_events)
+    requires: not LastEventHasLinkedFlag(request.account_events)
+
+    ensures: ResolveLinkedAccountChains(request)
+}
+
+rule ExecuteCreateTransfersRequest {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = create_transfers
+    requires: request.transfer_events.count > 0
+    requires: BatchUsesSingleImportedMode(request.transfer_events)
+    requires: not LastEventHasLinkedFlag(request.transfer_events)
+
+    ensures: ResolveLinkedTransferChains(request)
+}
+
+rule ExecuteLookupAccounts {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = lookup_accounts
+
+    ensures: ResolveLookupAccounts(request)
+}
+
+rule ExecuteLookupTransfers {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = lookup_transfers
+
+    ensures: ResolveLookupTransfers(request)
+}
+
+rule GetAccountTransfersInvalidFilterReturnsEmpty {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = get_account_transfers
+    requires: not AccountFilterPresentAndValid(request)
+
+    ensures: RequestReply.created(
+        request: request,
+        shape: get_account_transfers_rows,
+        row_count: 0,
+        reply_checksum: ReplyChecksumForEmptyResult(request)
+    )
+}
+
+rule GetAccountTransfersValidFilterReturnsOrderedPage {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = get_account_transfers
+    requires: AccountFilterPresentAndValid(request)
+
+    ensures: ResolveGetAccountTransfers(request)
+}
+
+rule GetAccountBalancesReturnsEmptyWithoutHistory {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = get_account_balances
+    requires: not AccountFilterPresentAndValidForHistory(request)
+
+    ensures: RequestReply.created(
+        request: request,
+        shape: get_account_balances_rows,
+        row_count: 0,
+        reply_checksum: ReplyChecksumForEmptyResult(request)
+    )
+}
+
+rule GetAccountBalancesValidFilterWithHistory {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = get_account_balances
+    requires: AccountFilterPresentAndValidForHistory(request)
+
+    ensures: ResolveGetAccountBalances(request)
+}
+
+rule QueryAccountsInvalidFilterReturnsEmpty {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = query_accounts
+    requires: not QueryFilterPresentAndValid(request)
+
+    ensures: RequestReply.created(
+        request: request,
+        shape: query_accounts_rows,
+        row_count: 0,
+        reply_checksum: ReplyChecksumForEmptyResult(request)
+    )
+}
+
+rule QueryAccountsValidFilterReturnsOrderedPage {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = query_accounts
+    requires: QueryFilterPresentAndValid(request)
+
+    ensures: ResolveQueryAccounts(request)
+}
+
+rule QueryTransfersInvalidFilterReturnsEmpty {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = query_transfers
+    requires: not QueryFilterPresentAndValid(request)
+
+    ensures: RequestReply.created(
+        request: request,
+        shape: query_transfers_rows,
+        row_count: 0,
+        reply_checksum: ReplyChecksumForEmptyResult(request)
+    )
+}
+
+rule QueryTransfersValidFilterReturnsOrderedPage {
+    when: request: CommittedRequest.created
+
+    requires: request.operation = query_transfers
+    requires: QueryFilterPresentAndValid(request)
+
+    ensures: ResolveQueryTransfers(request)
+}
+
+rule AssignStrictlyIncreasingTimestampsWithinCreateRequest {
+    when: request: CommittedRequest.created
+
+    requires: request.operation in {create_accounts, create_transfers}
+    requires: RequestUsesClusterAssignedTimestamps(request)
+
+    ensures: EventTimestampsAssigned(
+        request: request,
+        timestamps: StrictlyIncreasingRequestTimestamps(request)
+    )
+}
+
+rule RetriesFromSameSessionReturnSameReply {
+    when: RequestRetriedBySameSession(request, previous_reply_checksum)
+
+    ensures: RequestReplyReused(
+        request: request,
+        reply_checksum: previous_reply_checksum
+    )
+}

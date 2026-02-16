@@ -1,0 +1,771 @@
+-- allium: 1
+-- ledger-state-machine.allium
+-- Scope: account and transfer behavior implemented by TigerBeetle's state machine.
+-- Includes: create_accounts, create_transfers, idempotency, pending/post/void/expiry,
+--           account closing/reopening, imported timestamps, history snapshots, transient ids.
+-- Excludes: query APIs (specified in request-and-query-contracts.allium).
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity AccountCommand {
+    id: Integer
+    ledger: Integer
+    code: Integer
+    user_data_128: Integer
+    user_data_64: Integer
+    user_data_32: Integer
+    requires_debits_not_exceed_credits: Boolean
+    requires_credits_not_exceed_debits: Boolean
+    history_enabled: Boolean
+    imported: Boolean
+    closed: Boolean
+    timestamp: Timestamp?
+    linked: Boolean
+}
+
+external entity TransferCommand {
+    id: Integer
+    debit_account_id: Integer
+    credit_account_id: Integer
+    amount: Integer
+    pending_id: Integer
+    user_data_128: Integer
+    user_data_64: Integer
+    user_data_32: Integer
+    timeout: Duration?
+    ledger: Integer
+    code: Integer
+    mode: TransferMode
+    balancing_debit: Boolean
+    balancing_credit: Boolean
+    closing_debit: Boolean
+    closing_credit: Boolean
+    imported: Boolean
+    timestamp: Timestamp?
+    linked: Boolean
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum TransferMode { single_phase | pending | post_pending | void_pending }
+enum PendingTransferStatus { pending | posted | voided | expired }
+enum MutationResult { ok | exists | rejected }
+enum AccountEventType {
+    single_phase | two_phase_pending | two_phase_posted | two_phase_voided | two_phase_expired
+}
+enum TransferFailureReason {
+    id_already_failed |
+    flags_are_mutually_exclusive |
+    debit_account_not_found |
+    credit_account_not_found |
+    accounts_must_have_the_same_ledger |
+    transfer_must_have_the_same_ledger_as_accounts |
+    pending_transfer_not_found |
+    pending_transfer_not_pending |
+    pending_transfer_has_different_debit_account_id |
+    pending_transfer_has_different_credit_account_id |
+    pending_transfer_has_different_ledger |
+    pending_transfer_has_different_code |
+    pending_transfer_already_posted |
+    pending_transfer_already_voided |
+    pending_transfer_expired |
+    exceeds_pending_transfer_amount |
+    pending_transfer_has_different_amount |
+    exceeds_credits |
+    exceeds_debits |
+    debit_account_already_closed |
+    credit_account_already_closed |
+    overflow
+}
+enum AccountFailureReason {
+    id_must_not_be_zero |
+    id_must_not_be_int_max |
+    reserved_field |
+    reserved_flag |
+    flags_are_mutually_exclusive |
+    debits_pending_must_be_zero |
+    debits_posted_must_be_zero |
+    credits_pending_must_be_zero |
+    credits_posted_must_be_zero |
+    ledger_must_not_be_zero |
+    code_must_not_be_zero |
+    imported_event_timestamp_invalid |
+    imported_event_timestamp_must_not_regress
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity Account {
+    id: Integer
+    ledger: Integer
+    code: Integer
+
+    user_data_128: Integer
+    user_data_64: Integer
+    user_data_32: Integer
+
+    debits_pending: Integer
+    debits_posted: Integer
+    credits_pending: Integer
+    credits_posted: Integer
+
+    requires_debits_not_exceed_credits: Boolean
+    requires_credits_not_exceed_debits: Boolean
+    history_enabled: Boolean
+    imported: Boolean
+    closed: Boolean
+
+    created_at: Timestamp
+
+    transfers_debited: Transfer with debit_account = this
+    transfers_credited: Transfer with credit_account = this
+
+    debits_total: debits_pending + debits_posted
+    credits_total: credits_pending + credits_posted
+}
+
+entity Transfer {
+    id: Integer
+    debit_account: Account
+    credit_account: Account
+
+    requested_amount: Integer
+    amount: Integer
+
+    pending_parent: Transfer?
+    mode: TransferMode
+
+    user_data_128: Integer
+    user_data_64: Integer
+    user_data_32: Integer
+
+    timeout: Duration?
+    ledger: Integer
+    code: Integer
+
+    balancing_debit: Boolean
+    balancing_credit: Boolean
+    closing_debit: Boolean
+    closing_credit: Boolean
+    imported: Boolean
+
+    created_at: Timestamp
+
+    expires_at: created_at + timeout
+}
+
+entity PendingTransfer {
+    transfer: Transfer
+    status: PendingTransferStatus
+    expires_at: Timestamp?
+
+    is_open: status = pending
+}
+
+entity FailedTransferAttempt {
+    transfer_id: Integer
+    reason: TransferFailureReason
+    failed_at: Timestamp
+}
+
+entity AccountEvent {
+    timestamp: Timestamp
+    event_type: AccountEventType
+
+    transfer: Transfer?
+    pending_transfer: Transfer?
+
+    debit_account: Account
+    debit_debits_pending: Integer
+    debit_debits_posted: Integer
+    debit_credits_pending: Integer
+    debit_credits_posted: Integer
+
+    credit_account: Account
+    credit_debits_pending: Integer
+    credit_debits_posted: Integer
+    credit_credits_pending: Integer
+    credit_credits_posted: Integer
+}
+
+entity LedgerMutationOutcome {
+    command_id: Integer
+    result: MutationResult
+    account_reason: AccountFailureReason?
+    transfer_reason: TransferFailureReason?
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    integer_max: Integer = 340282366920938463463374607431768211455
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule RejectTransferIdWithTransientFailureHistory {
+    when: CreateTransferCommandReceived(command)
+
+    let failed = FailedTransferAttempt{transfer_id: command.id}
+
+    requires: exists failed
+
+    ensures: LedgerMutationOutcome.created(
+        command_id: command.id,
+        result: rejected,
+        transfer_reason: id_already_failed
+    )
+}
+
+rule AcknowledgeCreateAccountAsExists {
+    when: CreateAccountCommandReceived(command)
+
+    let existing = Account{id: command.id}
+
+    requires: exists existing
+    requires: AccountCommandMatchesExisting(command, existing)
+
+    ensures: LedgerMutationOutcome.created(
+        command_id: command.id,
+        result: exists
+    )
+}
+
+rule RejectCreateAccountOnExistingMismatch {
+    when: CreateAccountCommandReceived(command)
+
+    let existing = Account{id: command.id}
+
+    requires: exists existing
+    requires: not AccountCommandMatchesExisting(command, existing)
+
+    ensures: LedgerMutationOutcome.created(
+        command_id: command.id,
+        result: rejected,
+        account_reason: ExistingAccountMismatchReason(command, existing)
+    )
+}
+
+rule CreateAccount {
+    when: CreateAccountCommandReceived(command)
+
+    let existing = Account{id: command.id}
+
+    requires: not exists existing
+
+    requires: command.id > 0
+    requires: command.id != config.integer_max
+    requires: command.ledger > 0
+    requires: command.code > 0
+
+    requires:
+        not (command.requires_debits_not_exceed_credits and
+             command.requires_credits_not_exceed_debits)
+
+    requires: not command.imported or ImportedAccountTimestampValid(command.timestamp)
+    requires: not command.imported or ImportedAccountTimestampIsStrictlyIncreasing(command.timestamp)
+
+    ensures: Account.created(
+        id: command.id,
+        ledger: command.ledger,
+        code: command.code,
+
+        user_data_128: command.user_data_128,
+        user_data_64: command.user_data_64,
+        user_data_32: command.user_data_32,
+
+        debits_pending: 0,
+        debits_posted: 0,
+        credits_pending: 0,
+        credits_posted: 0,
+
+        requires_debits_not_exceed_credits: command.requires_debits_not_exceed_credits,
+        requires_credits_not_exceed_debits: command.requires_credits_not_exceed_debits,
+        history_enabled: command.history_enabled,
+        imported: command.imported,
+        closed: command.closed,
+
+        created_at: EffectiveCreateTimestamp(command.imported, command.timestamp)
+    )
+
+    ensures: LedgerMutationOutcome.created(
+        command_id: command.id,
+        result: ok
+    )
+}
+
+rule AcknowledgeCreateTransferAsExists {
+    when: CreateTransferCommandReceived(command)
+
+    let failed = FailedTransferAttempt{transfer_id: command.id}
+    let existing = Transfer{id: command.id}
+
+    requires: not exists failed
+    requires: exists existing
+    requires: TransferCommandMatchesExisting(command, existing)
+
+    ensures: LedgerMutationOutcome.created(
+        command_id: command.id,
+        result: exists
+    )
+}
+
+rule RejectCreateTransferOnExistingMismatch {
+    when: CreateTransferCommandReceived(command)
+
+    let failed = FailedTransferAttempt{transfer_id: command.id}
+    let existing = Transfer{id: command.id}
+
+    requires: not exists failed
+    requires: exists existing
+    requires: not TransferCommandMatchesExisting(command, existing)
+
+    ensures: LedgerMutationOutcome.created(
+        command_id: command.id,
+        result: rejected,
+        transfer_reason: ExistingTransferMismatchReason(command, existing)
+    )
+}
+
+rule CreateSinglePhaseTransfer {
+    when: CreateTransferCommandReceived(command)
+
+    let failed = FailedTransferAttempt{transfer_id: command.id}
+    let existing = Transfer{id: command.id}
+    let debit = Account{id: command.debit_account_id}
+    let credit = Account{id: command.credit_account_id}
+
+    requires: command.mode = single_phase
+    requires: not exists failed
+    requires: not exists existing
+
+    requires: exists debit
+    requires: exists credit
+    requires: debit.id != credit.id
+    requires: debit.ledger = credit.ledger
+    requires: command.ledger = debit.ledger
+
+    requires: not debit.closed
+    requires: not credit.closed
+
+    requires: TransferFlagsValid(command)
+    requires: ImportedTransferTimestampValid(command, debit, credit)
+
+    let amount_actual = EffectiveTransferAmount(command, debit, credit)
+
+    requires: not WouldOverflowSinglePhase(debit, credit, amount_actual)
+    requires: not ViolatesDebitConstraint(debit, amount_actual)
+    requires: not ViolatesCreditConstraint(credit, amount_actual)
+
+    ensures: Transfer.created(
+        id: command.id,
+        debit_account: debit,
+        credit_account: credit,
+        requested_amount: command.amount,
+        amount: amount_actual,
+        pending_parent: null,
+        mode: single_phase,
+
+        user_data_128: command.user_data_128,
+        user_data_64: command.user_data_64,
+        user_data_32: command.user_data_32,
+
+        timeout: null,
+        ledger: command.ledger,
+        code: command.code,
+
+        balancing_debit: command.balancing_debit,
+        balancing_credit: command.balancing_credit,
+        closing_debit: false,
+        closing_credit: false,
+        imported: command.imported,
+
+        created_at: EffectiveCreateTimestamp(command.imported, command.timestamp)
+    )
+
+    ensures: debit.debits_posted = debit.debits_posted + amount_actual
+    ensures: credit.credits_posted = credit.credits_posted + amount_actual
+
+    ensures: AccountEvent.created(
+        timestamp: EffectiveCreateTimestamp(command.imported, command.timestamp),
+        event_type: single_phase,
+        transfer: Transfer{id: command.id},
+        pending_transfer: null,
+
+        debit_account: debit,
+        debit_debits_pending: debit.debits_pending,
+        debit_debits_posted: debit.debits_posted,
+        debit_credits_pending: debit.credits_pending,
+        debit_credits_posted: debit.credits_posted,
+
+        credit_account: credit,
+        credit_debits_pending: credit.debits_pending,
+        credit_debits_posted: credit.debits_posted,
+        credit_credits_pending: credit.credits_pending,
+        credit_credits_posted: credit.credits_posted
+    )
+
+    ensures: LedgerMutationOutcome.created(
+        command_id: command.id,
+        result: ok
+    )
+}
+
+rule CreatePendingTransfer {
+    when: CreateTransferCommandReceived(command)
+
+    let failed = FailedTransferAttempt{transfer_id: command.id}
+    let existing = Transfer{id: command.id}
+    let debit = Account{id: command.debit_account_id}
+    let credit = Account{id: command.credit_account_id}
+
+    requires: command.mode = pending
+    requires: not exists failed
+    requires: not exists existing
+
+    requires: exists debit
+    requires: exists credit
+    requires: debit.id != credit.id
+    requires: debit.ledger = credit.ledger
+    requires: command.ledger = debit.ledger
+
+    requires: not debit.closed
+    requires: not credit.closed
+
+    requires: TransferFlagsValid(command)
+    requires: ImportedTransferTimestampValid(command, debit, credit)
+
+    let amount_actual = EffectiveTransferAmount(command, debit, credit)
+
+    requires: not WouldOverflowPending(debit, credit, amount_actual)
+    requires: not ViolatesDebitConstraint(debit, amount_actual)
+    requires: not ViolatesCreditConstraint(credit, amount_actual)
+
+    ensures: Transfer.created(
+        id: command.id,
+        debit_account: debit,
+        credit_account: credit,
+        requested_amount: command.amount,
+        amount: amount_actual,
+        pending_parent: null,
+        mode: pending,
+
+        user_data_128: command.user_data_128,
+        user_data_64: command.user_data_64,
+        user_data_32: command.user_data_32,
+
+        timeout: command.timeout,
+        ledger: command.ledger,
+        code: command.code,
+
+        balancing_debit: command.balancing_debit,
+        balancing_credit: command.balancing_credit,
+        closing_debit: command.closing_debit,
+        closing_credit: command.closing_credit,
+        imported: command.imported,
+
+        created_at: EffectiveCreateTimestamp(command.imported, command.timestamp)
+    )
+
+    ensures: PendingTransfer.created(
+        transfer: Transfer{id: command.id},
+        status: pending,
+        expires_at: PendingTransferExpiry(Transfer{id: command.id})
+    )
+
+    ensures: debit.debits_pending = debit.debits_pending + amount_actual
+    ensures: credit.credits_pending = credit.credits_pending + amount_actual
+
+    ensures:
+        if command.closing_debit:
+            debit.closed = true
+
+    ensures:
+        if command.closing_credit:
+            credit.closed = true
+
+    ensures: AccountEvent.created(
+        timestamp: EffectiveCreateTimestamp(command.imported, command.timestamp),
+        event_type: two_phase_pending,
+        transfer: Transfer{id: command.id},
+        pending_transfer: null,
+
+        debit_account: debit,
+        debit_debits_pending: debit.debits_pending,
+        debit_debits_posted: debit.debits_posted,
+        debit_credits_pending: debit.credits_pending,
+        debit_credits_posted: debit.credits_posted,
+
+        credit_account: credit,
+        credit_debits_pending: credit.debits_pending,
+        credit_debits_posted: credit.debits_posted,
+        credit_credits_pending: credit.credits_pending,
+        credit_credits_posted: credit.credits_posted
+    )
+
+    ensures: LedgerMutationOutcome.created(
+        command_id: command.id,
+        result: ok
+    )
+}
+
+rule PostPendingTransfer {
+    when: CreateTransferCommandReceived(command)
+
+    let failed = FailedTransferAttempt{transfer_id: command.id}
+    let existing = Transfer{id: command.id}
+    let reservation = Transfer{id: command.pending_id}
+    let pending_state = PendingTransfer{transfer: reservation}
+
+    requires: command.mode = post_pending
+    requires: not exists failed
+    requires: not exists existing
+
+    requires: exists reservation
+    requires: exists pending_state
+    requires: reservation.mode = pending
+    requires: pending_state.status = pending
+
+    requires: PostOrVoidShapeMatchesPending(command, reservation)
+    requires: PendingTransferStillOpenForManualResolution(reservation, pending_state)
+
+    let amount_actual = PostedAmount(command.amount, reservation.amount)
+
+    requires: amount_actual <= reservation.amount
+
+    ensures: Transfer.created(
+        id: command.id,
+        debit_account: reservation.debit_account,
+        credit_account: reservation.credit_account,
+        requested_amount: command.amount,
+        amount: amount_actual,
+        pending_parent: reservation,
+        mode: post_pending,
+
+        user_data_128: CoalescedUserData128(command, reservation),
+        user_data_64: CoalescedUserData64(command, reservation),
+        user_data_32: CoalescedUserData32(command, reservation),
+
+        timeout: null,
+        ledger: reservation.ledger,
+        code: reservation.code,
+
+        balancing_debit: false,
+        balancing_credit: false,
+        closing_debit: false,
+        closing_credit: false,
+        imported: command.imported,
+
+        created_at: EffectiveCreateTimestamp(command.imported, command.timestamp)
+    )
+
+    ensures: pending_state.status = posted
+    ensures: pending_state.expires_at = null
+
+    ensures:
+        reservation.debit_account.debits_pending =
+            reservation.debit_account.debits_pending - reservation.amount
+    ensures:
+        reservation.credit_account.credits_pending =
+            reservation.credit_account.credits_pending - reservation.amount
+
+    ensures:
+        reservation.debit_account.debits_posted =
+            reservation.debit_account.debits_posted + amount_actual
+    ensures:
+        reservation.credit_account.credits_posted =
+            reservation.credit_account.credits_posted + amount_actual
+
+    ensures: AccountEvent.created(
+        timestamp: EffectiveCreateTimestamp(command.imported, command.timestamp),
+        event_type: two_phase_posted,
+        transfer: Transfer{id: command.id},
+        pending_transfer: reservation,
+
+        debit_account: reservation.debit_account,
+        debit_debits_pending: reservation.debit_account.debits_pending,
+        debit_debits_posted: reservation.debit_account.debits_posted,
+        debit_credits_pending: reservation.debit_account.credits_pending,
+        debit_credits_posted: reservation.debit_account.credits_posted,
+
+        credit_account: reservation.credit_account,
+        credit_debits_pending: reservation.credit_account.debits_pending,
+        credit_debits_posted: reservation.credit_account.debits_posted,
+        credit_credits_pending: reservation.credit_account.credits_pending,
+        credit_credits_posted: reservation.credit_account.credits_posted
+    )
+
+    ensures: LedgerMutationOutcome.created(
+        command_id: command.id,
+        result: ok
+    )
+}
+
+rule VoidPendingTransfer {
+    when: CreateTransferCommandReceived(command)
+
+    let failed = FailedTransferAttempt{transfer_id: command.id}
+    let existing = Transfer{id: command.id}
+    let reservation = Transfer{id: command.pending_id}
+    let pending_state = PendingTransfer{transfer: reservation}
+
+    requires: command.mode = void_pending
+    requires: not exists failed
+    requires: not exists existing
+
+    requires: exists reservation
+    requires: exists pending_state
+    requires: reservation.mode = pending
+    requires: pending_state.status = pending
+
+    requires: PostOrVoidShapeMatchesPending(command, reservation)
+    requires: PendingTransferStillOpenForManualResolution(reservation, pending_state)
+
+    let amount_actual = VoidedAmount(command.amount, reservation.amount)
+
+    requires: amount_actual = reservation.amount
+
+    ensures: Transfer.created(
+        id: command.id,
+        debit_account: reservation.debit_account,
+        credit_account: reservation.credit_account,
+        requested_amount: command.amount,
+        amount: amount_actual,
+        pending_parent: reservation,
+        mode: void_pending,
+
+        user_data_128: CoalescedUserData128(command, reservation),
+        user_data_64: CoalescedUserData64(command, reservation),
+        user_data_32: CoalescedUserData32(command, reservation),
+
+        timeout: null,
+        ledger: reservation.ledger,
+        code: reservation.code,
+
+        balancing_debit: false,
+        balancing_credit: false,
+        closing_debit: false,
+        closing_credit: false,
+        imported: command.imported,
+
+        created_at: EffectiveCreateTimestamp(command.imported, command.timestamp)
+    )
+
+    ensures: pending_state.status = voided
+    ensures: pending_state.expires_at = null
+
+    ensures:
+        reservation.debit_account.debits_pending =
+            reservation.debit_account.debits_pending - reservation.amount
+    ensures:
+        reservation.credit_account.credits_pending =
+            reservation.credit_account.credits_pending - reservation.amount
+
+    ensures:
+        if reservation.closing_debit:
+            reservation.debit_account.closed = false
+
+    ensures:
+        if reservation.closing_credit:
+            reservation.credit_account.closed = false
+
+    ensures: AccountEvent.created(
+        timestamp: EffectiveCreateTimestamp(command.imported, command.timestamp),
+        event_type: two_phase_voided,
+        transfer: Transfer{id: command.id},
+        pending_transfer: reservation,
+
+        debit_account: reservation.debit_account,
+        debit_debits_pending: reservation.debit_account.debits_pending,
+        debit_debits_posted: reservation.debit_account.debits_posted,
+        debit_credits_pending: reservation.debit_account.credits_pending,
+        debit_credits_posted: reservation.debit_account.credits_posted,
+
+        credit_account: reservation.credit_account,
+        credit_debits_pending: reservation.credit_account.debits_pending,
+        credit_debits_posted: reservation.credit_account.debits_posted,
+        credit_credits_pending: reservation.credit_account.credits_pending,
+        credit_credits_posted: reservation.credit_account.credits_posted
+    )
+
+    ensures: LedgerMutationOutcome.created(
+        command_id: command.id,
+        result: ok
+    )
+}
+
+rule ExpirePendingTransfer {
+    when: pending_state: PendingTransfer.expires_at <= now
+
+    let reservation = pending_state.transfer
+
+    requires: pending_state.status = pending
+
+    ensures: pending_state.status = expired
+    ensures: pending_state.expires_at = null
+
+    ensures:
+        reservation.debit_account.debits_pending =
+            reservation.debit_account.debits_pending - reservation.amount
+    ensures:
+        reservation.credit_account.credits_pending =
+            reservation.credit_account.credits_pending - reservation.amount
+
+    ensures:
+        if reservation.closing_debit:
+            reservation.debit_account.closed = false
+
+    ensures:
+        if reservation.closing_credit:
+            reservation.credit_account.closed = false
+
+    ensures: AccountEvent.created(
+        timestamp: now,
+        event_type: two_phase_expired,
+        transfer: null,
+        pending_transfer: reservation,
+
+        debit_account: reservation.debit_account,
+        debit_debits_pending: reservation.debit_account.debits_pending,
+        debit_debits_posted: reservation.debit_account.debits_posted,
+        debit_credits_pending: reservation.debit_account.credits_pending,
+        debit_credits_posted: reservation.debit_account.credits_posted,
+
+        credit_account: reservation.credit_account,
+        credit_debits_pending: reservation.credit_account.debits_pending,
+        credit_debits_posted: reservation.credit_account.debits_posted,
+        credit_credits_pending: reservation.credit_account.credits_pending,
+        credit_credits_posted: reservation.credit_account.credits_posted
+    )
+}
+
+rule RecordTransientTransferFailure {
+    when: TransferRejected(command, reason)
+
+    requires:
+        reason in {
+            debit_account_not_found,
+            credit_account_not_found,
+            pending_transfer_not_found,
+            exceeds_credits,
+            exceeds_debits,
+            debit_account_already_closed,
+            credit_account_already_closed
+        }
+
+    ensures: FailedTransferAttempt.created(
+        transfer_id: command.id,
+        reason: reason,
+        failed_at: now
+    )
+}

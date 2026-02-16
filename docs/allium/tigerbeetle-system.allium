@@ -1,0 +1,17 @@
+-- allium: 1
+-- tigerbeetle-system.allium
+-- Scope: complete TigerBeetle behavior as a coordinated set of modular specs.
+-- Includes:
+--   - Financial ledger state machine (accounts, transfers, two-phase transfer lifecycle).
+--   - Request and query contract (batching, linked events, filter semantics, read guarantees).
+--   - Client session lifecycle (registration, one in-flight request, eviction, retries).
+--   - Cluster consensus and recovery (prepare/commit, view change, repair, state sync).
+-- Excludes:
+--   - Binary data-file layout and exact on-disk block formats.
+--   - Language-client API surface details.
+--   - Exact LSM tree implementation mechanics and allocator internals.
+
+use "./ledger-state-machine.allium" as ledger
+use "./request-and-query-contracts.allium" as requests
+use "./client-sessions.allium" as sessions
+use "./cluster-consensus.allium" as consensus
