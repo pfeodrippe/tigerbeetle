@@ -37,9 +37,17 @@
   (true? v))
 
 (defn max-object-timestamp [db]
-  (let [account-ts (map :timestamp (vals (::accounts db)))
-        transfer-ts (map :timestamp (vals (::transfers db)))]
-    (reduce max 0 (concat account-ts transfer-ts))))
+  (let [account-max (reduce-kv
+                     (fn [acc _id account]
+                       (max acc (or (:timestamp account) 0)))
+                     0
+                     (::accounts db))
+        transfer-max (reduce-kv
+                      (fn [acc _id transfer]
+                        (max acc (or (:timestamp transfer) 0)))
+                      0
+                      (::transfers db))]
+    (max account-max transfer-max)))
 
 (defn next-cluster-timestamp [db]
   (inc (max (:clock/now db)
@@ -698,13 +706,17 @@
 (r/defproc expire-pending-transfers
   (fn [{:keys [::pending-transfer-status ::transfers ::accounts :clock/now] :as db}]
     (let [updates
-          (for [[transfer-id pending] pending-transfer-status
-                :let [status (:status pending)
-                      expires-at (:expires-at pending)]
-                :when (and (= status :pending)
-                           (some? expires-at)
-                           (<= expires-at now))]
-            transfer-id)]
+          (reduce-kv
+           (fn [acc transfer-id pending]
+             (let [status (:status pending)
+                   expires-at (:expires-at pending)]
+               (if (and (= status :pending)
+                        (some? expires-at)
+                        (<= expires-at now))
+                 (conj acc transfer-id)
+                 acc)))
+           []
+           pending-transfer-status)]
       (when (seq updates)
         (reduce
          (fn [acc transfer-id]
@@ -757,29 +769,36 @@
 
 (rh/definvariant balances-are-conserved
   [{:keys [::accounts]}]
-  (let [accounts (vals accounts)
-        sum-debits-pending (reduce + 0 (map :debits-pending accounts))
-        sum-credits-pending (reduce + 0 (map :credits-pending accounts))
-        sum-debits-posted (reduce + 0 (map :debits-posted accounts))
-        sum-credits-posted (reduce + 0 (map :credits-posted accounts))]
+  (let [[sum-debits-pending sum-credits-pending sum-debits-posted sum-credits-posted]
+        (reduce-kv
+         (fn [[dp cp dpo cpo] _account-id account]
+           [(+ dp (or (:debits-pending account) 0))
+            (+ cp (or (:credits-pending account) 0))
+            (+ dpo (or (:debits-posted account) 0))
+            (+ cpo (or (:credits-posted account) 0))])
+         [0 0 0 0]
+         accounts)]
     (and (= sum-debits-pending sum-credits-pending)
          (= sum-debits-posted sum-credits-posted))))
 
 (rh/definvariant pending-status-references-pending-transfer
   [{:keys [::pending-transfer-status ::transfers]}]
-  (every?
-   (fn [[transfer-id pending]]
-     (and (contains? transfers transfer-id)
+  (reduce-kv
+   (fn [ok? transfer-id pending]
+     (and ok?
+          (contains? transfers transfer-id)
           (= :pending (:mode (get transfers transfer-id)))
           (contains? #{:pending :posted :voided :expired} (:status pending))))
+   true
    pending-transfer-status))
 
 (rh/definvariant transient-failed-ids-never-commit
   [{:keys [::failed-transfer-ids ::transfers]}]
-  (every?
-   (fn [transfer-id]
-     (not (contains? transfers transfer-id)))
-   (keys failed-transfer-ids)))
+  (reduce-kv
+   (fn [ok? transfer-id _reason]
+     (and ok? (not (contains? transfers transfer-id))))
+   true
+   failed-transfer-ids))
 
 (rh/definvariant account-events-reference-consistent-ledger
   [{:keys [::account-events ::accounts]}]
@@ -800,40 +819,69 @@
     transient-failed-ids-never-commit
     account-events-reference-consistent-ledger})
 
+;; ============================================================================
+;; Nondeterministic scenario using r/one-of for state space exploration
+;; ============================================================================
+;; 
+;; The model explores states by starting with pre-created accounts and allowing
+;; nondeterministic choices of:
+;; - Transfer amount and mode (single-phase vs pending)
+;; - Whether to advance time (allowing pending transfers to expire)
+;; - Different initial account configurations (balance constraints)
+;;
+;; This explores the interaction between:
+;; - Single-phase vs pending transfers
+;; - Post/void operations on pending transfers
+;; - Expiration of pending transfers
+;; - Balance constraint violations (exceeds_credits/exceeds_debits)
+;; - Idempotency (creating same transfer twice)
+
 (def scenario-global
   (-> global
       (assoc :clock/now 10)
-      (assoc ::clock-max 25)
-      (assoc ::create-account-commands
-             [{:id 1 :ledger 700 :code 10
-               :user-data-128 0 :user-data-64 0 :user-data-32 0
-               :debits-must-not-exceed-credits false
-               :credits-must-not-exceed-debits false
-               :history true
-               :imported false
-               :closed false
-               :timestamp 0
-               :linked false}
-              {:id 2 :ledger 700 :code 10
-               :user-data-128 0 :user-data-64 0 :user-data-32 0
-               :debits-must-not-exceed-credits false
-               :credits-must-not-exceed-debits false
-               :history true
-               :imported false
-               :closed false
-               :timestamp 0
-               :linked false}])
+      (assoc ::clock-max 15)
+      ;; Pre-create two accounts with balanced books (both start at 0)
+      (assoc ::accounts
+             {1 {:id 1
+                 :ledger 700
+                 :code 10
+                 :user-data-128 0 :user-data-64 0 :user-data-32 0
+                 :debits-pending 0
+                 :debits-posted 0
+                 :credits-pending 0
+                 :credits-posted 0
+                 :flags {:debits_must_not_exceed_credits (r/one-of #{true false})
+                         :credits_must_not_exceed_debits false
+                         :history true
+                         :imported false
+                         :closed false}
+                 :timestamp 5}
+              2 {:id 2
+                 :ledger 700
+                 :code 10
+                 :user-data-128 0 :user-data-64 0 :user-data-32 0
+                 :debits-pending 0
+                 :debits-posted 0
+                 :credits-pending 0
+                 :credits-posted 0
+                 :flags {:debits_must_not_exceed_credits false
+                         :credits_must_not_exceed_debits (r/one-of #{true false})
+                         :history true
+                         :imported false
+                         :closed false}
+                 :timestamp 6}})
+      ;; Pool of transfer commands to process - exploring different scenarios
       (assoc ::create-transfer-commands
              [{:id 100
                :debit-account-id 1
                :credit-account-id 2
-               :amount 20
+               :amount (r/one-of #{10 50})
                :pending-id 0
                :user-data-128 0 :user-data-64 0 :user-data-32 0
-               :timeout 0
+               :timeout (r/one-of #{0 2})
                :ledger 700
                :code 10
-               :mode :single-phase
+               :mode (r/one-of #{:single-phase :pending})
                :balancing-debit false
                :balancing-credit false
                :closing-debit false
@@ -844,51 +892,17 @@
               {:id 101
                :debit-account-id 1
                :credit-account-id 2
-               :amount 50
-               :pending-id 0
-               :user-data-128 0 :user-data-64 0 :user-data-32 0
-               :timeout 2
-               :ledger 700
-               :code 10
-               :mode :pending
-               :balancing-debit false
-               :balancing-credit false
-               :closing-debit false
-               :closing-credit false
-               :imported false
-               :timestamp 0
-               :linked false}
-              {:id 102
-               :debit-account-id 1
-               :credit-account-id 2
                :amount 20
-               :pending-id 101
+               :pending-id 100
                :user-data-128 0 :user-data-64 0 :user-data-32 0
                :timeout 0
                :ledger 700
                :code 10
-               :mode :post-pending
+               :mode (r/one-of #{:post-pending :void-pending})
                :balancing-debit false
                :balancing-credit false
                :closing-debit false
                :closing-credit false
-               :imported false
-               :timestamp 0
-               :linked false}
-              {:id 103
-               :debit-account-id 1
-               :credit-account-id 2
-               :amount 30
-               :pending-id 0
-               :user-data-128 0 :user-data-64 0 :user-data-32 0
-               :timeout 1
-               :ledger 700
-               :code 10
-               :mode :pending
-               :balancing-debit false
-               :balancing-credit false
-               :closing-debit false
-               :closing-credit true
                :imported false
                :timestamp 0
                :linked false}])))

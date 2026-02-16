@@ -24,19 +24,43 @@
 (defn pop-front [xs]
   (vec (rest xs)))
 
-(defn active-sessions [db]
-  (filter (fn [[_ session]]
-            (= :active (:status session)))
-          (::sessions db)))
+(defn active-sessions-map [db]
+  (reduce-kv
+   (fn [acc session-id session]
+     (if (= :active (:status session))
+       (assoc acc session-id session)
+       acc))
+   {}
+   (::sessions db)))
+
+(defn active-session-count [db]
+  (reduce-kv
+   (fn [acc _session-id session]
+     (if (= :active (:status session))
+       (inc acc)
+       acc))
+   0
+   (::sessions db)))
 
 (defn least-recently-committed-session-id [db]
-  (when-let [sessions (seq (active-sessions db))]
-    (->> sessions
-         (sort-by (fn [[session-id session]]
-                    [(or (:last-committed-at session) -1)
-                     (:registered-at session)
-                     session-id]))
-         ffirst)))
+  (let [active-map (active-sessions-map db)]
+    (when (seq active-map)
+      (reduce-kv
+       (fn [best-id session-id session]
+         (if (nil? best-id)
+           session-id
+           (let [best-session (get active-map best-id)
+                 best-key [(or (:last-committed-at best-session) -1)
+                           (:registered-at best-session)
+                           best-id]
+                 current-key [(or (:last-committed-at session) -1)
+                              (:registered-at session)
+                              session-id]]
+             (if (neg? (compare current-key best-key))
+               session-id
+               best-id))))
+       nil
+       active-map))))
 
 (defn now+ [db]
   (inc (:clock/now db)))
@@ -48,8 +72,8 @@
             db* (update db ::registration-requests pop-front)
             now (now+ db*)
             clients-max (get config :clients-max 0)
-            active-count (count (active-sessions db*))
-            evictee-id (when (>= active-count clients-max)
+            active-cnt (active-session-count db*)
+            evictee-id (when (>= active-cnt clients-max)
                          (least-recently-committed-session-id db*))
             db** (cond-> db*
                    (some? evictee-id)
@@ -198,26 +222,34 @@
 
 (rh/definvariant active-session-count-bounded
   [{:keys [::sessions ::config]}]
-  (<= (count (filter (fn [[_ session]]
-                       (= :active (:status session)))
-                     sessions))
+  (<= (reduce-kv
+       (fn [acc _session-id session]
+         (if (= :active (:status session))
+           (inc acc)
+           acc))
+       0
+       sessions)
       (get config :clients-max 0)))
 
 (rh/definvariant non-active-sessions-have-no-inflight
   [{:keys [::sessions]}]
-  (every?
-   (fn [[_ session]]
-     (if (= :active (:status session))
-       true
-       (nil? (:in-flight-request-id session))))
+  (reduce-kv
+   (fn [ok? _session-id session]
+     (and ok?
+          (if (= :active (:status session))
+            true
+            (nil? (:in-flight-request-id session)))))
+   true
    sessions))
 
 (rh/definvariant at-most-one-inflight-per-active-session
   [{:keys [::sessions]}]
-  (every?
-   (fn [[_ session]]
-     (or (nil? (:in-flight-request-id session))
-         (integer? (:in-flight-request-id session))))
+  (reduce-kv
+   (fn [ok? _session-id session]
+     (and ok?
+          (or (nil? (:in-flight-request-id session))
+              (integer? (:in-flight-request-id session)))))
+   true
    sessions))
 
 (def components
@@ -230,19 +262,34 @@
     non-active-sessions-have-no-inflight
     at-most-one-inflight-per-active-session})
 
+;; ============================================================================
+;; Nondeterministic scenario using r/one-of for state space exploration
+;; ============================================================================
+;;
+;; This scenario explores:
+;; - Multiple session registrations with eviction when at capacity
+;; - Request submission with varying session/request IDs
+;; - Reply delivery and retry scenarios
+;; - Session restart after eviction
+
 (def scenario-global
   (-> global
+      ;; Allow registering multiple clients
       (assoc ::registration-requests
-             [{:client-id 1001}
-              {:client-id 1002}
-              {:client-id 1003}
-              {:client-id 1004}])
+             [{:client-id (r/one-of #{1001 1002})}
+              {:client-id (r/one-of #{1003 1004})}
+              {:client-id 1005}
+              {:client-id 1006}])
+      ;; Submit requests to different sessions (some may not exist yet)
       (assoc ::submission-requests
-             [{:session-id 4 :request-id 88}
-              {:session-id 4 :request-id 89}])
+             [{:session-id (r/one-of #{1 2 3}) :request-id 88}
+              {:session-id (r/one-of #{1 2 3}) :request-id 89}])
+      ;; Uncertain delivery for retries
       (assoc ::delivery-uncertain
-             [{:session-id 4 :request-id 88}])
+             [{:session-id (r/one-of #{1 2}) :request-id 88}])
+      ;; Cluster replies
       (assoc ::cluster-replies
-             [{:session-id 4 :request-id 88 :reply-checksum :reply-88}])
+             [{:session-id (r/one-of #{1 2 3}) :request-id 88 :reply-checksum :reply-88}])
+      ;; Restart events
       (assoc ::restart-events
-             [{:previous-session-id 4 :new-client-id 2001}])))
+             [{:previous-session-id (r/one-of #{1 2}) :new-client-id 2001}])))

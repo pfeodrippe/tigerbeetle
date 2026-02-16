@@ -206,49 +206,55 @@
 
 (rh/definvariant reply-shape-matches-operation
   [{:keys [::replies]}]
-  (every?
-   (fn [[_ reply]]
-     (= (:shape reply)
-        (operation->shape (:operation reply))))
+  (reduce-kv
+   (fn [ok? _request-id reply]
+     (and ok?
+          (= (:shape reply)
+             (operation->shape (:operation reply)))))
+   true
    replies))
 
 (rh/definvariant event-result-indexes-are-unique-per-request
   [{:keys [::event-results]}]
-  (every?
-   (fn [[_ results]]
-     (let [indexes (map :event-index results)]
-       (= (count indexes) (count (set indexes)))))
-   (group-by :request-id event-results)))
+  (let [grouped (group-by :request-id event-results)]
+    (reduce-kv
+     (fn [ok? _request-id results]
+       (let [indexes (map :event-index results)]
+         (and ok? (= (count indexes) (count (set indexes))))))
+     true
+     grouped)))
 
 (rh/definvariant invalid-filters-produce-empty-replies
   [{:keys [::resolved-requests ::replies]}]
-  (every?
-   (fn [[request-id request]]
+  (reduce-kv
+   (fn [ok? request-id request]
      (let [reply (get replies request-id)
            op (:operation request)]
-       (cond
-         (= op :get_account_transfers)
-         (if (account-filter-valid? request)
-           true
-           (zero? (:row-count reply)))
+       (and ok?
+            (cond
+              (= op :get_account_transfers)
+              (if (account-filter-valid? request)
+                true
+                (zero? (:row-count reply)))
 
-         (= op :get_account_balances)
-         (if (account-filter-valid-for-history? request)
-           true
-           (zero? (:row-count reply)))
+              (= op :get_account_balances)
+              (if (account-filter-valid-for-history? request)
+                true
+                (zero? (:row-count reply)))
 
-         (= op :query_accounts)
-         (if (query-filter-valid? request)
-           true
-           (zero? (:row-count reply)))
+              (= op :query_accounts)
+              (if (query-filter-valid? request)
+                true
+                (zero? (:row-count reply)))
 
-         (= op :query_transfers)
-         (if (query-filter-valid? request)
-           true
-           (zero? (:row-count reply)))
+              (= op :query_transfers)
+              (if (query-filter-valid? request)
+                true
+                (zero? (:row-count reply)))
 
-         :else
-         true)))
+              :else
+              true))))
+   true
    resolved-requests))
 
 (def components
@@ -257,6 +263,16 @@
     event-result-indexes-are-unique-per-request
     invalid-filters-produce-empty-replies})
 
+;; ============================================================================
+;; Nondeterministic scenario using r/one-of for state space exploration
+;; ============================================================================
+;;
+;; This scenario explores:
+;; - Mixed imported mode in batches (should fail validation)
+;; - Open linked chains (should fail validation)
+;; - Valid vs invalid query filters
+;; - Different operation types
+
 (def scenario-global
   (-> global
       (assoc ::incoming-requests
@@ -264,29 +280,29 @@
                :client-session-id 101
                :operation :create_accounts
                :account-events
-               [{:id 11 :imported true :linked false}
-                {:id 12 :imported false :linked false}]}
+               [{:id 11 :imported (r/one-of #{true false}) :linked false}
+                {:id 12 :imported (r/one-of #{true false}) :linked false}]}
               {:request-id 2
                :client-session-id 101
                :operation :create_transfers
                :transfer-events
-               [{:id 21 :imported false :linked true}
-                {:id 22 :imported false :linked true}]}
+               [{:id 21 :imported false :linked (r/one-of #{true false})}
+                {:id 22 :imported false :linked (r/one-of #{true false})}]}
               {:request-id 3
                :client-session-id 101
-               :operation :lookup_accounts
+               :operation (r/one-of #{:lookup_accounts :lookup_transfers})
                :lookup-account-ids [1 2 3]}
               {:request-id 4
                :client-session-id 101
                :operation :get_account_balances
-               :account-has-history false
-               :account-filter {:account-id 1
-                                :limit 10
+               :account-has-history (r/one-of #{true false})
+               :account-filter {:account-id (r/one-of #{0 1})
+                                :limit (r/one-of #{0 10})
                                 :timestamp-min 1
                                 :timestamp-max 10}}
               {:request-id 5
                :client-session-id 101
-               :operation :query_transfers
-               :query-filter {:limit 3
+               :operation (r/one-of #{:query_accounts :query_transfers})
+               :query-filter {:limit (r/one-of #{0 3})
                               :timestamp-min 1
                               :timestamp-max 100}}])))
