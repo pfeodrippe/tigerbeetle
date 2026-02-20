@@ -771,6 +771,48 @@ Init ==
            closed |-> FALSE
          ],
          timestamp |-> 0
+       ],
+       [
+         id |-> 3,
+         debits_pending |-> 0,
+         debits_posted |-> 0,
+         credits_pending |-> 0,
+         credits_posted |-> 0,
+         user_data_128 |-> 0,
+         user_data_64 |-> 0,
+         user_data_32 |-> 0,
+         ledger |-> 1,
+         code |-> 10,
+         flags |-> [
+           linked |-> FALSE,
+           debits_must_not_exceed_credits |-> FALSE,
+           credits_must_not_exceed_debits |-> FALSE,
+           history |-> TRUE,
+           imported |-> FALSE,
+           closed |-> FALSE
+         ],
+         timestamp |-> 0
+       ],
+       [
+         id |-> 0,
+         debits_pending |-> 0,
+         debits_posted |-> 0,
+         credits_pending |-> 0,
+         credits_posted |-> 0,
+         user_data_128 |-> 0,
+         user_data_64 |-> 0,
+         user_data_32 |-> 0,
+         ledger |-> 1,
+         code |-> 10,
+         flags |-> [
+           linked |-> FALSE,
+           debits_must_not_exceed_credits |-> FALSE,
+           credits_must_not_exceed_debits |-> FALSE,
+           history |-> TRUE,
+           imported |-> FALSE,
+           closed |-> FALSE
+         ],
+         timestamp |-> 0
        ]
      >>
 
@@ -934,6 +976,58 @@ Init ==
            ],
            timestamp |-> 0,
            mode |-> "pending"
+         ],
+         [
+           id |-> 106,
+           debit_account_id |-> 1,
+           credit_account_id |-> 2,
+           amount |-> 1,
+           pending_id |-> 0,
+           user_data_128 |-> 0,
+           user_data_64 |-> 0,
+           user_data_32 |-> 0,
+           timeout |-> 1,
+           ledger |-> 1,
+           code |-> 10,
+           flags |-> [
+             linked |-> FALSE,
+             pending |-> FALSE,
+             post_pending_transfer |-> FALSE,
+             void_pending_transfer |-> FALSE,
+             balancing_debit |-> FALSE,
+             balancing_credit |-> FALSE,
+             closing_debit |-> FALSE,
+             closing_credit |-> FALSE,
+             imported |-> FALSE
+           ],
+           timestamp |-> 0,
+           mode |-> "single_phase"
+         ],
+         [
+           id |-> 107,
+           debit_account_id |-> 0,
+           credit_account_id |-> 0,
+           amount |-> 0,
+           pending_id |-> 0,
+           user_data_128 |-> 0,
+           user_data_64 |-> 0,
+           user_data_32 |-> 0,
+           timeout |-> 0,
+           ledger |-> 0,
+           code |-> 0,
+           flags |-> [
+             linked |-> FALSE,
+             pending |-> FALSE,
+             post_pending_transfer |-> TRUE,
+             void_pending_transfer |-> FALSE,
+             balancing_debit |-> FALSE,
+             balancing_credit |-> FALSE,
+             closing_debit |-> FALSE,
+             closing_credit |-> FALSE,
+             imported |-> FALSE
+           ],
+           timestamp |-> 0,
+           mode |-> "post_pending"
          ]
        >>
 

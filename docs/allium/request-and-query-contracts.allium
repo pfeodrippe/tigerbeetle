@@ -369,6 +369,7 @@ rule QueryTransfersValidFilterReturnsOrderedPage {
 --   - CreateReplyRowsMatchExpectedResolution
 --   - CreateReplyRowsMatchEventResults
 --   - ReadReplyRowsBoundedByMaterializedRows
+--   - UnknownOperationRepliesAreEmpty
 --   - ImportedMismatchRejectsWholeCreateBatch
 --   - OpenLinkedChainProducesTailFailureResults
 --

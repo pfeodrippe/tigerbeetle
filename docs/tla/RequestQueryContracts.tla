@@ -247,7 +247,7 @@ Init ==
         balances_history_enabled \in BOOLEAN,
         balances_limit \in {0, 10},
         query5_limit \in {0, 2, 5},
-        query6_op \in {"query_accounts", "query_transfers"},
+        query6_op \in {"query_accounts", "query_transfers", "unknown_query_op"},
         query6_limit \in {1, 3}:
        incoming_requests = <<
          [
@@ -380,6 +380,14 @@ ReadReplyRowsBoundedByMaterializedRows ==
     LET rep == replies[rid] IN
       IF rep.request_id # 0 /\ rep.operation \in ReadOps THEN
         rep.row_count <= materialized_row_count[rep.operation]
+      ELSE TRUE
+
+UnknownOperationRepliesAreEmpty ==
+  \A rid \in RequestIds:
+    LET rep == replies[rid] IN
+      IF rep.request_id # 0 /\ ~(rep.operation \in AllOps) THEN
+        /\ rep.shape = "none"
+        /\ rep.row_count = 0
       ELSE TRUE
 
 ImportedMismatchRejectsWholeCreateBatch ==

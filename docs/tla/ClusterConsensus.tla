@@ -675,7 +675,9 @@ NewPrepareAcksAreEligible ==
   \A op \in OpIds:
     [][
       \A rid \in (prepare_acks'[op] \ prepare_acks[op]):
-        AckEligible(op, rid)
+        /\ prepares'[op].status = "prepared"
+        /\ replicas'[rid].status = "normal"
+        /\ replicas'[rid].view = prepares'[op].view
     ]_vars
 
 SyncCompletionInstallsTargetCheckpoint ==
@@ -700,6 +702,45 @@ MismatchQueueEventuallyClears ==
 StartViewChangeSignalsEventuallyConsumed ==
   (Len(start_view_change_signals) > 0)
     ~> (Len(start_view_change_signals) = 0)
+
+SVCQuorumObserved ==
+  \E v \in Views:
+    Cardinality(svc_votes[v]) >= cluster.view_change_quorum
+
+SVCQuorumEventuallyActivatesRound ==
+  SVCQuorumObserved
+    ~> view_change_round.active
+
+RepairReadyRound ==
+  /\ view_change_round.active
+  /\ view_change_round.status = "repairing"
+  /\ view_change_round.target_view \in repair_completed_views
+
+RepairReadyRoundEventuallyLeavesRepairing ==
+  RepairReadyRound
+    ~> (view_change_round.status # "repairing")
+
+PreparedWithReplicationQuorum(op) ==
+  /\ prepares[op].status = "prepared"
+  /\ Cardinality(prepare_acks[op]) >= cluster.replication_quorum
+  /\ PrecedingCommitted(op)
+
+PreparedWithReplicationQuorumEventuallyCommitsOrViewAdvances ==
+  \A op \in OpIds:
+    PreparedWithReplicationQuorum(op)
+      ~> (
+           prepares[op].status = "committed" \/
+           \E rid \in ReplicaIds: replicas[rid].view > prepares[op].view
+         )
+
+ReadyForSyncCompletion(rid) ==
+  /\ state_sync[rid].status = "syncing_forest"
+  /\ rid \in next_checkpoint_committed
+
+ReadySyncEventuallyCompletes ==
+  \A rid \in ReplicaIds:
+    ReadyForSyncCompletion(rid)
+      ~> (state_sync[rid].status = "completed")
 
 PrimaryCanAcceptRequests ==
   /\ PrimaryId \in ReplicaIds
@@ -733,9 +774,14 @@ Spec == Init /\ [][Next]_vars
 FairSpec ==
   Spec /\
   WF_vars(PrepareCreate) /\
+  WF_vars(ReplicaAckPrepare) /\
+  WF_vars(PrimaryCommitAfterQuorum) /\
   WF_vars(BackupAdvanceCommit) /\
   WF_vars(TriggerStartViewChange) /\
+  WF_vars(EnterViewChangeAfterQuorum) /\
   WF_vars(TriggerStateSync) /\
+  WF_vars(StateSyncComplete) /\
+  WF_vars(StartNewView) /\
   WF_vars(RecordDeterminismMismatch) /\
   WF_vars(AdvanceClock)
 

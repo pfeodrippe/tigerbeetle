@@ -307,4 +307,8 @@ rule StorageDeterminismMismatchRequiresOperatorIntervention {
 --   - state-sync needs eventually consume (~>)
 --   - mismatch queue eventually clears (~>)
 --   - start-view-change signals eventually consume (~>)
+--   - SVC quorum eventually activates a view-change round (~>)
+--   - a repair-ready round eventually leaves repairing (~>)
+--   - prepared ops with replication quorum eventually commit or get superseded by a higher view (~>)
+--   - syncing-forest replicas marked checkpoint-ready eventually complete sync (~>)
 --   - client requests eventually consume while primary accepts (~>)
