@@ -13,3 +13,7 @@ tools/
 
 # Death to .DS_Store
 .DS_Store
+
+# TLC traces generated while model-checking TLA specs.
+docs/tla/*_TTrace_*.bin
+docs/tla/*_TTrace_*.tla
