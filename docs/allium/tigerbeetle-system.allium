@@ -1,6 +1,7 @@
 -- allium: 1
 -- tigerbeetle-system.allium
 -- Scope: complete TigerBeetle behavior as a coordinated set of modular specs.
+-- Scope note: this root module tracks the same bounded subsystem split used by docs/tla/*.tla.
 -- Includes:
 --   - Financial ledger state machine (accounts, transfers, two-phase transfer lifecycle).
 --   - Request and query contract (batching, linked events, filter semantics, read guarantees).

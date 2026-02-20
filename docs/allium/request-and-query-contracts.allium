@@ -1,7 +1,8 @@
 -- allium: 1
 -- request-and-query-contracts.allium
--- Scope: semantics of TigerBeetle request execution, batch behavior, linked events,
---        read/query contracts, and filter validation outcomes.
+-- Scope: bounded request/query contract aligned with docs/tla/RequestQueryContracts.tla.
+-- Includes: create-batch resolution semantics, linked-chain rejection behavior,
+--           read filter validation and reply-shape/row-count contracts.
 
 ------------------------------------------------------------
 -- Value Types
@@ -103,6 +104,7 @@ entity CommittedRequest {
 
     account_filter: AccountFilter?
     query_filter: QueryFilter?
+    account_has_history: Boolean
 }
 
 entity EventResult {
@@ -157,7 +159,7 @@ rule ValidateCreateAccountsBatchImportedMode {
                 request: request,
                 event_index: index,
                 result: rejected,
-                reason: "imported_event_expected_or_not_expected"
+                reason: ImportedMismatchReason(request.account_events)
             )
 }
 
@@ -174,7 +176,7 @@ rule ValidateCreateTransfersBatchImportedMode {
                 request: request,
                 event_index: index,
                 result: rejected,
-                reason: "imported_event_expected_or_not_expected"
+                reason: ImportedMismatchReason(request.transfer_events)
             )
 }
 
@@ -196,7 +198,7 @@ rule RejectCreateAccountsBatchWithOpenLinkedChain {
 
     ensures: EventResult.created(
         request: request,
-        event_index: request.account_events.count - 1,
+        event_index: request.account_events.count,
         result: linked_event_chain_open,
         reason: "linked_event_chain_open"
     )
@@ -220,7 +222,7 @@ rule RejectCreateTransfersBatchWithOpenLinkedChain {
 
     ensures: EventResult.created(
         request: request,
-        event_index: request.transfer_events.count - 1,
+        event_index: request.transfer_events.count,
         result: linked_event_chain_open,
         reason: "linked_event_chain_open"
     )
@@ -356,23 +358,23 @@ rule QueryTransfersValidFilterReturnsOrderedPage {
     ensures: ResolveQueryTransfers(request)
 }
 
-rule AssignStrictlyIncreasingTimestampsWithinCreateRequest {
-    when: request: CommittedRequest.created
+------------------------------------------------------------
+-- Model-Checked Guarantees (docs/tla/RequestQueryContracts.tla)
+------------------------------------------------------------
 
-    requires: request.operation in {create_accounts, create_transfers}
-    requires: RequestUsesClusterAssignedTimestamps(request)
-
-    ensures: EventTimestampsAssigned(
-        request: request,
-        timestamps: StrictlyIncreasingRequestTimestamps(request)
-    )
-}
-
-rule RetriesFromSameSessionReturnSameReply {
-    when: RequestRetriedBySameSession(request, previous_reply_checksum)
-
-    ensures: RequestReplyReused(
-        request: request,
-        reply_checksum: previous_reply_checksum
-    )
-}
+-- Safety invariants mirrored in the TLA model:
+--   - ReplyShapeMatchesOperation
+--   - EventResultIndexesUniquePerRequest
+--   - InvalidFiltersProduceEmptyReplies
+--   - CreateReplyRowsMatchExpectedResolution
+--   - CreateReplyRowsMatchEventResults
+--   - ReadReplyRowsBoundedByMaterializedRows
+--   - ImportedMismatchRejectsWholeCreateBatch
+--   - OpenLinkedChainProducesTailFailureResults
+--
+-- Temporal properties mirrored in the TLA model:
+--   - []TypeOK
+--   - [] (clock' >= clock)
+--   - incoming request queue eventually drains (`~>`)
+--   - each request eventually resolves (`~>`)
+--   - each request eventually gets a reply (`~>`)

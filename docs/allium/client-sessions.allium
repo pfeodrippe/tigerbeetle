@@ -1,6 +1,6 @@
 -- allium: 1
 -- client-sessions.allium
--- Scope: lifecycle and guarantees of TigerBeetle client sessions.
+-- Scope: bounded client-session lifecycle aligned with docs/tla/ClientSessions.tla.
 
 ------------------------------------------------------------
 -- Enumerations
@@ -27,7 +27,7 @@ entity ClientSession {
 
 entity SessionEvent {
     session: ClientSession
-    kind: registered | evicted | request_submitted | reply_received | request_retried
+    kind: registered | evicted | request_submitted | reply_received | request_retried | terminated
     timestamp: Timestamp
 }
 
@@ -37,6 +37,7 @@ entity SessionEvent {
 
 config {
     clients_max: Integer = 64
+    max_clock: Integer = 20
 }
 
 ------------------------------------------------------------
@@ -183,3 +184,22 @@ rule SessionRestartCreatesNewSessionIdentity {
 
     ensures: ClientRegistrationRequested(client_id: new_client_id)
 }
+
+------------------------------------------------------------
+-- Model-Checked Guarantees (docs/tla/ClientSessions.tla)
+------------------------------------------------------------
+
+-- Safety invariants mirrored in the TLA model:
+--   - ActiveSessionCountBounded
+--   - NonActiveSessionsHaveNoInflight
+--   - AtMostOneInflightPerActiveSession
+--   - InflightRequestBelongsToActiveSession
+--   - ActiveSessionsHaveAllocatedIds
+--   - CommittedTimestampsDoNotExceedClock
+--
+-- Temporal properties mirrored in the TLA model:
+--   - []TypeOK
+--   - [] (clock' >= clock)
+--   - [] (session.last_committed_at' >= session.last_committed_at)
+--   - all work queues eventually drain (`<>` / `~>`)
+--   - in-flight requests eventually clear or session leaves active state (`~>`)

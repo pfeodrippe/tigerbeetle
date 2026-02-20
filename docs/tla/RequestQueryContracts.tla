@@ -1,5 +1,5 @@
 ---- MODULE RequestQueryContracts ----
-EXTENDS Naturals, Sequences
+EXTENDS Naturals, Sequences, FiniteSets
 
 (***************************************************************************)
 (* Distilled from code/docs:                                               *)
@@ -171,6 +171,28 @@ ResolveReadReply(request) ==
       reply_checksum |-> ReplyChecksum(request.request_id, row_count)
     ]
 
+CreateEvents(request) ==
+  IF request.operation = "create_accounts"
+    THEN request.account_events
+    ELSE request.transfer_events
+
+ResultCountForRequest(request_id) ==
+  Cardinality({i \in 1..Len(event_results) : event_results[i].request_id = request_id})
+
+ResultExists(request_id, event_index) ==
+  \E i \in 1..Len(event_results):
+    /\ event_results[i].request_id = request_id
+    /\ event_results[i].event_index = event_index
+
+ResultFor(request_id, event_index) ==
+  LET i == CHOOSE j \in 1..Len(event_results):
+             /\ event_results[j].request_id = request_id
+             /\ event_results[j].event_index = event_index
+  IN event_results[i]
+
+ExpectedCreateResultCount(request) ==
+  Len(ResolveCreateBatch(request.request_id, CreateEvents(request)))
+
 ResolveNextRequest ==
   /\ Len(incoming_requests) > 0
   /\ LET
@@ -336,6 +358,63 @@ InvalidFiltersProduceEmptyReplies ==
         QueryFilterValid(req.query_filter) \/ replies[rid].row_count = 0
       ELSE TRUE
 
+CreateReplyRowsMatchExpectedResolution ==
+  \A rid \in RequestIds:
+    LET req == resolved_requests[rid] IN
+      IF req.request_id = 0 THEN TRUE
+      ELSE IF req.operation \in CreateOps THEN
+        replies[rid].row_count = ExpectedCreateResultCount(req)
+      ELSE TRUE
+
+CreateReplyRowsMatchEventResults ==
+  \A rid \in RequestIds:
+    LET req == resolved_requests[rid] IN
+      IF req.request_id = 0 THEN TRUE
+      ELSE IF req.operation \in CreateOps THEN
+        ResultCountForRequest(rid) = replies[rid].row_count
+      ELSE
+        ResultCountForRequest(rid) = 0
+
+ReadReplyRowsBoundedByMaterializedRows ==
+  \A rid \in RequestIds:
+    LET rep == replies[rid] IN
+      IF rep.request_id # 0 /\ rep.operation \in ReadOps THEN
+        rep.row_count <= materialized_row_count[rep.operation]
+      ELSE TRUE
+
+ImportedMismatchRejectsWholeCreateBatch ==
+  \A rid \in RequestIds:
+    LET req == resolved_requests[rid] IN
+      IF req.request_id = 0 \/ ~(req.operation \in CreateOps) THEN TRUE
+      ELSE
+        LET events == CreateEvents(req) IN
+          IF BatchImportedConsistent(events) THEN TRUE
+          ELSE
+            /\ \A idx \in 1..Len(events):
+                 /\ ResultExists(rid, idx)
+                 /\ LET r == ResultFor(rid, idx) IN
+                      /\ r.result = "rejected"
+                      /\ r.reason = ImportedMismatchReason(events)
+
+OpenLinkedChainProducesTailFailureResults ==
+  \A rid \in RequestIds:
+    LET req == resolved_requests[rid] IN
+      IF req.request_id = 0 \/ ~(req.operation \in CreateOps) THEN TRUE
+      ELSE
+        LET events == CreateEvents(req) IN
+          IF ~BatchImportedConsistent(events) \/ ~OpenLinkedChain(events) THEN TRUE
+          ELSE
+            LET start == SuffixLinkedStart(events, Len(events)) IN
+              \A idx \in start..Len(events):
+                /\ ResultExists(rid, idx)
+                /\ LET r == ResultFor(rid, idx) IN
+                     IF idx = Len(events) THEN
+                       /\ r.result = "linked_event_chain_open"
+                       /\ r.reason = "linked_event_chain_open"
+                     ELSE
+                       /\ r.result = "linked_event_failed"
+                       /\ r.reason = "linked_event_failed"
+
 AlwaysTypeOK ==
   []TypeOK
 
@@ -349,6 +428,11 @@ EachRequestEventuallyResolved ==
   \A rid \in RequestIds:
     (resolved_requests[rid].request_id = 0)
       ~> (resolved_requests[rid].request_id = rid)
+
+EachRequestEventuallyGetsReply ==
+  \A rid \in RequestIds:
+    (replies[rid].request_id = 0)
+      ~> (replies[rid].request_id = rid)
 
 Next == ResolveNextRequest
 

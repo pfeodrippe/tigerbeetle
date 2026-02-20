@@ -590,11 +590,54 @@ StateConstraint ==
   /\ Len(checkpoint_mismatches) <= MaxQueueLen
   /\ Cardinality({op \in OpIds : prepares[op].status = "committed"}) <= MaxCommittedOps
 
+PrimaryReplicaIds ==
+  {rid \in ReplicaIds : replicas[rid].role = "primary"}
+
+ExactlyOnePrimaryReplica ==
+  Cardinality(PrimaryReplicaIds) = 1
+
+PrepareAcksBoundedByReplicaCount ==
+  \A op \in OpIds:
+    Cardinality(prepare_acks[op]) <= cluster.replica_count
+
+PrepareAcksEmptyWhenNoPrepare ==
+  \A op \in OpIds:
+    IF prepares[op].status = "none"
+      THEN prepare_acks[op] = {}
+      ELSE TRUE
+
+CommittedPreparesFormPrefix ==
+  \A op \in OpIds:
+    IF prepares[op].status = "committed"
+      THEN \A i \in 1..(op - 1): prepares[i].status \in {"none", "committed"}
+      ELSE TRUE
+
+ViewChangeRoundConsistent ==
+  IF view_change_round.active THEN
+    /\ view_change_round.status \in {"collecting_dvc", "repairing", "starting_view"}
+    /\ view_change_round.target_view \in Views
+    /\ view_change_round.new_primary_id = ViewPrimary(view_change_round.target_view)
+  ELSE
+    view_change_round.status = "none"
+
+SyncingReplicaHasActiveSyncStage ==
+  \A rid \in ReplicaIds:
+    IF replicas[rid].status = "syncing"
+      THEN state_sync[rid].status \in {"installing_checkpoint", "repairing_replies", "syncing_forest"}
+      ELSE TRUE
+
 AlwaysTypeOK ==
   []TypeOK
 
 ClockNeverDecreases ==
   [][clock' >= clock]_vars
+
+ClusterCommitOpNeverDecreases ==
+  [][cluster.latest_committed_op' >= cluster.latest_committed_op]_vars
+
+ReplicaViewsNeverDecrease ==
+  \A rid \in ReplicaIds:
+    [][replicas[rid].view' >= replicas[rid].view]_vars
 
 CommitNoticesEventuallyApplied ==
   (Len(commit_notices) > 0)
@@ -607,6 +650,20 @@ StateSyncNeedsEventuallyConsumed ==
 MismatchQueueEventuallyClears ==
   (Len(checkpoint_mismatches) > 0)
     ~> (Len(checkpoint_mismatches) = 0)
+
+StartViewChangeSignalsEventuallyConsumed ==
+  (Len(start_view_change_signals) > 0)
+    ~> (Len(start_view_change_signals) = 0)
+
+PrimaryCanAcceptRequests ==
+  /\ PrimaryId \in ReplicaIds
+  /\ replicas[PrimaryId].active
+  /\ replicas[PrimaryId].status = "normal"
+  /\ NextOp \in OpIds
+
+ClientRequestsEventuallyConsumedOrPrimaryStopsAccepting ==
+  (Len(client_requests) > 0 /\ PrimaryCanAcceptRequests)
+    ~> (Len(client_requests) = 0 \/ ~PrimaryCanAcceptRequests)
 
 Next ==
   PrepareCreate \/
@@ -629,7 +686,9 @@ Spec == Init /\ [][Next]_vars
 
 FairSpec ==
   Spec /\
+  WF_vars(PrepareCreate) /\
   WF_vars(BackupAdvanceCommit) /\
+  WF_vars(TriggerStartViewChange) /\
   WF_vars(TriggerStateSync) /\
   WF_vars(RecordDeterminismMismatch) /\
   WF_vars(AdvanceClock)

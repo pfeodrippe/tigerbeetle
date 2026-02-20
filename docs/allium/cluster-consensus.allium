@@ -1,21 +1,21 @@
 -- allium: 1
 -- cluster-consensus.allium
--- Scope: VSR-based consensus, view changes, repair, and state sync behavior.
--- Includes: normal prepare/commit flow, quorum gating, view change, WAL/grid/client-reply repair,
---           checkpoint-aware state sync and deterministic recovery constraints.
+-- Scope: bounded VSR consensus model aligned with docs/tla/ClusterConsensus.tla.
+-- Includes: prepare/ack/commit flow, view-change progression, state-sync progression,
+--           grid repair and determinism mismatch recording.
+-- Excludes in this bounded model: nack-specific quorum variants and non-modeled statuses.
 
 ------------------------------------------------------------
 -- Enumerations
 ------------------------------------------------------------
 
 enum ReplicaRole { primary | backup }
-enum ReplicaStatus { normal | view_change | recovering_head | syncing }
+enum ReplicaStatus { normal | view_change | syncing }
 enum PrepareStatus { prepared | committed }
-enum ViewChangeStatus { collecting_svc | collecting_dvc | repairing | starting_view | forfeited }
+enum ViewChangeStatus { collecting_dvc | repairing | starting_view }
 enum SyncStatus {
     installing_checkpoint |
     repairing_replies |
-    repairing_grid |
     syncing_forest |
     completed
 }
@@ -30,7 +30,6 @@ entity Cluster {
 
     replication_quorum: Integer
     view_change_quorum: Integer
-    nack_quorum: Integer
 
     replicas: Replica with cluster = this
     prepares: Prepare with cluster = this
@@ -89,7 +88,7 @@ entity ViewChangeRound {
     target_view: Integer
     new_primary: Replica
     status: ViewChangeStatus
-    nack_quorum_observed: Boolean
+    dvc_quorum_observed: Boolean
 }
 
 entity StateSync {
@@ -114,9 +113,9 @@ entity GridRepair {
 ------------------------------------------------------------
 
 config {
-    default_replica_count: Integer = 6
-    default_replication_quorum: Integer = 3
-    default_view_change_quorum: Integer = 4
+    default_replica_count: Integer = 3
+    default_replication_quorum: Integer = 2
+    default_view_change_quorum: Integer = 2
 }
 
 ------------------------------------------------------------
@@ -202,7 +201,7 @@ rule ReplicaEntersViewChangeAfterSVCQuorum {
         target_view: target_view,
         new_primary: new_primary,
         status: collecting_dvc,
-        nack_quorum_observed: false
+        dvc_quorum_observed: false
     )
 }
 
@@ -228,7 +227,7 @@ rule NewPrimaryStartsViewAfterRepair {
 rule TriggerStateSyncWhenWalRepairCannotCatchUp {
     when: ReplicaDetectedStateSyncNeed(replica, checkpoint_id, sync_op_min, sync_op_max)
 
-    requires: replica.status in {normal, view_change, recovering_head}
+    requires: replica.status in {normal, view_change}
 
     ensures: StateSync.created(
         cluster: replica.cluster,
@@ -278,3 +277,30 @@ rule StorageDeterminismMismatchRequiresOperatorIntervention {
         observed_checkpoint_id: observed_checkpoint_id
     )
 }
+
+------------------------------------------------------------
+-- Model-Checked Guarantees (docs/tla/ClusterConsensus.tla)
+------------------------------------------------------------
+
+-- Safety invariants mirrored in the TLA model:
+--   - ReplicationQuorumBounded
+--   - CommittedPreparesHaveQuorumAcks
+--   - ClusterCommitDominatesReplicas
+--   - CompletedSyncLeavesSyncingStatus
+--   - ExactlyOnePrimaryReplica
+--   - PrepareAcksBoundedByReplicaCount
+--   - PrepareAcksEmptyWhenNoPrepare
+--   - CommittedPreparesFormPrefix
+--   - ViewChangeRoundConsistent
+--   - SyncingReplicaHasActiveSyncStage
+--
+-- Temporal properties mirrored in the TLA model:
+--   - []TypeOK
+--   - [] (clock' >= clock)
+--   - [] (cluster.latest_committed_op' >= cluster.latest_committed_op)
+--   - [] (replicas[r].view' >= replicas[r].view)
+--   - commit notices eventually consume (~>)
+--   - state-sync needs eventually consume (~>)
+--   - mismatch queue eventually clears (~>)
+--   - start-view-change signals eventually consume (~>)
+--   - client requests eventually consume while primary accepts (~>)

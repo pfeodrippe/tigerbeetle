@@ -362,11 +362,27 @@ AtMostOneInflightPerActiveSession ==
       THEN sessions[sid].in_flight_request_id \in Nat
       ELSE TRUE
 
+InflightRequestBelongsToActiveSession ==
+  \A sid \in SessionIds:
+    sessions[sid].in_flight_request_id # 0 => sessions[sid].status = "active"
+
+ActiveSessionsHaveAllocatedIds ==
+  \A sid \in SessionIds:
+    sessions[sid].status = "active" => sid < next_session_id
+
+CommittedTimestampsDoNotExceedClock ==
+  \A sid \in SessionIds:
+    sessions[sid].last_committed_at <= clock
+
 AlwaysTypeOK ==
   []TypeOK
 
 ClockNeverDecreases ==
   [][clock' >= clock]_vars
+
+SessionCommitTimestampNeverDecreases ==
+  \A sid \in SessionIds:
+    [][sessions[sid].last_committed_at' >= sessions[sid].last_committed_at]_vars
 
 EventuallyNoQueuedSessionWork ==
   <>(
@@ -382,6 +398,14 @@ ReplyQueueEventuallyConsumed ==
 
 RestartQueueEventuallyConsumed ==
   (Len(restart_queue) > 0) ~> (Len(restart_queue) = 0)
+
+SubmissionQueueEventuallyConsumed ==
+  (Len(submission_queue) > 0) ~> (Len(submission_queue) = 0)
+
+InflightRequestEventuallyClearsOrSessionEnds ==
+  \A sid \in SessionIds:
+    (sessions[sid].status = "active" /\ sessions[sid].in_flight_request_id # 0)
+      ~> (sessions[sid].in_flight_request_id = 0 \/ sessions[sid].status # "active")
 
 Next ==
   RegisterSession \/

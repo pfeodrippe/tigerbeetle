@@ -976,6 +976,53 @@ AccountEventsReferenceConsistentLedger ==
       /\ ev.credit_account_id \in AccountIds
       /\ AccountFor(ev.debit_account_id).ledger = AccountFor(ev.credit_account_id).ledger
 
+AccountFlagsMutuallyExclusive ==
+  \A aid \in AccountIds:
+    ~(accounts[aid].flags.debits_must_not_exceed_credits /\ accounts[aid].flags.credits_must_not_exceed_debits)
+
+TransferModeFlagsConsistent(t) ==
+  IF ~IsPresentTransfer(t) THEN TRUE
+  ELSE IF t.mode = "single_phase" THEN
+    /\ ~t.flags.pending
+    /\ ~t.flags.post_pending_transfer
+    /\ ~t.flags.void_pending_transfer
+    /\ t.pending_id = 0
+  ELSE IF t.mode = "pending" THEN
+    /\ t.flags.pending
+    /\ ~t.flags.post_pending_transfer
+    /\ ~t.flags.void_pending_transfer
+    /\ t.pending_id = 0
+  ELSE IF t.mode = "post_pending" THEN
+    /\ ~t.flags.pending
+    /\ t.flags.post_pending_transfer
+    /\ ~t.flags.void_pending_transfer
+    /\ t.pending_id # 0
+  ELSE
+    /\ ~t.flags.pending
+    /\ ~t.flags.post_pending_transfer
+    /\ t.flags.void_pending_transfer
+    /\ t.pending_id # 0
+
+TransferModesAndFlagsConsistent ==
+  \A tid \in TransferIds: TransferModeFlagsConsistent(transfers[tid])
+
+PostVoidTransfersReferencePendingTransfer ==
+  \A tid \in TransferIds:
+    LET t == transfers[tid] IN
+      IF IsPresentTransfer(t) /\ t.mode \in {"post_pending", "void_pending"} THEN
+        /\ t.pending_id \in TransferIds
+        /\ IsPresentTransfer(transfers[t.pending_id])
+        /\ transfers[t.pending_id].mode = "pending"
+      ELSE TRUE
+
+PendingRowsReferencePendingTransfers ==
+  \A tid \in TransferIds:
+    IF pending[tid].status # "none" THEN
+      /\ IsPresentTransfer(transfers[tid])
+      /\ transfers[tid].mode = "pending"
+      /\ transfers[tid].flags.pending
+    ELSE TRUE
+
 AlwaysTypeOK ==
   []TypeOK
 
@@ -992,6 +1039,13 @@ PendingTransfersEventuallyResolve ==
   \A tid \in TransferIds:
     (pending[tid].status = "pending")
       ~> (pending[tid].status \in {"posted", "voided", "expired"})
+
+TerminalPendingStatusSticky ==
+  \A tid \in TransferIds:
+    [][
+      (pending[tid].status \in {"posted", "voided", "expired"})
+        => (pending'[tid].status = pending[tid].status)
+    ]_vars
 
 Next ==
   CreateAccount \/

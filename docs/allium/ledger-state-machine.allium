@@ -1,9 +1,9 @@
 -- allium: 1
 -- ledger-state-machine.allium
--- Scope: account and transfer behavior implemented by TigerBeetle's state machine.
+-- Scope: bounded account/transfer state machine aligned with docs/tla/LedgerStateMachine.tla.
 -- Includes: create_accounts, create_transfers, idempotency, pending/post/void/expiry,
---           account closing/reopening, imported timestamps, history snapshots, transient ids.
--- Excludes: query APIs (specified in request-and-query-contracts.allium).
+--           account closing/reopening, and transient failed-transfer IDs.
+-- Excludes in this bounded model: full query API behavior and non-modeled failure sub-cases.
 
 ------------------------------------------------------------
 -- External Entities
@@ -769,3 +769,25 @@ rule RecordTransientTransferFailure {
         failed_at: now
     )
 }
+
+------------------------------------------------------------
+-- Model-Checked Guarantees (docs/tla/LedgerStateMachine.tla)
+------------------------------------------------------------
+
+-- Safety invariants mirrored in the TLA model:
+--   - BalancesConserved
+--   - PendingReferencesPendingTransfer
+--   - TransientFailedIdsNeverCommit
+--   - AccountEventsReferenceConsistentLedger
+--   - AccountFlagsMutuallyExclusive
+--   - TransferModesAndFlagsConsistent
+--   - PostVoidTransfersReferencePendingTransfer
+--   - PendingRowsReferencePendingTransfers
+--
+-- Temporal properties mirrored in the TLA model:
+--   - []TypeOK
+--   - [] (clock' >= clock)
+--   - account queue eventually drains (`~>`)
+--   - transfer queue eventually drains (`~>`)
+--   - pending transfers eventually resolve (`~>`)
+--   - terminal pending statuses are sticky (`[]`)
