@@ -1,3 +1,0 @@
-{:paths ["src"]
- :deps {org.clojure/clojure {:mvn/version "1.11.1"}
-        pfeodrippe/recife {:mvn/version "0.22.0"}}}
