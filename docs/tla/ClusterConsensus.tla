@@ -123,6 +123,10 @@ PrecedingCommitted(op) ==
 
 ViewPrimary(target_view) == 1 + (target_view % cluster.replica_count)
 
+AckEligible(op, rid) ==
+  /\ replicas[rid].status = "normal"
+  /\ replicas[rid].view = prepares[op].view
+
 PrepareCreate ==
   /\ Len(client_requests) > 0
   /\ PrimaryId \in ReplicaIds
@@ -156,7 +160,10 @@ PrepareCreate ==
 ReplicaAckPrepare ==
   /\ LET candidates ==
        {<<op, rid>> \in OpIds \X ReplicaIds :
-          prepares[op].status = "prepared" /\ replicas[rid].active /\ rid \notin prepare_acks[op]}
+          prepares[op].status = "prepared" /\
+          replicas[rid].active /\
+          rid \notin prepare_acks[op] /\
+          AckEligible(op, rid)}
      IN
        /\ candidates # {}
        /\ LET
@@ -208,7 +215,11 @@ BackupAdvanceCommit ==
      IN
        /\ commit_notices' = Tail(commit_notices)
        /\ replicas' = [rid \in ReplicaIds |->
-            IF replicas[rid].role = "backup" /\ replicas[rid].active /\ replicas[rid].commit_op < n.op
+            IF replicas[rid].role = "backup" /\
+               replicas[rid].active /\
+               replicas[rid].status = "normal" /\
+               replicas[rid].view = n.view /\
+               replicas[rid].commit_op < n.op
               THEN [replicas[rid] EXCEPT !.commit_op = n.op]
               ELSE replicas[rid]
           ]
@@ -271,9 +282,12 @@ EnterViewChangeAfterQuorum ==
                    THEN [replicas[rid] EXCEPT !.view = target_view, !.status = "view_change"]
                    ELSE replicas[rid]
                ]
+            /\ prepare_acks' = [op \in OpIds |->
+                 IF prepares[op].status = "prepared" THEN {} ELSE prepare_acks[op]
+               ]
             /\ cluster_events' = Append(cluster_events, [kind |-> "view_change_started", subject |-> target_view, timestamp |-> now])
             /\ clock' = now
-            /\ UNCHANGED <<cluster, client_requests, prepares, prepare_acks, commit_notices,
+            /\ UNCHANGED <<cluster, client_requests, prepares, commit_notices,
                             start_view_change_signals, svc_votes, dvc_quorum_observed,
                             repair_completed_views, state_sync_needs, state_sync,
                             sync_ready_for_forest, next_checkpoint_committed, grid_repairs,
@@ -387,7 +401,10 @@ StateSyncComplete ==
           now == clock + 1
         IN
           /\ state_sync' = [state_sync EXCEPT ![rid].status = "completed"]
-          /\ replicas' = [replicas EXCEPT ![rid].status = "normal"]
+          /\ replicas' = [replicas EXCEPT
+               ![rid].status = "normal",
+               ![rid].checkpoint_id = state_sync[rid].target_checkpoint_id
+             ]
           /\ cluster_events' = Append(cluster_events, [kind |-> "state_sync_completed", subject |-> rid, timestamp |-> now])
           /\ clock' = now
           /\ UNCHANGED <<cluster, client_requests, prepares, prepare_acks,
@@ -580,6 +597,12 @@ CompletedSyncLeavesSyncingStatus ==
       THEN replicas[rid].status # "syncing"
       ELSE TRUE
 
+CompletedSyncInstallsTargetCheckpoint ==
+  \A rid \in ReplicaIds:
+    IF state_sync[rid].status = "completed"
+      THEN replicas[rid].checkpoint_id = state_sync[rid].target_checkpoint_id
+      ELSE TRUE
+
 StateConstraint ==
   /\ clock <= MaxClock
   /\ Len(cluster_events) <= MaxEvents
@@ -638,6 +661,29 @@ ClusterCommitOpNeverDecreases ==
 ReplicaViewsNeverDecrease ==
   \A rid \in ReplicaIds:
     [][replicas[rid].view' >= replicas[rid].view]_vars
+
+CommitNoticeAdvancesOnlyEligibleBackups ==
+  \A rid \in ReplicaIds:
+    [][
+      (replicas[rid].role = "backup" /\ replicas'[rid].commit_op > replicas[rid].commit_op)
+        => /\ replicas[rid].status = "normal"
+           /\ Len(commit_notices) > 0
+           /\ Head(commit_notices).view = replicas[rid].view
+    ]_vars
+
+NewPrepareAcksAreEligible ==
+  \A op \in OpIds:
+    [][
+      \A rid \in (prepare_acks'[op] \ prepare_acks[op]):
+        AckEligible(op, rid)
+    ]_vars
+
+SyncCompletionInstallsTargetCheckpoint ==
+  \A rid \in ReplicaIds:
+    [][
+      (state_sync[rid].status = "syncing_forest" /\ state_sync'[rid].status = "completed")
+        => replicas'[rid].checkpoint_id = state_sync[rid].target_checkpoint_id
+    ]_vars
 
 CommitNoticesEventuallyApplied ==
   (Len(commit_notices) > 0)

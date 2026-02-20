@@ -293,12 +293,16 @@ rule StorageDeterminismMismatchRequiresOperatorIntervention {
 --   - CommittedPreparesFormPrefix
 --   - ViewChangeRoundConsistent
 --   - SyncingReplicaHasActiveSyncStage
+--   - CompletedSyncInstallsTargetCheckpoint
 --
 -- Temporal properties mirrored in the TLA model:
 --   - []TypeOK
 --   - [] (clock' >= clock)
 --   - [] (cluster.latest_committed_op' >= cluster.latest_committed_op)
 --   - [] (replicas[r].view' >= replicas[r].view)
+--   - commit notices only advance eligible normal backups in matching views (`[]`)
+--   - newly added prepare acks are only counted when the replica is eligible in that prepare view (`[]`)
+--   - state-sync completion installs the target checkpoint (`[]`)
 --   - commit notices eventually consume (~>)
 --   - state-sync needs eventually consume (~>)
 --   - mismatch queue eventually clears (~>)
