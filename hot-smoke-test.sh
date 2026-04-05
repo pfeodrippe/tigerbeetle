@@ -67,6 +67,144 @@ wait_for_hot_config_file() {
   exit 1
 }
 
+validate_decl_graph_semantic_edges() {
+  local protocol_file="$ROOT_DIR/src/cdc/amqp/protocol.zig"
+  local stdx_file="$ROOT_DIR/src/stdx/stdx.zig"
+  local vsr_file="$ROOT_DIR/src/vsr.zig"
+  local main_file="$ROOT_DIR/src/tigerbeetle/main.zig"
+
+  if ! awk -F '\t' \
+    -v protocol_file="$protocol_file" \
+    -v stdx_file="$stdx_file" \
+    -v vsr_file="$vsr_file" \
+    -v main_file="$main_file" '
+    $1 == "decl-node" && $4 == protocol_file && $5 == "Decoder.read_short_string" {
+      read_short_string_key = $2
+    }
+    $1 == "decl-node" && $4 == protocol_file && $5 == "Decoder.read_int" {
+      read_int_key = $2
+    }
+    $1 == "decl-node" && $4 == protocol_file && $5 == "Decoder.read_bytes" {
+      read_bytes_key = $2
+    }
+    $1 == "decl-node" && $4 == protocol_file && $5 == "Decoder.Error" {
+      decoder_error_key = $2
+    }
+    $1 == "decl-node" && $4 == protocol_file && $5 == "Decoder.read_field" {
+      read_field_key = $2
+    }
+    $1 == "decl-node" && $4 == protocol_file && $5 == "Decoder.read_enum" {
+      read_enum_key = $2
+    }
+    $1 == "decl-node" && $4 == vsr_file && $5 == "quorums" {
+      quorums_key = $2
+    }
+    $1 == "decl-node" && $4 == stdx_file && $5 == "div_ceil" {
+      div_ceil_key = $2
+    }
+    $1 == "decl-node" && $4 == main_file && $5 == "log_runtime" {
+      log_runtime_key = $2
+    }
+    $1 == "decl-node" && $4 == main_file && $5 == "main" {
+      main_key = $2
+    }
+    $1 == "decl-node" && $4 == main_file && $5 == "log_level_runtime" {
+      log_level_runtime_key = $2
+    }
+    $1 == "decl-edge" && $2 == "type_dep" {
+      type_dep[$3 SUBSEP $4] = 1
+      next
+    }
+    $1 == "decl-edge" && $2 == "calls" {
+      calls[$3 SUBSEP $4] = 1
+      next
+    }
+    $1 == "decl-edge" && $2 == "reads" {
+      reads[$3 SUBSEP $4] = 1
+      next
+    }
+    $1 == "decl-edge" && $2 == "writes" {
+      writes[$3 SUBSEP $4] = 1
+    }
+    END {
+      if (read_short_string_key == "") {
+        print "error: missing declaration graph node for Decoder.read_short_string" > "/dev/stderr"
+        exit 1
+      }
+      if (read_int_key == "") {
+        print "error: missing declaration graph node for Decoder.read_int" > "/dev/stderr"
+        exit 1
+      }
+      if (read_bytes_key == "") {
+        print "error: missing declaration graph node for Decoder.read_bytes" > "/dev/stderr"
+        exit 1
+      }
+      if (decoder_error_key == "") {
+        print "error: missing declaration graph node for Decoder.Error" > "/dev/stderr"
+        exit 1
+      }
+      if (read_field_key == "") {
+        print "error: missing declaration graph node for Decoder.read_field" > "/dev/stderr"
+        exit 1
+      }
+      if (read_enum_key == "") {
+        print "error: missing declaration graph node for Decoder.read_enum" > "/dev/stderr"
+        exit 1
+      }
+      if (quorums_key == "") {
+        print "error: missing declaration graph node for quorums" > "/dev/stderr"
+        exit 1
+      }
+      if (div_ceil_key == "") {
+        print "error: missing declaration graph node for stdx.div_ceil" > "/dev/stderr"
+        exit 1
+      }
+      if (log_runtime_key == "") {
+        print "error: missing declaration graph node for log_runtime" > "/dev/stderr"
+        exit 1
+      }
+      if (main_key == "") {
+        print "error: missing declaration graph node for main" > "/dev/stderr"
+        exit 1
+      }
+      if (log_level_runtime_key == "") {
+        print "error: missing declaration graph node for log_level_runtime" > "/dev/stderr"
+        exit 1
+      }
+      if (!((read_short_string_key SUBSEP decoder_error_key) in type_dep)) {
+        print "error: missing declaration graph type_dep edge: Decoder.read_short_string -> Decoder.Error" > "/dev/stderr"
+        exit 1
+      }
+      if (!((read_short_string_key SUBSEP read_int_key) in calls)) {
+        print "error: missing declaration graph calls edge: Decoder.read_short_string -> Decoder.read_int" > "/dev/stderr"
+        exit 1
+      }
+      if (!((read_short_string_key SUBSEP read_bytes_key) in calls)) {
+        print "error: missing declaration graph calls edge: Decoder.read_short_string -> Decoder.read_bytes" > "/dev/stderr"
+        exit 1
+      }
+      if (!((read_field_key SUBSEP read_enum_key) in calls)) {
+        print "error: missing declaration graph calls edge: Decoder.read_field -> Decoder.read_enum" > "/dev/stderr"
+        exit 1
+      }
+      if (!((quorums_key SUBSEP div_ceil_key) in calls)) {
+        print "error: missing declaration graph calls edge: quorums -> stdx.div_ceil" > "/dev/stderr"
+        exit 1
+      }
+      if (!((log_runtime_key SUBSEP log_level_runtime_key) in reads)) {
+        print "error: missing declaration graph reads edge: log_runtime -> log_level_runtime" > "/dev/stderr"
+        exit 1
+      }
+      if (!((main_key SUBSEP log_level_runtime_key) in writes)) {
+        print "error: missing declaration graph writes edge: main -> log_level_runtime" > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$HOT_CONFIG_FILE"; then
+    exit 1
+  fi
+}
+
 zig_hot() {
   local -a cmd=(env ZIG_HOT_CONFIG_FILE="$HOT_CONFIG_FILE" DYLD_LIBRARY_PATH="${DYLD_LIBRARY_PATH:-}")
   if [[ -n "$ZIG_LIB_DIR" ]]; then
@@ -125,6 +263,7 @@ expect_eval_value() {
 }
 
 wait_for_hot_config_file
+validate_decl_graph_semantic_edges
 wait_for_port_file
 
 describe_output="$(wait_for_runtime_ready)"
