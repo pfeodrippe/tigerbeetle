@@ -724,7 +724,7 @@ pub const MultiversionOS = struct {
         // This does impact memory usage.
         const source_buffer = try allocator.alignedAlloc(
             u8,
-            8,
+            .fromByteUnits(8),
             multiversion_binary_size_max_by_format,
         );
         errdefer allocator.free(source_buffer);
@@ -2114,7 +2114,7 @@ pub fn print_information(
         switch (field) {
             .past, .current_flags_padding, .past_padding, .reserved => continue,
             .current_git_commit => {
-                try output.print("multiversioning.header.{s}={s}\n", .{
+                try output.print("multiversioning.header.{s}={f}\n", .{
                     field_name,
                     std.fmt.fmtSliceHexLower(&header.current_git_commit),
                 });

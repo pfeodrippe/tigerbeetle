@@ -66,3 +66,14 @@ $ ./tigerbeetle repl --cluster=0 --addresses=3000
 ```
 
 Want to learn more? See <https://docs.tigerbeetle.com>.
+
+## Hot development
+
+The hot workflow uses a patched Zig 0.15.2 toolchain rather than TigerBeetle's bundled
+0.14.1 compiler. Point `HOT_ZIG` at the hot-enabled Zig binary and, if needed, set
+`HOT_ZIG_LIB_DIR` to the matching Zig lib directory.
+
+```console
+$ HOT_ZIG=/path/to/zig HOT_ZIG_LIB_DIR=/path/to/zig/lib make hot-run
+$ HOT_ZIG=/path/to/zig HOT_ZIG_LIB_DIR=/path/to/zig/lib make hot-test
+```

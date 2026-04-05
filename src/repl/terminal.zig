@@ -13,10 +13,10 @@ pub const Terminal = struct {
     };
 
     mode_start: ?ModeStart,
-    stdin: std.io.BufferedReader(4096, std.fs.File.Reader),
+    stdin: std.io.BufferedReader(4096, std.fs.File.DeprecatedReader),
     // These are made optional so that printing on failure can be disabled in tests expecting them.
-    stdout: ?std.fs.File.Writer,
-    stderr: ?std.fs.File.Writer,
+    stdout: ?std.fs.File.DeprecatedWriter,
+    stderr: ?std.fs.File.DeprecatedWriter,
 
     pub fn init(
         self: *Terminal,

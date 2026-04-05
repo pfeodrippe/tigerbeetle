@@ -47,7 +47,7 @@ test "benchmark: ewah" {
             bitsets[i] = try make_bitset(allocator, config);
             bitsets_encoded[i] = try allocator.alignedAlloc(
                 u8,
-                @alignOf(usize),
+                .fromByteUnits(@alignOf(usize)),
                 ewah.encode_size_max(bitsets[i].len),
             );
             bitsets_decoded[i] = try allocator.alloc(usize, config.words);

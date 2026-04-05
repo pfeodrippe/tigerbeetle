@@ -615,6 +615,8 @@ pub fn ReplType(comptime MessageBus: type) type {
                     error.NotOpenForWriting,
                     error.OperationAborted,
                     error.OutOfMemory,
+                    error.PermissionDenied,
+                    error.MessageTooBig,
                     error.SystemResources,
                     error.Unexpected,
                     error.WouldBlock,
@@ -627,7 +629,7 @@ pub fn ReplType(comptime MessageBus: type) type {
         }
 
         fn display_help(repl: *Repl) !void {
-            try repl.terminal.print("TigerBeetle CLI Client {}\n" ++
+            try repl.terminal.print("TigerBeetle CLI Client {f}\n" ++
                 \\  Hit enter after a semicolon to run a command.
                 \\  Ctrl+D to exit.
                 \\
@@ -784,6 +786,8 @@ pub fn ReplType(comptime MessageBus: type) type {
                                 error.NotOpenForWriting,
                                 error.OperationAborted,
                                 error.OutOfMemory,
+                                error.PermissionDenied,
+                                error.MessageTooBig,
                                 error.SystemResources,
                                 error.Unexpected,
                                 error.WouldBlock,

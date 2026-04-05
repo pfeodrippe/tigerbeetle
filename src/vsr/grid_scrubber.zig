@@ -317,7 +317,7 @@ pub fn GridScrubberType(comptime Forest: type, grid_scrubber_reads_max: comptime
             maybe(read.status != .repair);
 
             log.debug("{}: read_next_callback: result={s} " ++
-                "(address={} checksum={x:0>32} type={s} status={?})", .{
+                "(address={} checksum={x:0>32} type={s} status={any})", .{
                 scrubber.superblock.replica_index.?,
                 @tagName(result),
                 read.read.address,

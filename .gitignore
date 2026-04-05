@@ -6,6 +6,12 @@ src/clients/c/lib
 .zig-cache/
 zig-cache/
 zig-out/
+.nrepl-port
+.hot-run.log
+.hot-run.pid
+.hot-run.stdin
+.hot-run.stdin.pid
+.zig-hot-thunks/
 
 tools/
 # By convention, logs from simulator use .vopr extension.

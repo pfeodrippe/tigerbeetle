@@ -281,7 +281,7 @@ pub fn start(tracer: *Tracer, event: Event) void {
 
     if (tracer.log_trace) {
         log.debug(
-            "{}: {s}({}): start: {}",
+            "{}: {s}({f}): start: {f}",
             .{ tracer.process_id, @tagName(event), event_tracing, event_timing },
         );
     }
@@ -299,8 +299,8 @@ pub fn start(tracer: *Tracer, event: Event) void {
         "\"ph\":\"{[event]c}\"," ++
         "\"ts\":{[timestamp]}," ++
         "\"cat\":\"{[category]s}\"," ++
-        "\"name\":\"{[category]s} {[event_tracing]} {[event_timing]}\"," ++
-        "\"args\":{[args]s}" ++
+        "\"name\":\"{[category]s} {[event_tracing]f} {[event_timing]f}\"," ++
+        "\"args\":{[args]f}" ++
         "}},\n", .{
         .process_id = tracer.process_id.json(),
         .thread_id = event_tracing.stack(),
@@ -311,7 +311,7 @@ pub fn start(tracer: *Tracer, event: Event) void {
         .event_timing = event_timing,
         .args = std.json.Formatter(Event){ .value = event, .options = .{} },
     }) catch {
-        log.err("{}: {s}({}): event too large: {}", .{
+        log.err("{}: {s}({f}): event too large: {f}", .{
             tracer.process_id,
             @tagName(event),
             event_tracing,
@@ -347,7 +347,7 @@ pub fn stop(tracer: *Tracer, event: Event) void {
 
     if (tracer.log_trace) {
         // Double leading space to align with 'start: '.
-        log.debug("{}: {s}({}): stop:  {} (duration={}{s})", .{
+        log.debug("{}: {s}({f}): stop:  {f} (duration={}{s})", .{
             tracer.process_id,
             @tagName(event),
             event_tracing,

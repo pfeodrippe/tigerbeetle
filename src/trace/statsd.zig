@@ -24,6 +24,8 @@ const packet_size_max = 1400;
 /// message. Since this is calculated at comptime, that means there's a bug in the calculation
 /// logic.
 const statsd_line_size_max = line_size_max: {
+    @setEvalBranchQuota(500_000);
+
     // For each type of event, build a payload containing the maximum possible values for that
     // event. This is essentially maxInt for unsigned integer payloads, minInt for signed integer
     // payloads, and the longest enum tag name for enum payloads.

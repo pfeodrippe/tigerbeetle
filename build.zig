@@ -46,16 +46,25 @@ const zig_version = std.SemanticVersion{
     .minor = 14,
     .patch = 1,
 };
+const zig_version_hot = std.SemanticVersion{
+    .major = 0,
+    .minor = 15,
+    .patch = 2,
+};
 
 comptime {
     const zig_version_equal =
         zig_version.major == builtin.zig_version.major and
         zig_version.minor == builtin.zig_version.minor and
         zig_version.patch == builtin.zig_version.patch;
-    if (!zig_version_equal) {
+    const zig_version_hot_equal =
+        zig_version_hot.major == builtin.zig_version.major and
+        zig_version_hot.minor == builtin.zig_version.minor and
+        zig_version_hot.patch == builtin.zig_version.patch;
+    if (!(zig_version_equal or zig_version_hot_equal)) {
         @compileError(std.fmt.comptimePrint(
-            "unsupported zig version: expected {}, found {}",
-            .{ zig_version, builtin.zig_version },
+            "unsupported zig version: expected {f} or {f}, found {f}",
+            .{ zig_version, zig_version_hot, builtin.zig_version },
         ));
     }
 }
@@ -79,6 +88,7 @@ pub fn build(b: *std.Build) !void {
         .docs = b.step("docs", "Build docs"),
         .fuzz = b.step("fuzz", "Run non-VOPR fuzzers"),
         .fuzz_build = b.step("fuzz:build", "Build non-VOPR fuzzers"),
+        .hot_run = b.step("hot-run", "Run TigerBeetle with Zig hot enabled"),
         .run = b.step("run", "Run TigerBeetle"),
         .ci = b.step("ci", "Run the full suite of CI checks"),
         .scripts = b.step("scripts", "Free form automation scripts"),
@@ -206,8 +216,9 @@ pub fn build(b: *std.Build) !void {
     });
 
     // zig build, zig build run
-    build_tigerbeetle(b, .{
+    try build_tigerbeetle(b, .{
         .run = build_steps.run,
+        .hot_run = build_steps.hot_run,
         .install = b.getInstallStep(),
     }, .{
         .stdx_module = stdx_module,
@@ -621,6 +632,7 @@ fn build_tigerbeetle(
     b: *std.Build,
     steps: struct {
         run: *std.Build.Step,
+        hot_run: *std.Build.Step,
         install: *std.Build.Step,
     },
     options: struct {
@@ -634,7 +646,7 @@ fn build_tigerbeetle(
         multiversion_file: ?[]const u8,
         emit_llvm_ir: bool,
     },
-) void {
+) !void {
     const multiversion_file: ?std.Build.LazyPath = if (options.multiversion_file) |path|
         .{ .cwd_relative = path }
     else if (options.multiversion) |version_past|
@@ -642,6 +654,7 @@ fn build_tigerbeetle(
     else
         null;
 
+    var hot_exe: ?*std.Build.Step.Compile = null;
     const tigerbeetle_bin = if (multiversion_file) |multiversion_lazy_path| bin: {
         assert(!options.emit_llvm_ir);
         break :bin build_tigerbeetle_executable_multiversion(b, .{
@@ -660,6 +673,7 @@ fn build_tigerbeetle(
             .target = options.target,
             .mode = options.mode,
         });
+        hot_exe = tigerbeetle_exe;
         if (options.emit_llvm_ir) {
             steps.install.dependOn(&b.addInstallBinFile(
                 tigerbeetle_exe.getEmittedLlvmIr(),
@@ -685,6 +699,28 @@ fn build_tigerbeetle(
     run_cmd.addFileArg(tigerbeetle_bin);
     if (b.args) |args| run_cmd.addArgs(args);
     steps.run.dependOn(&run_cmd.step);
+
+    const hot_run_cmd = std.Build.Step.Run.create(b, b.fmt("run tigerbeetle hot", .{}));
+    if (options.target.result.os.tag != .macos) {
+        steps.hot_run.dependOn(&b.addFail(
+            "hot-run currently supports macOS TigerBeetle targets only",
+        ).step);
+    } else if (hot_exe) |tigerbeetle_exe| {
+        hot_run_cmd.addFileArg(tigerbeetle_exe.getEmittedBin());
+        if (b.args) |args| hot_run_cmd.addArgs(args);
+
+        const hot = try std.Build.Hot.init(b, .{
+            .name = "tigerbeetle",
+            .root_module = tigerbeetle_exe.root_module,
+            .main_executable = tigerbeetle_exe.getEmittedBin(),
+        });
+        hot.configureRun(hot_run_cmd);
+        steps.hot_run.dependOn(&hot_run_cmd.step);
+    } else {
+        steps.hot_run.dependOn(&b.addFail(
+            "hot-run currently requires a direct TigerBeetle executable; disable multiversion packaging options",
+        ).step);
+    }
 }
 
 fn build_tigerbeetle_executable(b: *std.Build, options: struct {
@@ -1891,7 +1927,7 @@ fn build_clients_c_sample(
         static_lib.linkSystemLibrary("advapi32");
 
         // TODO: Illegal instruction on Windows:
-        sample.root_module.sanitize_c = false;
+        sample.root_module.sanitize_c = .off;
     }
 
     const install_step = b.addInstallArtifact(sample, .{});
@@ -1932,7 +1968,10 @@ fn print_or_install(b: *std.Build, compile: *std.Build.Step.Compile, print: bool
         fn make(step: *std.Build.Step, _: std.Build.Step.MakeOptions) !void {
             const print_step: *@This() = @fieldParentPtr("step", step);
             const path = print_step.compile.getEmittedBin().getPath2(step.owner, step);
-            try std.io.getStdOut().writer().print("{s}\n", .{path});
+            const stdout = std.fs.File.stdout();
+            var writer = stdout.writer(&.{});
+            try writer.interface.print("{s}\n", .{path});
+            try writer.interface.flush();
         }
     };
 

@@ -720,15 +720,23 @@ pub fn SuperBlockType(comptime Storage: type) type {
             assert(options.storage_size_limit <= constants.storage_size_limit_max);
             assert(options.storage_size_limit % constants.sector_size == 0);
 
-            const a = try gpa.alignedAlloc(SuperBlockHeader, constants.sector_size, 1);
+            const a = try gpa.alignedAlloc(
+                SuperBlockHeader,
+                .fromByteUnits(constants.sector_size),
+                1,
+            );
             errdefer gpa.free(a);
 
-            const b = try gpa.alignedAlloc(SuperBlockHeader, constants.sector_size, 1);
+            const b = try gpa.alignedAlloc(
+                SuperBlockHeader,
+                .fromByteUnits(constants.sector_size),
+                1,
+            );
             errdefer gpa.free(b);
 
             const reading = try gpa.alignedAlloc(
                 [constants.superblock_copies]SuperBlockHeader,
-                constants.sector_size,
+                .fromByteUnits(constants.sector_size),
                 1,
             );
             errdefer gpa.free(reading);

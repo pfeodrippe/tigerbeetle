@@ -395,7 +395,7 @@ pub fn ClusterType(comptime StateMachineType: anytype) type {
             ) |*aof, *aof_io, *aof_io_file, i| {
                 const buffer = try allocator.alignedAlloc(
                     u8,
-                    constants.sector_size,
+                    .fromByteUnits(constants.sector_size),
                     // Arbitrary value.
                     32 * MiB,
                 );

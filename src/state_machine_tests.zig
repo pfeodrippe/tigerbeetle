@@ -1030,7 +1030,7 @@ fn check_version(
 
                 const reply_actual_buffer = try allocator.alignedAlloc(
                     u8,
-                    16,
+                    .fromByteUnits(16),
                     constants.message_body_size_max,
                 );
                 defer allocator.free(reply_actual_buffer);
@@ -2952,7 +2952,11 @@ test "StateMachine: batch_elements_max" {
 // the former single-batch format.
 test "StateMachine: input_valid" {
     const allocator = std.testing.allocator;
-    const input = try allocator.alignedAlloc(u8, 16, 2 * constants.message_body_size_max);
+    const input = try allocator.alignedAlloc(
+        u8,
+        .fromByteUnits(16),
+        2 * constants.message_body_size_max,
+    );
     defer allocator.free(input);
 
     const build_input = struct {
@@ -3049,7 +3053,11 @@ test "StateMachine: input_valid" {
 // number of results that can fit in the reply message.
 test "StateMachine: query multi-batch input_valid" {
     const allocator = std.testing.allocator;
-    const input = try allocator.alignedAlloc(u8, 16, 2 * constants.message_body_size_max);
+    const input = try allocator.alignedAlloc(
+        u8,
+        .fromByteUnits(16),
+        2 * constants.message_body_size_max,
+    );
     defer allocator.free(input);
 
     var context: TestContext = undefined;

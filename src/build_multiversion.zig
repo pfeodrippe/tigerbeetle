@@ -800,7 +800,7 @@ fn git_sha_to_binary(commit: []const u8) ![20]u8 {
     var commit_roundtrip: [40]u8 = undefined;
     assert(std.mem.eql(u8, try std.fmt.bufPrint(
         &commit_roundtrip,
-        "{s}",
+        "{f}",
         .{std.fmt.fmtSliceHexLower(&commit_bytes)},
     ), commit));
 

@@ -203,7 +203,11 @@ pub const Storage = struct {
 
         const prng = stdx.PRNG.from_seed(options.seed);
         const sector_count = @divExact(options.size, constants.sector_size);
-        const memory = try allocator.alignedAlloc(u8, constants.sector_size, options.size);
+        const memory = try allocator.alignedAlloc(
+            u8,
+            .fromByteUnits(constants.sector_size),
+            options.size,
+        );
         errdefer allocator.free(memory);
 
         var memory_written = try std.DynamicBitSetUnmanaged.initEmpty(allocator, sector_count);
@@ -213,7 +217,11 @@ pub const Storage = struct {
         errdefer faults.deinit(allocator);
 
         const overlay_buffers_alloc =
-            try allocator.alignedAlloc(u8, constants.sector_size, @sizeOf(OverlayBuffers));
+            try allocator.alignedAlloc(
+                u8,
+                .fromByteUnits(constants.sector_size),
+                @sizeOf(OverlayBuffers),
+            );
         const overlay_buffers = std.mem.bytesAsValue(OverlayBuffers, overlay_buffers_alloc);
         errdefer allocator.destroy(overlay_buffers);
 

@@ -1747,7 +1747,7 @@ fn full_core(replica_count: u8, standby_count: u8) Core {
     return core;
 }
 
-var log_buffer: std.io.BufferedWriter(4096, std.fs.File.Writer) = .{
+var log_buffer: std.io.BufferedWriter(4096, std.fs.File.DeprecatedWriter) = .{
     // This is initialized in main(), as std.io.getStdErr() is not comptime known on e.g. Windows.
     .unbuffered_writer = undefined,
 };

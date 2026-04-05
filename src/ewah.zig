@@ -424,7 +424,7 @@ fn test_decode(comptime Word: type, encoded_expect_words: []const Word) !void {
     const decoded_expect = decoded_expect_data[0..decoded_expect_length];
     const encoded_actual = try std.testing.allocator.alignedAlloc(
         u8,
-        @alignOf(Word),
+        .fromByteUnits(@alignOf(Word)),
         codec.encode_size_max(decoded_expect.len),
     );
     defer std.testing.allocator.free(encoded_actual);

@@ -123,14 +123,14 @@ pub fn main(
 
     const client_requests = try allocator.alignedAlloc(
         [constants.message_body_size_max]u8,
-        constants.sector_size,
+        .fromByteUnits(constants.sector_size),
         clients.count(),
     );
     defer allocator.free(client_requests);
 
     const client_replies = try allocator.alignedAlloc(
         [constants.message_body_size_max]u8,
-        constants.sector_size,
+        .fromByteUnits(constants.sector_size),
         clients.count(),
     );
     defer allocator.free(client_replies);

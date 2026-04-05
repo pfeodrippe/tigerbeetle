@@ -246,7 +246,7 @@ fn inspect_constants(output: std.io.AnyWriter) !void {
     try output.print("Memory (approximate):\n", .{});
     const datafile_size = constants.storage_size_limit_max;
     try print_header(output, 0, "datafile (on disk)");
-    try output.print("{}\n", .{
+    try output.print("{f}\n", .{
         stdx.fmt_int_size_bin_exact(datafile_size),
     });
 
@@ -377,13 +377,13 @@ fn print_header(output: std.io.AnyWriter, comptime level: u8, comptime header: [
 
 fn print_size_count(output: std.io.AnyWriter, comptime size: u64, comptime count: u64) !void {
     if (count == 1) {
-        try output.print("{}\n", .{stdx.fmt_int_size_bin_exact(size)});
+        try output.print("{f}\n", .{stdx.fmt_int_size_bin_exact(size)});
     } else {
         const size_formatted = comptime if (size < 1024)
             std.fmt.comptimePrint("{}B", .{size})
         else
-            std.fmt.comptimePrint("{}", .{stdx.fmt_int_size_bin_exact(size)});
-        try output.print("{s<8} x{}\n", .{ size_formatted, count });
+            std.fmt.comptimePrint("{f}", .{stdx.fmt_int_size_bin_exact(size)});
+        try output.print("{s:<8} x{}\n", .{ size_formatted, count });
     }
 }
 
@@ -468,7 +468,7 @@ const Inspector = struct {
 
         inspector.superblock_buffer = try allocator.alignedAlloc(
             u8,
-            constants.sector_size,
+            .fromByteUnits(constants.sector_size),
             vsr.superblock.superblock_zone_size,
         );
         errdefer allocator.free(inspector.superblock_buffer);
@@ -565,14 +565,14 @@ const Inspector = struct {
 
         const headers_buffer = try inspector.allocator.alignedAlloc(
             u8,
-            constants.sector_size,
+            .fromByteUnits(constants.sector_size),
             constants.journal_size_headers,
         );
         defer inspector.allocator.free(headers_buffer);
 
         const prepare_buffer = try inspector.allocator.alignedAlloc(
             u8,
-            constants.sector_size,
+            .fromByteUnits(constants.sector_size),
             constants.message_size_max,
         );
         defer inspector.allocator.free(prepare_buffer);
@@ -629,14 +629,14 @@ const Inspector = struct {
 
         const headers_buffer = try inspector.allocator.alignedAlloc(
             u8,
-            constants.sector_size,
+            .fromByteUnits(constants.sector_size),
             constants.journal_size_headers,
         );
         defer inspector.allocator.free(headers_buffer);
 
         const prepare_buffer = try inspector.allocator.alignedAlloc(
             u8,
-            constants.sector_size,
+            .fromByteUnits(constants.sector_size),
             constants.message_size_max,
         );
         defer inspector.allocator.free(prepare_buffer);
@@ -684,7 +684,11 @@ const Inspector = struct {
         defer inspector.allocator.free(entries_block);
 
         const reply_sector =
-            try inspector.allocator.alignedAlloc(u8, constants.sector_size, constants.sector_size);
+            try inspector.allocator.alignedAlloc(
+                u8,
+                .fromByteUnits(constants.sector_size),
+                constants.sector_size,
+            );
         defer inspector.allocator.free(reply_sector);
 
         const entries =
@@ -736,7 +740,7 @@ const Inspector = struct {
 
         const reply = try inspector.allocator.alignedAlloc(
             u8,
-            constants.sector_size,
+            .fromByteUnits(constants.sector_size),
             constants.message_size_max,
         );
         defer inspector.allocator.free(reply);
@@ -784,7 +788,7 @@ const Inspector = struct {
         const free_set_blocks_acquired_buffer =
             try inspector.allocator.alignedAlloc(
                 u8,
-                @alignOf(vsr.FreeSet.Word),
+                .fromByteUnits(@alignOf(vsr.FreeSet.Word)),
                 free_set_blocks_acquired_size,
             );
         defer inspector.allocator.free(free_set_blocks_acquired_buffer);
@@ -797,12 +801,12 @@ const Inspector = struct {
                     constants.block_size - @sizeOf(vsr.Header),
                 ),
             );
-        defer free_set_blocks_acquired_addresses.deinit();
+        defer free_set_blocks_acquired_addresses.deinit(inspector.allocator);
 
         const free_set_blocks_released_buffer =
             try inspector.allocator.alignedAlloc(
                 u8,
-                @alignOf(vsr.FreeSet.Word),
+                .fromByteUnits(@alignOf(vsr.FreeSet.Word)),
                 free_set_blocks_released_size,
             );
         defer inspector.allocator.free(free_set_blocks_released_buffer);
@@ -815,7 +819,7 @@ const Inspector = struct {
                     constants.block_size - @sizeOf(vsr.Header),
                 ),
             );
-        defer free_set_blocks_released_addresses.deinit();
+        defer free_set_blocks_released_addresses.deinit(inspector.allocator);
 
         try inspector.read_free_set_bitset(
             output,
@@ -1016,9 +1020,8 @@ const Inspector = struct {
             manifest_block_checksum = manifest_metadata.previous_manifest_block_checksum;
         }
 
-        var tables_filtered =
-            std.ArrayList(schema.ManifestNode.TableInfo).init(inspector.allocator);
-        defer tables_filtered.deinit();
+        var tables_filtered = std.ArrayList(schema.ManifestNode.TableInfo).empty;
+        defer tables_filtered.deinit(inspector.allocator);
 
         // Construct a list of only the tables matching the `filter`.
         var tables_latest_iterator = tables_latest.iterator();
@@ -1028,7 +1031,7 @@ const Inspector = struct {
             if (filter.level) |level| {
                 if (table.label.level != level) continue;
             }
-            try tables_filtered.append(table);
+            try tables_filtered.append(inspector.allocator, table);
         }
 
         // Order the tables in a predictable way, since the manifest log can shuffle them around.
@@ -1165,7 +1168,7 @@ const Inspector = struct {
             inspector.allocator,
             free_set_block_count,
         );
-        defer free_set_block_references.deinit();
+        defer free_set_block_references.deinit(inspector.allocator);
 
         if (free_set_size > 0) {
             // Read free set from the grid by manually following the linked list of blocks.

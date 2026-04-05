@@ -118,7 +118,7 @@ pub fn main() !void {
     }
 
     var tracer = try Tracer.init(gpa, time, .unknown, .{
-        .writer = if (trace_file) |file| file.writer().any() else null,
+        .writer = if (trace_file) |file| file.deprecatedWriter().any() else null,
         .statsd_options = if (statsd_address) |address| .{
             .udp = .{
                 .io = &io,
@@ -179,7 +179,7 @@ fn command_version(gpa: mem.Allocator, verbose: bool) !void {
     var stdout_writer = stdout_buffer.writer();
     const stdout = stdout_writer.any();
 
-    try std.fmt.format(stdout, "TigerBeetle version {}\n", .{constants.semver});
+    try std.fmt.format(stdout, "TigerBeetle version {f}\n", .{constants.semver});
 
     if (verbose) {
         try stdout.writeAll("\n");
@@ -638,9 +638,9 @@ fn print_value(
 
     switch (@typeInfo(@TypeOf(value))) {
         .@"fn" => {}, // Ignore the log() function.
-        .pointer => try std.fmt.format(writer, "{s}=\"{s}\"\n", .{
+        .pointer => try std.fmt.format(writer, "{s}=\"{f}\"\n", .{
             field,
-            std.fmt.fmtSliceEscapeLower(value),
+            std.zig.fmtString(value),
         }),
         else => try std.fmt.format(writer, "{s}={any}\n", .{
             field,
