@@ -122,9 +122,13 @@ describe_output="$(wait_for_runtime_ready)"
 expect_contains "$describe_output" "stdx.zeroed"
 expect_contains "$describe_output" "vsr.sector_ceil"
 expect_contains "$describe_output" "vsr.quorums"
+expect_contains "$describe_output" "repl.completion.Completion.split_and_complete"
+expect_contains "$describe_output" "cdc.amqp.protocol.Decoder.init"
+expect_contains "$describe_output" "cdc.amqp.protocol.Decoder.read_short_string"
 
 expect_eval_value 'stdx.zeroed("abc")' "false"
 expect_eval_value 'vsr.sector_ceil(1)' "4096"
 expect_eval_value 'vsr.quorums(3).replication' "2"
+expect_eval_value 'cdc.amqp.protocol.Decoder.read_short_string(cdc.amqp.protocol.Decoder.init([3,97,98,99]))' '"abc"'
 
 echo "hot smoke test passed"
