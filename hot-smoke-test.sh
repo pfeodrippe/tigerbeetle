@@ -70,12 +70,16 @@ wait_for_hot_config_file() {
 validate_decl_graph_semantic_edges() {
   local protocol_file="$ROOT_DIR/src/cdc/amqp/protocol.zig"
   local stdx_file="$ROOT_DIR/src/stdx/stdx.zig"
+  local trace_file="$ROOT_DIR/src/trace.zig"
+  local trace_event_file="$ROOT_DIR/src/trace/event.zig"
   local vsr_file="$ROOT_DIR/src/vsr.zig"
   local main_file="$ROOT_DIR/src/tigerbeetle/main.zig"
 
   if ! awk -F '\t' \
     -v protocol_file="$protocol_file" \
     -v stdx_file="$stdx_file" \
+    -v trace_file="$trace_file" \
+    -v trace_event_file="$trace_event_file" \
     -v vsr_file="$vsr_file" \
     -v main_file="$main_file" '
     $1 == "decl-node" && $4 == protocol_file && $5 == "Decoder.read_short_string" {
@@ -101,6 +105,15 @@ validate_decl_graph_semantic_edges() {
     }
     $1 == "decl-node" && $4 == stdx_file && $5 == "div_ceil" {
       div_ceil_key = $2
+    }
+    $1 == "decl-node" && $4 == trace_file && $5 == "gauge" {
+      gauge_key = $2
+    }
+    $1 == "decl-node" && $4 == trace_file && $5 == "count" {
+      count_key = $2
+    }
+    $1 == "decl-node" && $4 == trace_event_file && $5 == "EventMetric" {
+      event_metric_key = $2
     }
     $1 == "decl-node" && $4 == main_file && $5 == "log_runtime" {
       log_runtime_key = $2
@@ -159,6 +172,18 @@ validate_decl_graph_semantic_edges() {
         print "error: missing declaration graph node for stdx.div_ceil" > "/dev/stderr"
         exit 1
       }
+      if (gauge_key == "") {
+        print "error: missing declaration graph node for gauge" > "/dev/stderr"
+        exit 1
+      }
+      if (count_key == "") {
+        print "error: missing declaration graph node for count" > "/dev/stderr"
+        exit 1
+      }
+      if (event_metric_key == "") {
+        print "error: missing declaration graph node for EventMetric" > "/dev/stderr"
+        exit 1
+      }
       if (log_runtime_key == "") {
         print "error: missing declaration graph node for log_runtime" > "/dev/stderr"
         exit 1
@@ -189,6 +214,14 @@ validate_decl_graph_semantic_edges() {
       }
       if (!((quorums_key SUBSEP div_ceil_key) in calls)) {
         print "error: missing declaration graph calls edge: quorums -> stdx.div_ceil" > "/dev/stderr"
+        exit 1
+      }
+      if (!((gauge_key SUBSEP event_metric_key) in type_dep)) {
+        print "error: missing declaration graph type_dep edge: gauge -> EventMetric" > "/dev/stderr"
+        exit 1
+      }
+      if (!((count_key SUBSEP event_metric_key) in type_dep)) {
+        print "error: missing declaration graph type_dep edge: count -> EventMetric" > "/dev/stderr"
         exit 1
       }
       if (!((log_runtime_key SUBSEP log_level_runtime_key) in reads)) {
