@@ -19,11 +19,6 @@ else
   }
 fi
 
-if [[ ! -f "$HOT_CONFIG_FILE" ]]; then
-  echo "error: missing hot config at $HOT_CONFIG_FILE" >&2
-  exit 1
-fi
-
 LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm@20 2>/dev/null || true)}"
 LLD_PREFIX="${LLD_PREFIX:-$(brew --prefix lld@20 2>/dev/null || true)}"
 ZSTD_PREFIX="${ZSTD_PREFIX:-$(brew --prefix zstd 2>/dev/null || true)}"
@@ -56,6 +51,19 @@ wait_for_port_file() {
   done
 
   echo "error: timed out waiting for $PORT_FILE" >&2
+  exit 1
+}
+
+wait_for_hot_config_file() {
+  local deadline=$((SECONDS + 120))
+  while (( SECONDS < deadline )); do
+    if [[ -f "$HOT_CONFIG_FILE" ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "error: missing hot config at $HOT_CONFIG_FILE" >&2
   exit 1
 }
 
@@ -116,6 +124,7 @@ expect_eval_value() {
   expect_contains "$output" "  done"
 }
 
+wait_for_hot_config_file
 wait_for_port_file
 
 describe_output="$(wait_for_runtime_ready)"
