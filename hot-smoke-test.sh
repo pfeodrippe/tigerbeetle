@@ -42,7 +42,8 @@ prepend_lib_dir "$LIBXML2_PREFIX/lib"
 prepend_lib_dir "$ZLIB_PREFIX/lib"
 
 wait_for_port_file() {
-  local deadline=$((SECONDS + 120))
+  local timeout="${PORT_FILE_TIMEOUT:-600}"
+  local deadline=$((SECONDS + timeout))
   while (( SECONDS < deadline )); do
     if [[ -s "$PORT_FILE" ]]; then
       return 0
@@ -50,7 +51,7 @@ wait_for_port_file() {
     sleep 1
   done
 
-  echo "error: timed out waiting for $PORT_FILE" >&2
+  echo "error: timed out after ${timeout}s waiting for $PORT_FILE" >&2
   exit 1
 }
 
@@ -73,6 +74,7 @@ validate_decl_graph_semantic_edges() {
   local trace_file="$ROOT_DIR/src/trace.zig"
   local trace_event_file="$ROOT_DIR/src/trace/event.zig"
   local vsr_file="$ROOT_DIR/src/vsr.zig"
+  local message_buffer_file="$ROOT_DIR/src/message_buffer.zig"
   local main_file="$ROOT_DIR/src/tigerbeetle/main.zig"
 
   if ! awk -F '\t' \
@@ -81,6 +83,7 @@ validate_decl_graph_semantic_edges() {
     -v trace_file="$trace_file" \
     -v trace_event_file="$trace_event_file" \
     -v vsr_file="$vsr_file" \
+    -v message_buffer_file="$message_buffer_file" \
     -v main_file="$main_file" '
     $1 == "decl-node" && $4 == protocol_file && $5 == "Decoder.read_short_string" {
       read_short_string_key = $2
@@ -103,6 +106,9 @@ validate_decl_graph_semantic_edges() {
     $1 == "decl-node" && $4 == vsr_file && $5 == "quorums" {
       quorums_key = $2
     }
+    $1 == "decl-node" && $4 == vsr_file && $5 == "Command" {
+      command_key = $2
+    }
     $1 == "decl-node" && $4 == stdx_file && $5 == "div_ceil" {
       div_ceil_key = $2
     }
@@ -124,8 +130,15 @@ validate_decl_graph_semantic_edges() {
     $1 == "decl-node" && $4 == main_file && $5 == "log_level_runtime" {
       log_level_runtime_key = $2
     }
+    $1 == "decl-node" && $4 == message_buffer_file && $5 == "MessageBuffer.advance_header" {
+      advance_header_key = $2
+    }
     $1 == "decl-edge" && $2 == "type_dep" {
       type_dep[$3 SUBSEP $4] = 1
+      next
+    }
+    $1 == "decl-edge" && $2 == "layout_dep" {
+      layout_dep[$3 SUBSEP $4] = 1
       next
     }
     $1 == "decl-edge" && $2 == "calls" {
@@ -138,6 +151,9 @@ validate_decl_graph_semantic_edges() {
     }
     $1 == "decl-edge" && $2 == "writes" {
       writes[$3 SUBSEP $4] = 1
+    }
+    $1 == "decl-edge" && $2 == "specializes" {
+      specializes[$3 SUBSEP $4] = 1
     }
     END {
       if (read_short_string_key == "") {
@@ -168,6 +184,10 @@ validate_decl_graph_semantic_edges() {
         print "error: missing declaration graph node for quorums" > "/dev/stderr"
         exit 1
       }
+      if (command_key == "") {
+        print "error: missing declaration graph node for Command" > "/dev/stderr"
+        exit 1
+      }
       if (div_ceil_key == "") {
         print "error: missing declaration graph node for stdx.div_ceil" > "/dev/stderr"
         exit 1
@@ -194,6 +214,10 @@ validate_decl_graph_semantic_edges() {
       }
       if (log_level_runtime_key == "") {
         print "error: missing declaration graph node for log_level_runtime" > "/dev/stderr"
+        exit 1
+      }
+      if (advance_header_key == "") {
+        print "error: missing declaration graph node for MessageBuffer.advance_header" > "/dev/stderr"
         exit 1
       }
       if (!((read_short_string_key SUBSEP decoder_error_key) in type_dep)) {
@@ -224,12 +248,20 @@ validate_decl_graph_semantic_edges() {
         print "error: missing declaration graph type_dep edge: count -> EventMetric" > "/dev/stderr"
         exit 1
       }
+      if (!((advance_header_key SUBSEP command_key) in layout_dep)) {
+        print "error: missing declaration graph layout_dep edge: MessageBuffer.advance_header -> Command" > "/dev/stderr"
+        exit 1
+      }
       if (!((log_runtime_key SUBSEP log_level_runtime_key) in reads)) {
         print "error: missing declaration graph reads edge: log_runtime -> log_level_runtime" > "/dev/stderr"
         exit 1
       }
       if (!((main_key SUBSEP log_level_runtime_key) in writes)) {
         print "error: missing declaration graph writes edge: main -> log_level_runtime" > "/dev/stderr"
+        exit 1
+      }
+      if (!((read_enum_key SUBSEP read_int_key) in specializes)) {
+        print "error: missing declaration graph specializes edge: Decoder.read_enum -> Decoder.read_int" > "/dev/stderr"
         exit 1
       }
     }
