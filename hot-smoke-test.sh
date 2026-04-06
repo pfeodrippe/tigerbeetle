@@ -344,4 +344,19 @@ expect_eval_value 'vsr.sector_ceil(1)' "4096"
 expect_eval_value 'vsr.quorums(3).replication' "2"
 expect_eval_value 'cdc.amqp.protocol.Decoder.read_short_string(cdc.amqp.protocol.Decoder.init([3,97,98,99]))' '"abc"'
 
+# ── Real TigerBeetle function compile-body tests ──────────────────────
+
+# zeroed — for loop with bitwise OR over bytes (no cross-module calls)
+zeroed_output="$(zig_hot compile-body src/stdx/stdx.zig zeroed 2>&1)"
+expect_contains "$zeroed_output" "instructions:"
+
+# Duration.to_ms — cross-module import resolution (std.time.ns_per_ms) — Phase 8
+to_ms_output="$(zig_hot compile-body src/stdx/time_units.zig to_ms 2>&1 || true)"
+expect_contains "$to_ms_output" "instructions:"
+echo "to_ms compiles: ${to_ms_output:0:80}"
+
+# Duration.min — @min builtin on struct fields (no cross-module calls)
+dur_min_output="$(zig_hot compile-body src/stdx/time_units.zig min 2>&1)"
+expect_contains "$dur_min_output" "instructions:"
+
 echo "hot smoke test passed"
