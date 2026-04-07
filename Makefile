@@ -37,7 +37,7 @@ hot-stop:
 			kill -KILL "$$pid" 2>/dev/null || true; \
 		fi; \
 	fi; \
-	rm -f "$(HOT_PORT_FILE)" "$(HOT_LOG)" "$(HOT_PID)" "$(HOT_STDIN)" "$(HOT_STDIN_PID)"
+	rm -f "$(HOT_PORT_FILE)" "$(HOT_PID)" "$(HOT_STDIN)" "$(HOT_STDIN_PID)"
 .PHONY: hot-stop
 
 hot-run: hot-stop

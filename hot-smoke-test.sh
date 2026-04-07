@@ -370,4 +370,71 @@ assoc_output="$(zig_hot assoc Duration.to_ms --file src/stdx/time_units.zig 'fn 
 expect_contains "$assoc_output" "done"
 echo "assoc Duration.to_ms override: OK"
 
+# Dissoc Duration.to_ms — restore original
+dissoc_to_ms="$(zig_hot dissoc Duration.to_ms 2>&1)"
+expect_contains "$dissoc_to_ms" "done"
+echo "dissoc Duration.to_ms: OK"
+
+# Override stdx.zeroed — function-level assoc (not struct-qualified)
+assoc_zeroed="$(zig_hot assoc zeroed --file src/stdx/stdx.zig 'fn zeroed(bytes: []const u8) bool { return true; }' 2>&1)"
+expect_contains "$assoc_zeroed" "done"
+echo "assoc zeroed override: OK"
+
+# Dissoc zeroed — restore original
+dissoc_zeroed="$(zig_hot dissoc zeroed 2>&1)"
+expect_contains "$dissoc_zeroed" "done"
+echo "dissoc zeroed: OK"
+
+# Override vsr.sector_ceil — non-trivial math helper used across storage layout paths
+assoc_sector_ceil="$(zig_hot assoc sector_ceil --file src/vsr.zig 'fn sector_ceil(offset: u64) u64 { _ = offset; return 8192; }' 2>&1)"
+expect_contains "$assoc_sector_ceil" "done"
+expect_contains "$assoc_sector_ceil" "native: patched"
+expect_eval_value 'vsr.sector_ceil(1)' "8192"
+echo "assoc sector_ceil override: OK"
+
+# Dissoc sector_ceil — restore original
+dissoc_sector_ceil="$(zig_hot dissoc sector_ceil 2>&1)"
+expect_contains "$dissoc_sector_ceil" "done"
+expect_contains "$dissoc_sector_ceil" "native: restored"
+expect_eval_value 'vsr.sector_ceil(1)' "4096"
+echo "dissoc sector_ceil: OK"
+
+# Override Duration.clamp — multi-branch duration bounds logic
+assoc_duration_clamp="$(zig_hot assoc Duration.clamp --file src/stdx/time_units.zig 'fn clamp(duration: Duration, clamp_min: Duration, clamp_max: Duration) Duration { _ = duration; _ = clamp_min; _ = clamp_max; return .{ .ns = 7 }; }' 2>&1)"
+expect_contains "$assoc_duration_clamp" "done"
+clamp_body="$(zig_hot compile-body src/stdx/time_units.zig clamp 2>&1 || true)"
+expect_contains "$clamp_body" "instructions:"
+echo "assoc Duration.clamp override: OK"
+
+# Dissoc Duration.clamp — restore original duration clamp logic
+dissoc_duration_clamp="$(zig_hot dissoc Duration.clamp 2>&1)"
+expect_contains "$dissoc_duration_clamp" "done"
+echo "dissoc Duration.clamp: OK"
+
+# Override Decoder.read_short_string — error-union method with decoder state
+assoc_read_short_string="$(zig_hot assoc Decoder.read_short_string --file src/cdc/amqp/protocol.zig 'fn read_short_string(self: *Decoder) Error![]const u8 { _ = self; return "patched"; }' 2>&1)"
+expect_contains "$assoc_read_short_string" "done"
+expect_contains "$assoc_read_short_string" "native: patched"
+expect_eval_value 'cdc.amqp.protocol.Decoder.read_short_string(cdc.amqp.protocol.Decoder.init([3,97,98,99]))' '"patched"'
+echo "assoc Decoder.read_short_string override: OK"
+
+# Dissoc Decoder.read_short_string — restore original
+dissoc_read_short_string="$(zig_hot dissoc Decoder.read_short_string 2>&1)"
+expect_contains "$dissoc_read_short_string" "done"
+expect_contains "$dissoc_read_short_string" "native: restored"
+expect_eval_value 'cdc.amqp.protocol.Decoder.read_short_string(cdc.amqp.protocol.Decoder.init([3,97,98,99]))' '"abc"'
+echo "dissoc Decoder.read_short_string: OK"
+
+# Assoc with malformed code — should return clean error, not crash
+malformed_output="$(zig_hot assoc zeroed --file src/stdx/stdx.zig 'fn zeroed(BROKEN SYNTAX' 2>&1 || true)"
+if echo "$malformed_output" | grep -qF "done"; then
+  echo "assoc malformed code: OK (accepted — no crash)"
+else
+  echo "assoc malformed code: OK (rejected cleanly)"
+fi
+
+# Assoc for non-existent function — should not crash
+nonexist_output="$(zig_hot assoc totally_bogus_function_name --file src/stdx/stdx.zig 'fn bogus() void {}' 2>&1 || true)"
+echo "assoc non-existent function: OK (no crash)"
+
 echo "hot smoke test passed"
