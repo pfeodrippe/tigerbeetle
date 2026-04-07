@@ -350,6 +350,10 @@ expect_eval_value 'cdc.amqp.protocol.Decoder.read_short_string(cdc.amqp.protocol
 zeroed_output="$(zig_hot compile-body src/stdx/stdx.zig zeroed 2>&1)"
 expect_contains "$zeroed_output" "instructions:"
 
+# sector_ceil with arg 0 — should return 0
+sector0_output="$(zig_hot compile-body src/vsr.zig sector_ceil 0 2>&1 || true)"
+echo "sector_ceil(0) output: ${sector0_output:0:80}"
+
 # Duration.to_ms — cross-module import resolution (std.time.ns_per_ms) — Phase 8
 to_ms_output="$(zig_hot compile-body src/stdx/time_units.zig to_ms 2>&1 || true)"
 expect_contains "$to_ms_output" "instructions:"
@@ -358,5 +362,12 @@ echo "to_ms compiles: ${to_ms_output:0:80}"
 # Duration.min — @min builtin on struct fields (no cross-module calls)
 dur_min_output="$(zig_hot compile-body src/stdx/time_units.zig min 2>&1)"
 expect_contains "$dur_min_output" "instructions:"
+
+# ── Assoc override end-to-end tests ─────────────────────────────────
+
+# Override Duration.to_ms — qualified with struct name and file
+assoc_output="$(zig_hot assoc Duration.to_ms --file src/stdx/time_units.zig 'fn to_ms(duration: Duration) u64 { return 42; }' 2>&1)"
+expect_contains "$assoc_output" "done"
+echo "assoc Duration.to_ms override: OK"
 
 echo "hot smoke test passed"
