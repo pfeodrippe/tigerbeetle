@@ -388,11 +388,28 @@ expect_contains "$describe_output" "vsr.quorums"
 expect_contains "$describe_output" "repl.completion.Completion.split_and_complete"
 expect_contains "$describe_output" "cdc.amqp.protocol.Decoder.init"
 expect_contains "$describe_output" "cdc.amqp.protocol.Decoder.read_short_string"
+expect_contains "$describe_output" "vsr.tb_client.exports.register_log_callback"
 
 expect_eval_value 'stdx.zeroed("abc")' "false"
 expect_eval_value 'vsr.sector_ceil(1)' "4096"
 expect_eval_value 'vsr.quorums(3).replication' "2"
 expect_eval_value 'cdc.amqp.protocol.Decoder.read_short_string(cdc.amqp.protocol.Decoder.init([3,97,98,99]))' '"abc"'
+
+register_log_reset="$(run_hot --eval 'vsr.tb_client.exports.register_log_callback(null, false)')"
+expect_hot_success "$register_log_reset"
+if grep -Fq "value: .success" <<<"$register_log_reset"; then
+  expect_eval_value 'vsr.tb_client.exports.register_log_callback(null, false)' ".not_registered"
+else
+  expect_contains "$register_log_reset" "value: .not_registered"
+fi
+
+assoc_register_log_callback="$(zig_hot assoc --no-native register_log_callback --file src/clients/c/tb_client_exports.zig 'fn register_log_callback(callback_maybe: ?Logging.Callback, debug: bool) callconv(.c) tb_register_log_callback_status { _ = callback_maybe; _ = debug; return .already_registered; }' 2>&1)"
+expect_hot_success "$assoc_register_log_callback"
+expect_eval_value 'vsr.tb_client.exports.register_log_callback(null, false)' ".already_registered"
+dissoc_register_log_callback="$(zig_hot dissoc vsr.tb_client.exports.register_log_callback 2>&1)"
+expect_hot_success "$dissoc_register_log_callback"
+expect_eval_value 'vsr.tb_client.exports.register_log_callback(null, false)' ".not_registered"
+echo "short-name TigerBeetle C export assoc maps to qualified callable: OK"
 
 # ── Real TigerBeetle function compile-body tests ──────────────────────
 
