@@ -76,6 +76,7 @@ validate_decl_graph_semantic_edges() {
   local vsr_file="$ROOT_DIR/src/vsr.zig"
   local message_buffer_file="$ROOT_DIR/src/message_buffer.zig"
   local main_file="$ROOT_DIR/src/tigerbeetle/main.zig"
+  local config_file="$ROOT_DIR/src/config.zig"
 
   if ! awk -F '\t' \
     -v protocol_file="$protocol_file" \
@@ -84,7 +85,8 @@ validate_decl_graph_semantic_edges() {
     -v trace_event_file="$trace_event_file" \
     -v vsr_file="$vsr_file" \
     -v message_buffer_file="$message_buffer_file" \
-    -v main_file="$main_file" '
+    -v main_file="$main_file" \
+    -v config_file="$config_file" '
     $1 == "decl-node" && $4 == protocol_file && $5 == "Decoder.read_short_string" {
       read_short_string_key = $2
     }
@@ -133,6 +135,12 @@ validate_decl_graph_semantic_edges() {
     $1 == "decl-node" && $4 == message_buffer_file && $5 == "MessageBuffer.advance_header" {
       advance_header_key = $2
     }
+    $1 == "decl-node" && $4 == config_file && $5 == "build_options" {
+      build_options_key = $2
+    }
+    $1 == "decl-node" && $4 == config_file && $5 == "configs.current" {
+      configs_current_key = $2
+    }
     $1 == "decl-edge" && $2 == "type_dep" {
       type_dep[$3 SUBSEP $4] = 1
       next
@@ -151,6 +159,9 @@ validate_decl_graph_semantic_edges() {
     }
     $1 == "decl-edge" && $2 == "writes" {
       writes[$3 SUBSEP $4] = 1
+    }
+    $1 == "decl-edge" && $2 == "comptime_dep" {
+      comptime_dep[$3 SUBSEP $4] = 1
     }
     $1 == "decl-edge" && $2 == "specializes" {
       specializes[$3 SUBSEP $4] = 1
@@ -220,6 +231,14 @@ validate_decl_graph_semantic_edges() {
         print "error: missing declaration graph node for MessageBuffer.advance_header" > "/dev/stderr"
         exit 1
       }
+      if (build_options_key == "") {
+        print "error: missing declaration graph node for config.build_options" > "/dev/stderr"
+        exit 1
+      }
+      if (configs_current_key == "") {
+        print "error: missing declaration graph node for configs.current" > "/dev/stderr"
+        exit 1
+      }
       if (!((read_short_string_key SUBSEP decoder_error_key) in type_dep)) {
         print "error: missing declaration graph type_dep edge: Decoder.read_short_string -> Decoder.Error" > "/dev/stderr"
         exit 1
@@ -260,6 +279,10 @@ validate_decl_graph_semantic_edges() {
         print "error: missing declaration graph writes edge: main -> log_level_runtime" > "/dev/stderr"
         exit 1
       }
+      if (!((configs_current_key SUBSEP build_options_key) in comptime_dep)) {
+        print "error: missing declaration graph comptime_dep edge: configs.current -> build_options" > "/dev/stderr"
+        exit 1
+      }
       if (!((read_enum_key SUBSEP read_int_key) in specializes)) {
         print "error: missing declaration graph specializes edge: Decoder.read_enum -> Decoder.read_int" > "/dev/stderr"
         exit 1
@@ -288,6 +311,19 @@ expect_contains() {
   if ! grep -Fq "$needle" <<<"$haystack"; then
     echo "error: expected output to contain: $needle" >&2
     echo "$haystack" >&2
+    exit 1
+  fi
+}
+
+expect_hot_success() {
+  local output="$1"
+  expect_contains "$output" "status:"
+  expect_contains "$output" "  done"
+  if grep -Fq "err:" <<<"$output" ||
+    grep -Fq "  error" <<<"$output" ||
+    grep -Fq "  eval-error" <<<"$output"; then
+    echo "error: expected successful hot command" >&2
+    echo "$output" >&2
     exit 1
   fi
 }
@@ -327,11 +363,25 @@ expect_eval_value() {
   expect_contains "$output" "  done"
 }
 
+expect_call_value() {
+  local symbol="$1"
+  local expected="$2"
+  shift 2
+
+  local output
+  output="$(run_hot call "$symbol" "$@")"
+  expect_contains "$output" "value: $expected"
+  expect_contains "$output" "status:"
+  expect_contains "$output" "  done"
+}
+
 wait_for_hot_config_file
-validate_decl_graph_semantic_edges
 wait_for_port_file
 
 describe_output="$(wait_for_runtime_ready)"
+# The config file exists before the hot graph is fully flushed; wait for the
+# runtime to come up before asserting on the finished declaration graph.
+validate_decl_graph_semantic_edges
 expect_contains "$describe_output" "stdx.zeroed"
 expect_contains "$describe_output" "vsr.sector_ceil"
 expect_contains "$describe_output" "vsr.quorums"
@@ -350,18 +400,61 @@ expect_eval_value 'cdc.amqp.protocol.Decoder.read_short_string(cdc.amqp.protocol
 zeroed_output="$(zig_hot compile-body src/stdx/stdx.zig zeroed 2>&1)"
 expect_contains "$zeroed_output" "instructions:"
 
+# classify — top-level extern container declarations should expose a reason
+classify_aof_output="$(zig_hot classify src/aof.zig 2>&1)"
+expect_contains "$classify_aof_output" "AOFEntry"
+expect_contains "$classify_aof_output" "reason=extern-container"
+
+invalidate_header_output="$(zig_hot invalidate src/vsr/message_header.zig 2>&1)"
+expect_contains "$invalidate_header_output" "impact:"
+expect_contains "$invalidate_header_output" "decl-key=owner=vsr;file=$ROOT_DIR/src/lsm/schema.zig;decl=block_body_size;kind=const_decl reason=comptime_dep"
+expect_contains "$invalidate_header_output" "decl-key=owner=vsr;file=$ROOT_DIR/src/lsm/schema.zig;decl=header_from_block;kind=function_decl reason=layout_dep"
+
 # sector_ceil with arg 0 — should return 0
 sector0_output="$(zig_hot compile-body src/vsr.zig sector_ceil 0 2>&1 || true)"
 echo "sector_ceil(0) output: ${sector0_output:0:80}"
 
-# Duration.to_ms — cross-module import resolution (std.time.ns_per_ms) — Phase 8
+# Duration.to_ms — cross-module import resolution plus default struct-param execution
 to_ms_output="$(zig_hot compile-body src/stdx/time_units.zig to_ms 2>&1 || true)"
 expect_contains "$to_ms_output" "instructions:"
+expect_contains "$to_ms_output" "value: 0"
+expect_contains "$to_ms_output" "  done"
 echo "to_ms compiles: ${to_ms_output:0:80}"
 
 # Duration.min — @min builtin on struct fields (no cross-module calls)
 dur_min_output="$(zig_hot compile-body src/stdx/time_units.zig min 2>&1)"
 expect_contains "$dur_min_output" "instructions:"
+
+# ── Runtime-addressable var proof ───────────────────────────────────────
+
+assoc_command_version_probe="$(zig_hot assoc --no-native command_version --file src/tigerbeetle/main.zig 'fn command_version(gpa: mem.Allocator, verbose: bool) !void { _ = gpa; _ = verbose; return if (@intFromEnum(log_level_runtime) == 2) 0 else 1; }' 2>&1)"
+expect_hot_success "$assoc_command_version_probe"
+echo "assoc command_version value-cell probe: OK"
+
+assoc_log_level_info="$(zig_hot assoc --type var --no-native log_level_runtime 2 2>&1)"
+expect_hot_success "$assoc_log_level_info"
+log_level_probe_info="$(zig_hot compile-body ../../test/hot/project_call_probe.zig tigerbeetleCommandVersion 2>&1)"
+expect_hot_success "$log_level_probe_info"
+expect_contains "$log_level_probe_info" "value: 0"
+echo "assoc log_level_runtime runtime_addressable var -> info: OK"
+
+assoc_log_level_debug="$(zig_hot assoc --type var --no-native log_level_runtime 3 2>&1)"
+expect_hot_success "$assoc_log_level_debug"
+log_level_probe_debug="$(zig_hot compile-body ../../test/hot/project_call_probe.zig tigerbeetleCommandVersion 2>&1)"
+expect_hot_success "$log_level_probe_debug"
+expect_contains "$log_level_probe_debug" "value: 1"
+echo "assoc log_level_runtime runtime_addressable var -> debug: OK"
+
+assoc_log_level_restore="$(zig_hot assoc --type var --no-native log_level_runtime 2 2>&1)"
+expect_hot_success "$assoc_log_level_restore"
+log_level_probe_restore="$(zig_hot compile-body ../../test/hot/project_call_probe.zig tigerbeetleCommandVersion 2>&1)"
+expect_hot_success "$log_level_probe_restore"
+expect_contains "$log_level_probe_restore" "value: 0"
+dissoc_command_version_probe="$(zig_hot dissoc command_version 2>&1)"
+expect_hot_success "$dissoc_command_version_probe"
+dissoc_log_level_runtime="$(zig_hot dissoc log_level_runtime 2>&1)"
+expect_hot_success "$dissoc_log_level_runtime"
+echo "dissoc command_version probe and log_level_runtime override: OK"
 
 # ── Assoc override end-to-end tests ─────────────────────────────────
 
