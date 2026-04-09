@@ -93,6 +93,15 @@ hot-run: hot-stop
 hot-test: hot-stop
 	@mkdir -p "$(dir $(HOT_LOG))"
 	@bash -lc 'set -euo pipefail; \
+		clean_dir() { \
+			local path="$$1"; \
+			if [ -e "$$path" ]; then \
+				echo "clean\t$$path"; \
+				rm -rf "$$path"; \
+			fi; \
+		}; \
+		clean_dir "$(REPO_ROOT)/.zig-cache"; \
+		clean_dir "$(REPO_ROOT)/zig-out"; \
 		zig_bin="$(HOT_ZIG)"; \
 		if [[ "$$zig_bin" == */* ]]; then \
 			[[ -x "$$zig_bin" ]] || { echo "error: missing HOT_ZIG at $$zig_bin" >&2; exit 1; }; \
