@@ -391,6 +391,14 @@ expect_contains "$describe_output" "cdc.amqp.protocol.Decoder.read_short_string"
 expect_contains "$describe_output" "vsr.tb_client.exports.register_log_callback"
 expect_contains "$describe_output" "multiversion.ReleaseTriple.parse"
 
+# Fresh-runtime probes must work before any reload or runtime var override seeds
+# managed state for these graphs.
+to_ms_output="$(zig_hot compile-body src/stdx/time_units.zig to_ms 2>&1 || true)"
+expect_hot_success "$to_ms_output"
+expect_contains "$to_ms_output" "instructions:"
+expect_contains "$to_ms_output" "value: 0"
+echo "cold-start Duration.to_ms compile-body: OK"
+
 expect_eval_value 'stdx.zeroed("abc")' "false"
 expect_eval_value 'vsr.sector_ceil(1)' "4096"
 expect_eval_value 'vsr.quorums(3).replication' "2"
@@ -456,22 +464,20 @@ expect_contains "$invalidate_header_output" "decl-key=owner=vsr;file=$ROOT_DIR/s
 sector0_output="$(zig_hot compile-body src/vsr.zig sector_ceil 0 2>&1 || true)"
 echo "sector_ceil(0) output: ${sector0_output:0:80}"
 
-# Duration.to_ms — cross-module import resolution plus default struct-param execution
-to_ms_output="$(zig_hot compile-body src/stdx/time_units.zig to_ms 2>&1 || true)"
-expect_contains "$to_ms_output" "instructions:"
-expect_contains "$to_ms_output" "value: 0"
-expect_contains "$to_ms_output" "  done"
-echo "to_ms compiles: ${to_ms_output:0:80}"
-
 # Duration.min — @min builtin on struct fields (no cross-module calls)
 dur_min_output="$(zig_hot compile-body src/stdx/time_units.zig min 2>&1)"
 expect_contains "$dur_min_output" "instructions:"
 
-# ── Runtime-addressable var proof ───────────────────────────────────────
+# ── Runtime-addressable var override proof ──────────────────────────────
 
 assoc_command_version_probe="$(zig_hot assoc --no-native command_version --file src/tigerbeetle/main.zig 'fn command_version(gpa: mem.Allocator, verbose: bool) !void { _ = gpa; _ = verbose; return if (@intFromEnum(log_level_runtime) == 2) 0 else 1; }' 2>&1)"
 expect_hot_success "$assoc_command_version_probe"
 echo "assoc command_version value-cell probe: OK"
+
+log_level_probe_cold="$(zig_hot compile-body ../../test/hot/project_call_probe.zig tigerbeetleCommandVersion 2>&1 || true)"
+expect_hot_success "$log_level_probe_cold"
+expect_contains "$log_level_probe_cold" "value: 0"
+echo "cold-start command_version reads log_level_runtime: OK"
 
 assoc_log_level_info="$(zig_hot assoc --type var --no-native log_level_runtime 2 2>&1)"
 expect_hot_success "$assoc_log_level_info"
