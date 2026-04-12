@@ -8,6 +8,7 @@ HOT_STDIN := $(REPO_ROOT)/.hot-run.stdin
 HOT_STDIN_PID := $(REPO_ROOT)/.hot-run.stdin.pid
 HOT_PORT_FILE := $(REPO_ROOT)/.nrepl-port
 HOT_CONFIG_FILE := $(REPO_ROOT)/zig-out/share/zig-hot/tigerbeetle.config
+HOT_TEST_CLEAN ?= 0
 
 hot-stop:
 	@set -eu; \
@@ -37,7 +38,7 @@ hot-stop:
 			kill -KILL "$$pid" 2>/dev/null || true; \
 		fi; \
 	fi; \
-	rm -f "$(HOT_PORT_FILE)" "$(HOT_PID)" "$(HOT_STDIN)" "$(HOT_STDIN_PID)"
+	rm -f "$(HOT_PORT_FILE)" "$(HOT_PID)" "$(HOT_STDIN)" "$(HOT_STDIN_PID)" "$(HOT_CONFIG_FILE)"
 .PHONY: hot-stop
 
 hot-run: hot-stop
@@ -70,7 +71,7 @@ hot-run: hot-stop
 		prepend_lib_dir "$$ZLIB_PREFIX/lib"; \
 		hot_env=(env DYLD_LIBRARY_PATH="$${DYLD_LIBRARY_PATH:-}"); \
 		if [[ -n "$(HOT_ZIG_LIB_DIR)" ]]; then hot_env+=(ZIG_LIB_DIR="$(HOT_ZIG_LIB_DIR)"); fi; \
-		rm -f "$(HOT_LOG)" "$(HOT_PID)" "$(HOT_PORT_FILE)" "$(HOT_STDIN)" "$(HOT_STDIN_PID)"; \
+		rm -f "$(HOT_LOG)" "$(HOT_PID)" "$(HOT_PORT_FILE)" "$(HOT_STDIN)" "$(HOT_STDIN_PID)" "$(HOT_CONFIG_FILE)"; \
 		if [[ ! -f "$(HOT_DB)" ]]; then \
 			(cd "$(REPO_ROOT)" && "$${hot_env[@]}" "$$zig_bin" build run -- format --cluster=0 --replica=0 --replica-count=1 --development "$(HOT_DB)") >/dev/null; \
 		fi; \
@@ -100,8 +101,10 @@ hot-test: hot-stop
 				rm -rf "$$path"; \
 			fi; \
 		}; \
-		clean_dir "$(REPO_ROOT)/.zig-cache"; \
-		clean_dir "$(REPO_ROOT)/zig-out"; \
+		if [ "$(HOT_TEST_CLEAN)" = "1" ]; then \
+			clean_dir "$(REPO_ROOT)/.zig-cache"; \
+			clean_dir "$(REPO_ROOT)/zig-out"; \
+		fi; \
 		zig_bin="$(HOT_ZIG)"; \
 		if [[ "$$zig_bin" == */* ]]; then \
 			[[ -x "$$zig_bin" ]] || { echo "error: missing HOT_ZIG at $$zig_bin" >&2; exit 1; }; \
@@ -129,7 +132,7 @@ hot-test: hot-stop
 		prepend_lib_dir "$$ZLIB_PREFIX/lib"; \
 		hot_env=(env DYLD_LIBRARY_PATH="$${DYLD_LIBRARY_PATH:-}"); \
 		if [[ -n "$(HOT_ZIG_LIB_DIR)" ]]; then hot_env+=(ZIG_LIB_DIR="$(HOT_ZIG_LIB_DIR)"); fi; \
-		rm -f "$(HOT_LOG)" "$(HOT_PID)" "$(HOT_PORT_FILE)" "$(HOT_STDIN)" "$(HOT_STDIN_PID)"; \
+		rm -f "$(HOT_LOG)" "$(HOT_PID)" "$(HOT_PORT_FILE)" "$(HOT_STDIN)" "$(HOT_STDIN_PID)" "$(HOT_CONFIG_FILE)"; \
 		cleanup() { "$(MAKE)" hot-stop >/dev/null 2>&1 || true; }; \
 		trap cleanup EXIT INT TERM; \
 		rm -f "$(HOT_DB)"; \
@@ -147,3 +150,7 @@ hot-test: hot-stop
 		PORT_FILE="$(HOT_PORT_FILE)" \
 		./hot-smoke-test.sh'
 .PHONY: hot-test
+
+hot-test-clean: HOT_TEST_CLEAN=1
+hot-test-clean: hot-test
+.PHONY: hot-test-clean
