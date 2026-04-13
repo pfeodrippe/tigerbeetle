@@ -518,6 +518,41 @@ dissoc_log_level_runtime="$(zig_hot dissoc log_level_runtime 2>&1)"
 expect_hot_success "$dissoc_log_level_runtime"
 echo "dissoc command_version probe and log_level_runtime override: OK"
 
+# ── Real TigerBeetle state_machine.zig frontier proofs ─────────────────────
+
+classify_state_machine_output="$(zig_hot classify src/state_machine.zig 2>&1)"
+expect_contains "$classify_state_machine_output" "name=StateMachineType.commit body-class=interpreter-ready live-path=dispatch-cell"
+expect_contains "$classify_state_machine_output" "name=StateMachineType.execute_multi_batch body-class=interpreter-ready live-path=dispatch-cell"
+expect_contains "$classify_state_machine_output" "name=StateMachineType.prepare_delta_nanoseconds body-class=interpreter-ready live-path=dispatch-cell"
+expect_contains "$classify_state_machine_output" "name=StateMachineType.tree_values_count body-class=interpreter-ready live-path=dispatch-cell"
+expect_contains "$classify_state_machine_output" "name=StateMachineType.reset body-class=native-only live-path=native-patch-candidate reason=pointer-deref"
+expect_contains "$classify_state_machine_output" "name=StateMachineType.execute_create body-class=native-only live-path=native-patch-candidate reason=reflection-builtin"
+expect_contains "$classify_state_machine_output" "name=StateMachineType.forest_open_callback body-class=native-only live-path=native-patch-candidate reason=parent-ptr-builtin"
+expect_contains "$classify_state_machine_output" "name=StateMachineType.execute_query_multi_batch body-class=native-only live-path=native-patch-candidate reason=defer-cleanup"
+expect_contains "$classify_state_machine_output" "name=tree_ids body-class=invalidate-dependents live-path=invalidate-only reason=struct-container boundary=versioned-only guidance=reload-dependents"
+expect_contains "$classify_state_machine_output" "name=sum_overflows body-class=interpreter-ready live-path=dispatch-cell"
+echo "state_machine.zig classify frontier: OK"
+
+state_machine_prefetch_finish="$(zig_hot compile-body src/state_machine.zig StateMachineType.prefetch_finish 2>&1)"
+expect_hot_success "$state_machine_prefetch_finish"
+expect_contains "$state_machine_prefetch_finish" "fn: StateMachineType.prefetch_finish"
+expect_contains "$state_machine_prefetch_finish" "value: error.unwrapped null optional"
+echo "state_machine.zig direct compile-body probe: OK"
+
+sum_overflows_baseline="$(run_hot eval-zig src/state_machine.zig 'sum_overflows(u64, 1, 2)')"
+expect_contains "$sum_overflows_baseline" "value: false"
+
+assoc_sum_overflows="$(zig_hot assoc --no-native sum_overflows --file src/state_machine.zig 'fn sum_overflows(comptime Int: type, a: Int, b: Int) bool { _ = Int; return a == 1 and b == 2; }' 2>&1)"
+expect_hot_success "$assoc_sum_overflows"
+sum_overflows_patched="$(run_hot eval-zig src/state_machine.zig 'sum_overflows(u64, 1, 2)')"
+expect_contains "$sum_overflows_patched" "value: true"
+
+dissoc_sum_overflows="$(zig_hot dissoc sum_overflows 2>&1)"
+expect_hot_success "$dissoc_sum_overflows"
+sum_overflows_restored="$(run_hot eval-zig src/state_machine.zig 'sum_overflows(u64, 1, 2)')"
+expect_contains "$sum_overflows_restored" "value: false"
+echo "state_machine.zig sum_overflows hot reload probe: OK"
+
 # ── Generic/comptime specialization replay proofs ──────────────────────
 
 expect_eval_value 'cdc.amqp.protocol.Decoder.read_bool(cdc.amqp.protocol.Decoder.init([1]))' "true"
@@ -535,16 +570,13 @@ expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protoco
 expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protocol.Decoder.init([0,1,0,2])).method' "2"
 echo "assoc Decoder.read_int specialization replay: OK"
 
-expect_eval_value 'cdc.amqp.protocol.Decoder.read_frame_header(cdc.amqp.protocol.Decoder.init([3,0,0,0,0,0,5])).type' ".body"
-expect_eval_value 'cdc.amqp.protocol.Decoder.read_frame_header(cdc.amqp.protocol.Decoder.init([3,0,0,0,0,0,5])).channel' ".global"
-assoc_read_enum="$(zig_hot assoc --no-native Decoder.read_enum --file src/cdc/amqp/protocol.zig 'fn read_enum(self: *Decoder, comptime Enum: type) Error!Enum { _ = self; return @as(Enum, @enumFromInt(1)); }' 2>&1)"
+expect_eval_value 'cdc.amqp.protocol.Decoder.read_field(cdc.amqp.protocol.Decoder.init([66,1]))' ".{ .uint8 = 1 }"
+assoc_read_enum="$(zig_hot assoc --no-native Decoder.read_enum --file src/cdc/amqp/protocol.zig 'fn read_enum(self: *Decoder, comptime Enum: type) Error!Enum { _ = self; return @as(Enum, @enumFromInt(86)); }' 2>&1)"
 expect_contains "$assoc_read_enum" "done"
-expect_eval_value 'cdc.amqp.protocol.Decoder.read_frame_header(cdc.amqp.protocol.Decoder.init([3,0,0,0,0,0,5])).type' "1"
-expect_eval_value 'cdc.amqp.protocol.Decoder.read_frame_header(cdc.amqp.protocol.Decoder.init([3,0,0,0,0,0,5])).channel' "1"
+expect_eval_value 'cdc.amqp.protocol.Decoder.read_field(cdc.amqp.protocol.Decoder.init([66,1]))' "null"
 dissoc_read_enum="$(zig_hot dissoc Decoder.read_enum 2>&1)"
 expect_contains "$dissoc_read_enum" "done"
-expect_eval_value 'cdc.amqp.protocol.Decoder.read_frame_header(cdc.amqp.protocol.Decoder.init([3,0,0,0,0,0,5])).type' ".body"
-expect_eval_value 'cdc.amqp.protocol.Decoder.read_frame_header(cdc.amqp.protocol.Decoder.init([3,0,0,0,0,0,5])).channel' ".global"
+expect_eval_value 'cdc.amqp.protocol.Decoder.read_field(cdc.amqp.protocol.Decoder.init([66,1]))' ".{ .uint8 = 1 }"
 echo "assoc Decoder.read_enum specialization replay: OK"
 
 # ── Assoc override end-to-end tests ─────────────────────────────────
