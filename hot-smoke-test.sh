@@ -615,8 +615,10 @@ expect_contains "$dissoc_sector_ceil" "native: restored"
 expect_eval_value 'vsr.sector_ceil(1)' "4096"
 echo "dissoc sector_ceil: OK"
 
-# Override Duration.clamp — multi-branch duration bounds logic
-assoc_duration_clamp="$(zig_hot assoc Duration.clamp --file src/stdx/time_units.zig 'fn clamp(duration: Duration, clamp_min: Duration, clamp_max: Duration) Duration { _ = duration; _ = clamp_min; _ = clamp_max; return .{ .ns = 7 }; }' 2>&1)"
+# Override Duration.clamp — multi-branch duration bounds logic.
+# Keep this on the source-dispatch path only; native patching this helper can
+# perturb the live replica heartbeat logic while we only need compile-body proof.
+assoc_duration_clamp="$(zig_hot assoc --no-native Duration.clamp --file src/stdx/time_units.zig 'fn clamp(duration: Duration, clamp_min: Duration, clamp_max: Duration) Duration { _ = duration; _ = clamp_min; _ = clamp_max; return .{ .ns = 7 }; }' 2>&1)"
 expect_contains "$assoc_duration_clamp" "done"
 clamp_body="$(zig_hot compile-body src/stdx/time_units.zig clamp 2>&1 || true)"
 expect_contains "$clamp_body" "instructions:"

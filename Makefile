@@ -7,6 +7,9 @@ HOT_PID := $(REPO_ROOT)/.hot-run.pid
 HOT_STDIN := $(REPO_ROOT)/.hot-run.stdin
 HOT_STDIN_PID := $(REPO_ROOT)/.hot-run.stdin.pid
 HOT_PORT_FILE := $(REPO_ROOT)/.nrepl-port
+HOT_BUILD_CACHE_DIR ?= $(REPO_ROOT)/.zig-hot-build-cache
+HOT_GLOBAL_CACHE_DIR ?= $(REPO_ROOT)/.zig-hot-global-cache
+HOT_ZIG_CACHE_ARGS := --cache-dir "$(HOT_BUILD_CACHE_DIR)" --global-cache-dir "$(HOT_GLOBAL_CACHE_DIR)"
 HOT_CONFIG_FILE := $(REPO_ROOT)/zig-out/share/zig-hot/tigerbeetle.config
 HOT_TEST_CLEAN ?= 0
 
@@ -71,15 +74,16 @@ hot-run: hot-stop
 		prepend_lib_dir "$$ZLIB_PREFIX/lib"; \
 		hot_env=(env DYLD_LIBRARY_PATH="$${DYLD_LIBRARY_PATH:-}"); \
 		if [[ -n "$(HOT_ZIG_LIB_DIR)" ]]; then hot_env+=(ZIG_LIB_DIR="$(HOT_ZIG_LIB_DIR)"); fi; \
+		mkdir -p "$(HOT_BUILD_CACHE_DIR)" "$(HOT_GLOBAL_CACHE_DIR)"; \
 		rm -f "$(HOT_LOG)" "$(HOT_PID)" "$(HOT_PORT_FILE)" "$(HOT_STDIN)" "$(HOT_STDIN_PID)" "$(HOT_CONFIG_FILE)"; \
 		if [[ ! -f "$(HOT_DB)" ]]; then \
-			(cd "$(REPO_ROOT)" && "$${hot_env[@]}" "$$zig_bin" build run -- format --cluster=0 --replica=0 --replica-count=1 --development "$(HOT_DB)") >/dev/null; \
+			(cd "$(REPO_ROOT)" && "$${hot_env[@]}" "$$zig_bin" build $(HOT_ZIG_CACHE_ARGS) run -- format --cluster=0 --replica=0 --replica-count=1 --development "$(HOT_DB)") >/dev/null; \
 		fi; \
 		mkfifo "$(HOT_STDIN)"; \
 		tail -f /dev/null >"$(HOT_STDIN)" & \
 		stdin_pid=$$!; \
 		echo "$$stdin_pid" >"$(HOT_STDIN_PID)"; \
-		"$${hot_env[@]}" "$$zig_bin" build hot-run -- start --addresses=0 --development "$(HOT_DB)" <"$(HOT_STDIN)" >"$(HOT_LOG)" 2>&1 & \
+		"$${hot_env[@]}" "$$zig_bin" build $(HOT_ZIG_CACHE_ARGS) hot-run -- start --addresses=0 --development "$(HOT_DB)" <"$(HOT_STDIN)" >"$(HOT_LOG)" 2>&1 & \
 		run_pid=$$!; \
 		echo "$$run_pid" >"$(HOT_PID)"; \
 		tail -f "$(HOT_LOG)" & \
@@ -102,7 +106,8 @@ hot-test: hot-stop
 			fi; \
 		}; \
 		if [ "$(HOT_TEST_CLEAN)" = "1" ]; then \
-			clean_dir "$(REPO_ROOT)/.zig-cache"; \
+			clean_dir "$(HOT_BUILD_CACHE_DIR)"; \
+			clean_dir "$(HOT_GLOBAL_CACHE_DIR)"; \
 			clean_dir "$(REPO_ROOT)/zig-out"; \
 		fi; \
 		zig_bin="$(HOT_ZIG)"; \
@@ -132,16 +137,17 @@ hot-test: hot-stop
 		prepend_lib_dir "$$ZLIB_PREFIX/lib"; \
 		hot_env=(env DYLD_LIBRARY_PATH="$${DYLD_LIBRARY_PATH:-}"); \
 		if [[ -n "$(HOT_ZIG_LIB_DIR)" ]]; then hot_env+=(ZIG_LIB_DIR="$(HOT_ZIG_LIB_DIR)"); fi; \
+		mkdir -p "$(HOT_BUILD_CACHE_DIR)" "$(HOT_GLOBAL_CACHE_DIR)"; \
 		rm -f "$(HOT_LOG)" "$(HOT_PID)" "$(HOT_PORT_FILE)" "$(HOT_STDIN)" "$(HOT_STDIN_PID)" "$(HOT_CONFIG_FILE)"; \
 		cleanup() { "$(MAKE)" hot-stop >/dev/null 2>&1 || true; }; \
 		trap cleanup EXIT INT TERM; \
 		rm -f "$(HOT_DB)"; \
-		(cd "$(REPO_ROOT)" && "$${hot_env[@]}" "$$zig_bin" build run -- format --cluster=0 --replica=0 --replica-count=1 --development "$(HOT_DB)") >/dev/null; \
+		(cd "$(REPO_ROOT)" && "$${hot_env[@]}" "$$zig_bin" build $(HOT_ZIG_CACHE_ARGS) run -- format --cluster=0 --replica=0 --replica-count=1 --development "$(HOT_DB)") >/dev/null; \
 		mkfifo "$(HOT_STDIN)"; \
 		tail -f /dev/null >"$(HOT_STDIN)" & \
 		stdin_pid=$$!; \
 		echo "$$stdin_pid" >"$(HOT_STDIN_PID)"; \
-		"$${hot_env[@]}" "$$zig_bin" build hot-run -- start --addresses=0 --development "$(HOT_DB)" <"$(HOT_STDIN)" >"$(HOT_LOG)" 2>&1 & \
+		"$${hot_env[@]}" "$$zig_bin" build $(HOT_ZIG_CACHE_ARGS) hot-run -- start --addresses=0 --development "$(HOT_DB)" <"$(HOT_STDIN)" >"$(HOT_LOG)" 2>&1 & \
 		run_pid=$$!; \
 		echo "$$run_pid" >"$(HOT_PID)"; \
 		ZIG_BIN="$$zig_bin" \
