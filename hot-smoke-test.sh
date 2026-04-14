@@ -553,6 +553,37 @@ sum_overflows_restored="$(run_hot eval-zig src/state_machine.zig 'sum_overflows(
 expect_contains "$sum_overflows_restored" "value: false"
 echo "state_machine.zig sum_overflows hot reload probe: OK"
 
+sum_overflows_test_baseline="$(zig_hot eval-zig src/state_machine.zig 'sum_overflows_test(u64)' 2>&1)"
+expect_contains "$sum_overflows_test_baseline" "err: execute failed: TypeMismatch"
+
+assoc_sum_overflows_test="$(zig_hot assoc --no-native sum_overflows_test --file src/state_machine.zig 'fn sum_overflows_test(comptime Int: type) !void { _ = Int; return error.Patched; }' 2>&1)"
+expect_hot_success "$assoc_sum_overflows_test"
+sum_overflows_test_patched="$(zig_hot eval-zig src/state_machine.zig 'sum_overflows_test(u64)' 2>&1)"
+expect_contains "$sum_overflows_test_patched" "value: error.Patched"
+
+dissoc_sum_overflows_test="$(zig_hot dissoc sum_overflows_test 2>&1)"
+expect_hot_success "$dissoc_sum_overflows_test"
+sum_overflows_test_restored="$(zig_hot eval-zig src/state_machine.zig 'sum_overflows_test(u64)' 2>&1)"
+expect_contains "$sum_overflows_test_restored" "err: execute failed: TypeMismatch"
+echo "state_machine.zig sum_overflows_test hot reload probe: OK"
+
+state_machine_forest_options_baseline="$(zig_hot compile-body hot_state_machine_probe.zig stateMachineForestOptionsCacheProbe 2>&1)"
+expect_hot_success "$state_machine_forest_options_baseline"
+expect_contains "$state_machine_forest_options_baseline" "value: null"
+
+assoc_state_machine_forest_options="$(zig_hot assoc --no-native StateMachineType.forest_options --file src/state_machine.zig 'fn forest_options(options: Options) Forest.GroovesOptions { _ = options; return .{ .accounts = .{ .cache_entries_max = 99 } }; }' 2>&1)"
+expect_hot_success "$assoc_state_machine_forest_options"
+state_machine_forest_options_patched="$(zig_hot compile-body hot_state_machine_probe.zig stateMachineForestOptionsCacheProbe 2>&1)"
+expect_hot_success "$state_machine_forest_options_patched"
+expect_contains "$state_machine_forest_options_patched" "value: 99"
+
+dissoc_state_machine_forest_options="$(zig_hot dissoc StateMachineType.forest_options 2>&1)"
+expect_hot_success "$dissoc_state_machine_forest_options"
+state_machine_forest_options_restored="$(zig_hot compile-body hot_state_machine_probe.zig stateMachineForestOptionsCacheProbe 2>&1)"
+expect_hot_success "$state_machine_forest_options_restored"
+expect_contains "$state_machine_forest_options_restored" "value: null"
+echo "state_machine.zig forest_options import-alias hot override probe: OK"
+
 # ── Generic/comptime specialization replay proofs ──────────────────────
 
 expect_eval_value 'cdc.amqp.protocol.Decoder.read_bool(cdc.amqp.protocol.Decoder.init([1]))' "true"
