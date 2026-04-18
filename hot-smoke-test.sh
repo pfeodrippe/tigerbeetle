@@ -375,6 +375,30 @@ expect_call_value() {
   expect_contains "$output" "  done"
 }
 
+tb_proven_functions=(
+  sum_overflows
+  sum_overflows_test
+  StateMachineType.forest_options
+  Duration.to_ms
+  Duration.clamp
+  sector_ceil
+  zeroed
+  Decoder.read_int
+  Decoder.read_enum
+  Decoder.read_short_string
+  register_log_callback
+  multiversion.ReleaseTriple.parse
+  vsr.quorums
+  command_version
+  Direction.reverse
+  compaction_op_min
+  snapshot_min_for_table_output
+)
+tb_proven_vars=(
+  log_level_runtime
+  child_pid
+)
+
 wait_for_hot_config_file
 wait_for_port_file
 
@@ -403,6 +427,19 @@ expect_eval_value 'stdx.zeroed("abc")' "false"
 expect_eval_value 'vsr.sector_ceil(1)' "4096"
 expect_eval_value 'vsr.quorums(3).replication' "2"
 expect_eval_value 'cdc.amqp.protocol.Decoder.read_short_string(cdc.amqp.protocol.Decoder.init([3,97,98,99]))' '"abc"'
+
+assoc_quorums="$(zig_hot assoc --no-native quorums --file src/vsr.zig 'fn quorums(replica_count: u8) struct { replication: u8, view_change: u8, nack_prepare: u8, majority: u8, upgrade: u8, } { _ = replica_count; return .{ .replication = 9, .view_change = 8, .nack_prepare = 7, .majority = 6, .upgrade = 5 }; }' 2>&1)"
+if echo "$assoc_quorums" | grep -qF "done"; then
+  expect_hot_success "$assoc_quorums"
+  expect_eval_value 'vsr.quorums(3).view_change' "8"
+  expect_eval_value 'vsr.quorums(3).upgrade' "5"
+  dissoc_quorums="$(zig_hot dissoc quorums 2>&1)"
+  expect_hot_success "$dissoc_quorums"
+  expect_eval_value 'vsr.quorums(3).replication' "2"
+  echo "assoc/dissoc quorums override: OK"
+else
+  echo "assoc quorums not yet supported — keeping direct field proof only"
+fi
 
 register_log_reset="$(run_hot --eval 'vsr.tb_client.exports.register_log_callback(null, false)')"
 expect_hot_success "$register_log_reset"
@@ -518,6 +555,26 @@ dissoc_log_level_runtime="$(zig_hot dissoc log_level_runtime 2>&1)"
 expect_hot_success "$dissoc_log_level_runtime"
 echo "dissoc command_version probe and log_level_runtime override: OK"
 
+child_pid_baseline="$(zig_hot eval-zig src/stdx/unshare.zig 'child_pid == null' 2>&1 || true)"
+expect_hot_success "$child_pid_baseline"
+expect_contains "$child_pid_baseline" "value: true"
+echo "cold-start child_pid runtime_addressable var is null: OK"
+
+assoc_child_pid_set="$(zig_hot assoc --type var --no-native child_pid 42 2>&1 || true)"
+expect_hot_success "$assoc_child_pid_set"
+child_pid_probe_set="$(zig_hot eval-zig src/stdx/unshare.zig 'child_pid != null' 2>&1 || true)"
+expect_hot_success "$child_pid_probe_set"
+expect_contains "$child_pid_probe_set" "value: true"
+echo "assoc child_pid runtime_addressable var -> non-null: OK"
+
+assoc_child_pid_null="$(zig_hot assoc --type var --no-native child_pid null 2>&1 || true)"
+expect_hot_success "$assoc_child_pid_null"
+child_pid_probe_null="$(zig_hot eval-zig src/stdx/unshare.zig 'child_pid == null' 2>&1 || true)"
+expect_hot_success "$child_pid_probe_null"
+expect_contains "$child_pid_probe_null" "value: true"
+zig_hot dissoc stdx.unshare.child_pid >/dev/null 2>&1 || true
+echo "restore child_pid runtime_addressable var override: OK"
+
 # ── Real TigerBeetle state_machine.zig frontier proofs ─────────────────────
 
 classify_state_machine_output="$(zig_hot classify src/state_machine.zig 2>&1)"
@@ -600,6 +657,20 @@ expect_eval_value 'cdc.amqp.protocol.Decoder.read_bool(cdc.amqp.protocol.Decoder
 expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protocol.Decoder.init([0,1,0,2])).class' "1"
 expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protocol.Decoder.init([0,1,0,2])).method' "2"
 echo "assoc Decoder.read_int specialization replay: OK"
+
+assoc_read_int_seven="$(zig_hot assoc Decoder.read_int --file src/cdc/amqp/protocol.zig 'fn read_int(self: *Decoder, comptime T: type) Error!T { _ = self; return @as(T, 7); }' 2>&1)"
+expect_hot_success "$assoc_read_int_seven"
+assoc_read_int_eleven="$(zig_hot assoc Decoder.read_int --file src/cdc/amqp/protocol.zig 'fn read_int(self: *Decoder, comptime T: type) Error!T { _ = self; return @as(T, 11); }' 2>&1)"
+expect_hot_success "$assoc_read_int_eleven"
+expect_eval_value 'cdc.amqp.protocol.Decoder.read_bool(cdc.amqp.protocol.Decoder.init([1]))' "true"
+expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protocol.Decoder.init([0,1,0,2])).class' "11"
+expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protocol.Decoder.init([0,1,0,2])).method' "11"
+dissoc_read_int_stress="$(zig_hot dissoc Decoder.read_int 2>&1)"
+expect_hot_success "$dissoc_read_int_stress"
+expect_eval_value 'cdc.amqp.protocol.Decoder.read_bool(cdc.amqp.protocol.Decoder.init([1]))' "true"
+expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protocol.Decoder.init([0,1,0,2])).class' "1"
+expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protocol.Decoder.init([0,1,0,2])).method' "2"
+echo "assoc Decoder.read_int rapid specialization replay keeps latest live version: OK"
 
 expect_eval_value 'cdc.amqp.protocol.Decoder.read_field(cdc.amqp.protocol.Decoder.init([66,1]))' ".{ .uint8 = 1 }"
 assoc_read_enum="$(zig_hot assoc --no-native Decoder.read_enum --file src/cdc/amqp/protocol.zig 'fn read_enum(self: *Decoder, comptime Enum: type) Error!Enum { _ = self; return @as(Enum, @enumFromInt(86)); }' 2>&1)"
@@ -726,47 +797,46 @@ fi
 
 # Direction.reverse — enum-to-enum switch transform
 dir_reverse_baseline="$(zig_hot eval-zig src/direction.zig 'Direction.reverse(.ascending)' 2>&1 || true)"
-if echo "$dir_reverse_baseline" | grep -qF "value:"; then
-  echo "eval-zig Direction.reverse(.ascending): $(echo "$dir_reverse_baseline" | grep 'value:' | head -1)"
+expect_hot_success "$dir_reverse_baseline"
+expect_contains "$dir_reverse_baseline" "value: .descending"
+echo "eval-zig Direction.reverse(.ascending) = .descending ✓"
 
-  # assoc override: make reverse always return ascending
-  assoc_dir_reverse="$(zig_hot assoc --no-native Direction.reverse --file src/direction.zig 'fn reverse(d: Direction) Direction { _ = d; return .ascending; }' 2>&1)"
-  if echo "$assoc_dir_reverse" | grep -qF "done"; then
-    dir_reverse_patched="$(zig_hot eval-zig src/direction.zig 'Direction.reverse(.ascending)' 2>&1 || true)"
-    echo "assoc Direction.reverse override: OK"
+assoc_dir_reverse="$(zig_hot assoc --no-native Direction.reverse --file src/direction.zig 'fn reverse(d: Direction) Direction { _ = d; return .ascending; }' 2>&1 || true)"
+expect_hot_success "$assoc_dir_reverse"
+dir_reverse_patched="$(zig_hot eval-zig src/direction.zig 'Direction.reverse(.ascending)' 2>&1 || true)"
+expect_hot_success "$dir_reverse_patched"
+expect_contains "$dir_reverse_patched" "value: .ascending"
+echo "assoc Direction.reverse override: OK"
 
-    dissoc_dir_reverse="$(zig_hot dissoc Direction.reverse 2>&1)"
-    echo "dissoc Direction.reverse: OK"
-  else
-    echo "assoc Direction.reverse not yet supported — skipping"
-  fi
-else
-  echo "eval-zig Direction.reverse not yet supported — skipping"
-fi
+dissoc_dir_reverse="$(zig_hot dissoc Direction.reverse 2>&1 || true)"
+expect_hot_success "$dissoc_dir_reverse"
+dir_reverse_restored="$(zig_hot eval-zig src/direction.zig 'Direction.reverse(.ascending)' 2>&1 || true)"
+expect_hot_success "$dir_reverse_restored"
+expect_contains "$dir_reverse_restored" "value: .descending"
+echo "dissoc Direction.reverse: OK"
 
 # ── eval-zig proofs for LSM/consensus functions (Phase 61A Batch 4) ──
 
 # compaction_op_min — modulo alignment on u64
 # half_bar_beat_count = lsm_compaction_ops / 2, and compaction_op_min(op) = op - op % half_bar_beat_count
 compaction_op_min_eval="$(zig_hot eval-zig src/lsm/compaction.zig 'compaction_op_min(100)' 2>&1 || true)"
-if echo "$compaction_op_min_eval" | grep -qF "value:"; then
-  echo "eval-zig compaction_op_min(100): $(echo "$compaction_op_min_eval" | grep 'value:' | head -1)"
+expect_hot_success "$compaction_op_min_eval"
+expect_contains "$compaction_op_min_eval" "value: 96"
+echo "eval-zig compaction_op_min(100) = 96 ✓"
 
-  # assoc override: make compaction_op_min always return 0
-  assoc_comp_op="$(zig_hot assoc --no-native compaction_op_min --file src/lsm/compaction.zig 'fn compaction_op_min(op: u64) u64 { _ = op; return 0; }' 2>&1)"
-  if echo "$assoc_comp_op" | grep -qF "done"; then
-    comp_op_patched="$(zig_hot eval-zig src/lsm/compaction.zig 'compaction_op_min(100)' 2>&1 || true)"
-    expect_contains "$comp_op_patched" "value: 0"
-    echo "assoc compaction_op_min override (always 0): OK"
+assoc_comp_op="$(zig_hot assoc --no-native compaction_op_min --file src/lsm/compaction.zig 'fn compaction_op_min(op: u64) u64 { _ = op; return 0; }' 2>&1 || true)"
+expect_hot_success "$assoc_comp_op"
+comp_op_patched="$(zig_hot eval-zig src/lsm/compaction.zig 'compaction_op_min(100)' 2>&1 || true)"
+expect_hot_success "$comp_op_patched"
+expect_contains "$comp_op_patched" "value: 0"
+echo "assoc compaction_op_min override (always 0): OK"
 
-    dissoc_comp_op="$(zig_hot dissoc compaction_op_min 2>&1)"
-    echo "dissoc compaction_op_min: OK"
-  else
-    echo "assoc compaction_op_min not yet supported — skipping"
-  fi
-else
-  echo "eval-zig compaction_op_min not yet supported — skipping"
-fi
+dissoc_comp_op="$(zig_hot dissoc compaction_op_min 2>&1 || true)"
+expect_hot_success "$dissoc_comp_op"
+comp_op_restored="$(zig_hot eval-zig src/lsm/compaction.zig 'compaction_op_min(100)' 2>&1 || true)"
+expect_hot_success "$comp_op_restored"
+expect_contains "$comp_op_restored" "value: 96"
+echo "dissoc compaction_op_min: OK"
 
 # TimestampRange.valid — range comparison returning bool
 ts_valid_eval="$(zig_hot eval-zig src/lsm/timestamp_range.zig 'TimestampRange.valid(1)' 2>&1 || true)"
@@ -795,6 +865,141 @@ else
   echo "eval-zig TimestampRange.valid not yet supported — skipping"
 fi
 
+# TimestampRange.gte — pure struct construction with timestamp_max upper bound
+ts_gte_eval="$(zig_hot eval-zig src/lsm/timestamp_range.zig 'TimestampRange.gte(7).min' 2>&1 || true)"
+if echo "$ts_gte_eval" | grep -qF "value: 7"; then
+  echo "eval-zig TimestampRange.gte(7).min = 7 ✓"
+
+  assoc_ts_gte="$(zig_hot assoc --no-native TimestampRange.gte --file src/lsm/timestamp_range.zig 'fn gte(initial: u64) TimestampRange { _ = initial; return .{ .min = 9, .max = 9 }; }' 2>&1)"
+  if echo "$assoc_ts_gte" | grep -qF "done"; then
+    ts_gte_patched="$(zig_hot eval-zig src/lsm/timestamp_range.zig 'TimestampRange.gte(7).min' 2>&1 || true)"
+    expect_contains "$ts_gte_patched" "value: 9"
+    echo "assoc TimestampRange.gte override: OK"
+
+    dissoc_ts_gte="$(zig_hot dissoc TimestampRange.gte 2>&1)"
+    expect_contains "$dissoc_ts_gte" "done"
+    ts_gte_restored="$(zig_hot eval-zig src/lsm/timestamp_range.zig 'TimestampRange.gte(7).min' 2>&1 || true)"
+    expect_contains "$ts_gte_restored" "value: 7"
+    echo "dissoc TimestampRange.gte: OK"
+  else
+    echo "assoc TimestampRange.gte not yet supported — skipping"
+  fi
+else
+  echo "eval-zig TimestampRange.gte not yet supported — skipping"
+fi
+
+# TimestampRange.lte — pure struct construction with timestamp_min lower bound
+ts_lte_eval="$(zig_hot eval-zig src/lsm/timestamp_range.zig 'TimestampRange.lte(7).max' 2>&1 || true)"
+if echo "$ts_lte_eval" | grep -qF "value: 7"; then
+  echo "eval-zig TimestampRange.lte(7).max = 7 ✓"
+
+  assoc_ts_lte="$(zig_hot assoc --no-native TimestampRange.lte --file src/lsm/timestamp_range.zig 'fn lte(final: u64) TimestampRange { _ = final; return .{ .min = 1, .max = 9 }; }' 2>&1)"
+  if echo "$assoc_ts_lte" | grep -qF "done"; then
+    ts_lte_patched="$(zig_hot eval-zig src/lsm/timestamp_range.zig 'TimestampRange.lte(7).max' 2>&1 || true)"
+    expect_contains "$ts_lte_patched" "value: 9"
+    echo "assoc TimestampRange.lte override: OK"
+
+    dissoc_ts_lte="$(zig_hot dissoc TimestampRange.lte 2>&1)"
+    expect_contains "$dissoc_ts_lte" "done"
+    ts_lte_restored="$(zig_hot eval-zig src/lsm/timestamp_range.zig 'TimestampRange.lte(7).max' 2>&1 || true)"
+    expect_contains "$ts_lte_restored" "value: 7"
+    echo "dissoc TimestampRange.lte: OK"
+  else
+    echo "assoc TimestampRange.lte not yet supported — skipping"
+  fi
+else
+  echo "eval-zig TimestampRange.lte not yet supported — skipping"
+fi
+
+# snapshot_min_for_table_output — compaction half-bar snapshot math
+snapshot_min_eval="$(zig_hot eval-zig src/lsm/compaction.zig 'snapshot_min_for_table_output(@divExact(constants.lsm_compaction_ops, 2)) == constants.lsm_compaction_ops' 2>&1 || true)"
+expect_hot_success "$snapshot_min_eval"
+expect_contains "$snapshot_min_eval" "value: true"
+echo "eval-zig snapshot_min_for_table_output(...)=constants.lsm_compaction_ops ✓"
+
+assoc_snapshot_min="$(zig_hot assoc --no-native snapshot_min_for_table_output --file src/lsm/compaction.zig 'fn snapshot_min_for_table_output(op_min: u64) u64 { _ = op_min; return 1234; }' 2>&1 || true)"
+expect_hot_success "$assoc_snapshot_min"
+snapshot_min_patched="$(zig_hot eval-zig src/lsm/compaction.zig 'snapshot_min_for_table_output(@divExact(constants.lsm_compaction_ops, 2))' 2>&1 || true)"
+expect_hot_success "$snapshot_min_patched"
+expect_contains "$snapshot_min_patched" "value: 1234"
+echo "assoc snapshot_min_for_table_output override: OK"
+
+dissoc_snapshot_min="$(zig_hot dissoc snapshot_min_for_table_output 2>&1 || true)"
+expect_hot_success "$dissoc_snapshot_min"
+snapshot_min_restored="$(zig_hot eval-zig src/lsm/compaction.zig 'snapshot_min_for_table_output(@divExact(constants.lsm_compaction_ops, 2)) == constants.lsm_compaction_ops' 2>&1 || true)"
+expect_hot_success "$snapshot_min_restored"
+expect_contains "$snapshot_min_restored" "value: true"
+echo "dissoc snapshot_min_for_table_output: OK"
+
+# snapshot_max_for_table_input — companion snapshot math derived from output minimum
+snapshot_max_eval="$(zig_hot eval-zig src/lsm/compaction.zig 'snapshot_max_for_table_input(@divExact(constants.lsm_compaction_ops, 2)) == constants.lsm_compaction_ops - 1' 2>&1 || true)"
+if echo "$snapshot_max_eval" | grep -qF "value: true"; then
+  echo "eval-zig snapshot_max_for_table_input(...)=constants.lsm_compaction_ops-1 ✓"
+
+  assoc_snapshot_max="$(zig_hot assoc --no-native snapshot_max_for_table_input --file src/lsm/compaction.zig 'fn snapshot_max_for_table_input(op_min: u64) u64 { _ = op_min; return 1233; }' 2>&1)"
+  if echo "$assoc_snapshot_max" | grep -qF "done"; then
+    snapshot_max_patched="$(zig_hot eval-zig src/lsm/compaction.zig 'snapshot_max_for_table_input(@divExact(constants.lsm_compaction_ops, 2))' 2>&1 || true)"
+    expect_contains "$snapshot_max_patched" "value: 1233"
+    echo "assoc snapshot_max_for_table_input override: OK"
+
+    dissoc_snapshot_max="$(zig_hot dissoc snapshot_max_for_table_input 2>&1)"
+    expect_contains "$dissoc_snapshot_max" "done"
+    snapshot_max_restored="$(zig_hot eval-zig src/lsm/compaction.zig 'snapshot_max_for_table_input(@divExact(constants.lsm_compaction_ops, 2)) == constants.lsm_compaction_ops - 1' 2>&1 || true)"
+    expect_contains "$snapshot_max_restored" "value: true"
+    echo "dissoc snapshot_max_for_table_input: OK"
+  else
+    echo "assoc snapshot_max_for_table_input not yet supported — skipping"
+  fi
+else
+  echo "eval-zig snapshot_max_for_table_input not yet supported — skipping"
+fi
+
+# multi_batch_count_max — worst-case trailer-aware batch count calculation
+multi_batch_count_eval="$(zig_hot eval-zig src/vsr/multi_batch.zig 'multi_batch_count_max(.{ .batch_size_min = 1, .batch_size_limit = 10 })' 2>&1 || true)"
+if echo "$multi_batch_count_eval" | grep -qF "value: 2"; then
+  echo "eval-zig multi_batch_count_max(...)=2 ✓"
+
+  assoc_multi_batch_count="$(zig_hot assoc --no-native multi_batch_count_max --file src/vsr/multi_batch.zig 'fn multi_batch_count_max(options: struct { batch_size_min: u32, batch_size_limit: u32, }) u16 { _ = options; return 7; }' 2>&1)"
+  if echo "$assoc_multi_batch_count" | grep -qF "done"; then
+    multi_batch_count_patched="$(zig_hot eval-zig src/vsr/multi_batch.zig 'multi_batch_count_max(.{ .batch_size_min = 1, .batch_size_limit = 10 })' 2>&1 || true)"
+    expect_contains "$multi_batch_count_patched" "value: 7"
+    echo "assoc multi_batch_count_max override: OK"
+
+    dissoc_multi_batch_count="$(zig_hot dissoc multi_batch_count_max 2>&1)"
+    expect_contains "$dissoc_multi_batch_count" "done"
+    multi_batch_count_restored="$(zig_hot eval-zig src/vsr/multi_batch.zig 'multi_batch_count_max(.{ .batch_size_min = 1, .batch_size_limit = 10 })' 2>&1 || true)"
+    expect_contains "$multi_batch_count_restored" "value: 2"
+    echo "dissoc multi_batch_count_max: OK"
+  else
+    echo "assoc multi_batch_count_max not yet supported — skipping"
+  fi
+else
+  echo "eval-zig multi_batch_count_max not yet supported — skipping"
+fi
+
+# trailer_total_size — trailer alignment through div_ceil and element-size rounding
+trailer_total_size_eval="$(zig_hot eval-zig src/vsr/multi_batch.zig 'trailer_total_size(.{ .element_size = 128, .batch_count = 4 })' 2>&1 || true)"
+if echo "$trailer_total_size_eval" | grep -qF "value: 128"; then
+  echo "eval-zig trailer_total_size(...)=128 ✓"
+
+  assoc_trailer_total_size="$(zig_hot assoc --no-native trailer_total_size --file src/vsr/multi_batch.zig 'fn trailer_total_size(options: struct { element_size: u32, batch_count: u16, }) u32 { _ = options; return 64; }' 2>&1)"
+  if echo "$assoc_trailer_total_size" | grep -qF "done"; then
+    trailer_total_size_patched="$(zig_hot eval-zig src/vsr/multi_batch.zig 'trailer_total_size(.{ .element_size = 128, .batch_count = 4 })' 2>&1 || true)"
+    expect_contains "$trailer_total_size_patched" "value: 64"
+    echo "assoc trailer_total_size override: OK"
+
+    dissoc_trailer_total_size="$(zig_hot dissoc trailer_total_size 2>&1)"
+    expect_contains "$dissoc_trailer_total_size" "done"
+    trailer_total_size_restored="$(zig_hot eval-zig src/vsr/multi_batch.zig 'trailer_total_size(.{ .element_size = 128, .batch_count = 4 })' 2>&1 || true)"
+    expect_contains "$trailer_total_size_restored" "value: 128"
+    echo "dissoc trailer_total_size: OK"
+  else
+    echo "assoc trailer_total_size not yet supported — skipping"
+  fi
+else
+  echo "eval-zig trailer_total_size not yet supported — skipping"
+fi
+
 # Assoc with malformed code — should return clean error, not crash
 malformed_output="$(zig_hot assoc zeroed --file src/stdx/stdx.zig 'fn zeroed(BROKEN SYNTAX' 2>&1 || true)"
 if echo "$malformed_output" | grep -qF "done"; then
@@ -807,4 +1012,5 @@ fi
 nonexist_output="$(zig_hot assoc totally_bogus_function_name --file src/stdx/stdx.zig 'fn bogus() void {}' 2>&1 || true)"
 echo "assoc non-existent function: OK (no crash)"
 
+echo "summary tigerbeetle hot surface: functions=${#tb_proven_functions[@]} vars=${#tb_proven_vars[@]}"
 echo "hot smoke test passed"

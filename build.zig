@@ -153,6 +153,16 @@ pub fn build(b: *std.Build) !void {
             "llvm-objcopy",
             "Use this llvm-objcopy instead of downloading one",
         ),
+        .hot_promotion_workers = b.option(
+            usize,
+            "hot-promotion-workers",
+            "Promotion worker count for hot runs (0 uses the runtime default)",
+        ) orelse 0,
+        .hot_promotion_delay_ms = b.option(
+            usize,
+            "hot-promotion-delay-ms",
+            "Artificial promotion delay for hot runs in milliseconds (0 disables it)",
+        ) orelse 0,
         .print_exe = b.option(
             bool,
             "print-exe",
@@ -230,6 +240,8 @@ pub fn build(b: *std.Build) !void {
         .emit_llvm_ir = build_options.emit_llvm_ir,
         .multiversion = build_options.multiversion,
         .multiversion_file = build_options.multiversion_file,
+        .hot_promotion_workers = build_options.hot_promotion_workers,
+        .hot_promotion_delay_ms = build_options.hot_promotion_delay_ms,
     });
 
     // zig build aof
@@ -645,6 +657,8 @@ fn build_tigerbeetle(
         multiversion: ?[]const u8,
         multiversion_file: ?[]const u8,
         emit_llvm_ir: bool,
+        hot_promotion_workers: usize,
+        hot_promotion_delay_ms: usize,
     },
 ) !void {
     const multiversion_file: ?std.Build.LazyPath = if (options.multiversion_file) |path|
@@ -713,7 +727,14 @@ fn build_tigerbeetle(
             .name = "tigerbeetle",
             .root_module = tigerbeetle_exe.root_module,
             .main_executable = tigerbeetle_exe.getEmittedBin(),
+            .promotion_workers = if (options.hot_promotion_workers == 0) null else options.hot_promotion_workers,
         });
+        if (options.hot_promotion_delay_ms != 0) {
+            hot_run_cmd.setEnvironmentVariable(
+                "ZIG_HOT_PROMOTION_DELAY_MS",
+                b.fmt("{d}", .{options.hot_promotion_delay_ms}),
+            );
+        }
         hot.configureRun(hot_run_cmd);
         steps.hot_run.dependOn(&hot_run_cmd.step);
     } else {
