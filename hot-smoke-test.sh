@@ -6,6 +6,15 @@ ZIG_BIN="${ZIG_BIN:-${HOT_ZIG:-zig}}"
 ZIG_LIB_DIR="${ZIG_LIB_DIR:-${HOT_ZIG_LIB_DIR:-}}"
 PORT_FILE="${PORT_FILE:-$ROOT_DIR/.nrepl-port}"
 HOT_CONFIG_FILE="${HOT_CONFIG_FILE:-$ROOT_DIR/zig-out/share/zig-hot/tigerbeetle.config}"
+HOT_LOG="${HOT_LOG:-$ROOT_DIR/.hot-run.log}"
+HOT_TEST_PROMOTION_WORKERS="${HOT_TEST_PROMOTION_WORKERS:-2}"
+HOT_REPL_BUILD_CACHE_DIR="${HOT_REPL_BUILD_CACHE_DIR:-$ROOT_DIR/.zig-hot-client-build-cache}"
+HOT_REPL_GLOBAL_CACHE_DIR="${HOT_REPL_GLOBAL_CACHE_DIR:-$ROOT_DIR/.zig-hot-client-global-cache}"
+TB_SERVER_ADDRESS=""
+TIGERBEETLE_SOURCE_REL="src/tigerbeetle.zig"
+TIGERBEETLE_SOURCE_FILE="$ROOT_DIR/$TIGERBEETLE_SOURCE_REL"
+TIGERBEETLE_SOURCE_BACKUP=""
+TIGERBEETLE_SOURCE_RESTORE_NEEDED=0
 
 if [[ "$ZIG_BIN" == */* ]]; then
   [[ -x "$ZIG_BIN" ]] || {
@@ -337,6 +346,174 @@ run_hot() {
   printf '%s' "$output"
 }
 
+ensure_tigerbeetle_source_backup() {
+  if [[ -n "$TIGERBEETLE_SOURCE_BACKUP" ]]; then
+    return 0
+  fi
+
+  TIGERBEETLE_SOURCE_BACKUP="$(mktemp "$ROOT_DIR/.tb-hot-smoke-tigerbeetle-zig-XXXXXX")"
+  cp "$TIGERBEETLE_SOURCE_FILE" "$TIGERBEETLE_SOURCE_BACKUP"
+}
+
+restore_tigerbeetle_source() {
+  [[ -n "$TIGERBEETLE_SOURCE_BACKUP" ]] || return 0
+  cp "$TIGERBEETLE_SOURCE_BACKUP" "$TIGERBEETLE_SOURCE_FILE"
+  TIGERBEETLE_SOURCE_RESTORE_NEEDED=0
+}
+
+cleanup() {
+  if (( TIGERBEETLE_SOURCE_RESTORE_NEEDED != 0 )); then
+    restore_tigerbeetle_source >/dev/null 2>&1 || true
+    if [[ -s "$PORT_FILE" ]]; then
+      zig_hot reload "$TIGERBEETLE_SOURCE_REL" >/dev/null 2>&1 || true
+    fi
+  fi
+  if [[ -n "$TIGERBEETLE_SOURCE_BACKUP" ]]; then
+    rm -f "$TIGERBEETLE_SOURCE_BACKUP"
+  fi
+}
+trap cleanup EXIT INT TERM
+
+decl_range_in_file() {
+  local file="$1"
+  local pattern="$2"
+  local offset
+  offset="$(grep -aboF "$pattern" "$file" | head -n 1 | cut -d: -f1)"
+  if [[ -z "$offset" ]]; then
+    echo "error: unable to locate range for pattern: $pattern" >&2
+    exit 1
+  fi
+  printf '%s %s\n' "$offset" "$((offset + ${#pattern}))"
+}
+
+tigerbeetle_source_debits_exceed_credits_range() {
+  decl_range_in_file "$TIGERBEETLE_SOURCE_FILE" 'pub fn debits_exceed_credits'
+}
+
+patch_tigerbeetle_debits_exceed_credits_probe() {
+  local mode="$1"
+  ensure_tigerbeetle_source_backup
+  restore_tigerbeetle_source
+  python3 - "$TIGERBEETLE_SOURCE_FILE" "$mode" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+mode = sys.argv[2]
+source = path.read_text()
+old = """        return (self.flags.debits_must_not_exceed_credits and
+            self.debits_pending + self.debits_posted + amount > self.credits_posted);"""
+if mode == "allow":
+    new = """        _ = self;
+        _ = amount;
+        return false;"""
+elif mode == "deny":
+    new = """        return (self.flags.debits_must_not_exceed_credits and amount != 0);"""
+else:
+    raise SystemExit(f"error: unknown debits_exceed_credits mode: {mode}")
+if old not in source:
+    raise SystemExit("error: missing Account.debits_exceed_credits body")
+path.write_text(source.replace(old, new, 1))
+PY
+  TIGERBEETLE_SOURCE_RESTORE_NEEDED=1
+}
+
+wait_for_tigerbeetle_address() {
+  local deadline=$((SECONDS + 120))
+  local address=""
+  while (( SECONDS < deadline )); do
+    if [[ -f "$HOT_LOG" ]]; then
+      address="$(sed -n 's/.*cluster=0: listening on \(.*\)$/\1/p' "$HOT_LOG" | tail -n 1)"
+      if [[ -n "$address" ]]; then
+        printf '%s\n' "$address"
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+
+  echo "error: timed out waiting for TigerBeetle listen address" >&2
+  if [[ -f "$HOT_LOG" ]]; then
+    tail -n 120 "$HOT_LOG" >&2
+  fi
+  exit 1
+}
+
+run_tb_repl() {
+  local statement="$1"
+  local -a cmd=(env DYLD_LIBRARY_PATH="${DYLD_LIBRARY_PATH:-}")
+  if [[ -n "$ZIG_LIB_DIR" ]]; then
+    cmd+=(ZIG_LIB_DIR="$ZIG_LIB_DIR")
+  fi
+  cmd+=(
+    "$ZIG_BIN"
+    build
+    --cache-dir "$HOT_REPL_BUILD_CACHE_DIR"
+    --global-cache-dir "$HOT_REPL_GLOBAL_CACHE_DIR"
+    run
+    --
+    repl
+    --cluster=0
+    "--addresses=$TB_SERVER_ADDRESS"
+    "--command=$statement"
+  )
+  (
+    cd "$ROOT_DIR"
+    "${cmd[@]}"
+  )
+}
+
+promotion_telemetry_line() {
+  local output line
+  output="$(zig_hot promotion-telemetry 2>&1)" || return 1
+  line="$(awk '/^promotion-telemetry:$/ { getline; print; exit }' <<<"$output")"
+  [[ -n "$line" ]] || return 1
+  printf '%s\n' "$line"
+}
+
+promotion_telemetry_value() {
+  local key="$1"
+  local line
+  line="$(promotion_telemetry_line)" || return 1
+  awk -v key="$key" '
+    {
+      for (i = 1; i <= NF; i += 1) {
+        split($i, pair, "=")
+        if (pair[1] == key) {
+          print pair[2]
+          exit 0
+        }
+      }
+      exit 1
+    }
+  ' <<<"$line"
+}
+
+wait_for_promotion_telemetry_at_least() {
+  local key="$1"
+  local minimum="$2"
+  local deadline=$((SECONDS + 120))
+  local poll_interval="${HOT_TEST_PROMOTION_POLL_INTERVAL:-0.05}"
+  local value=""
+  local last_line=""
+
+  while (( SECONDS < deadline )); do
+    last_line="$(promotion_telemetry_line 2>/dev/null || true)"
+    value="$(promotion_telemetry_value "$key" 2>/dev/null || true)"
+    if [[ -n "$value" ]] && (( value >= minimum )); then
+      return 0
+    fi
+    sleep "$poll_interval"
+  done
+
+  echo "error: timed out waiting for promotion telemetry $key >= $minimum" >&2
+  if [[ -n "$last_line" ]]; then
+    echo "last-promotion-telemetry: $last_line" >&2
+  fi
+  zig_hot promotion-telemetry 1>&2 || true
+  exit 1
+}
+
 wait_for_runtime_ready() {
   local deadline=$((SECONDS + 120))
   local output=""
@@ -393,6 +570,9 @@ tb_proven_functions=(
   Direction.reverse
   compaction_op_min
   snapshot_min_for_table_output
+  snapshot_max_for_table_input
+  multi_batch_count_max
+  trailer_total_size
 )
 tb_proven_vars=(
   log_level_runtime
@@ -401,6 +581,7 @@ tb_proven_vars=(
 
 wait_for_hot_config_file
 wait_for_port_file
+TB_SERVER_ADDRESS="$(wait_for_tigerbeetle_address)"
 
 describe_output="$(wait_for_runtime_ready)"
 # The config file exists before the hot graph is fully flushed; wait for the
@@ -658,19 +839,61 @@ expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protoco
 expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protocol.Decoder.init([0,1,0,2])).method' "2"
 echo "assoc Decoder.read_int specialization replay: OK"
 
-assoc_read_int_seven="$(zig_hot assoc Decoder.read_int --file src/cdc/amqp/protocol.zig 'fn read_int(self: *Decoder, comptime T: type) Error!T { _ = self; return @as(T, 7); }' 2>&1)"
-expect_hot_success "$assoc_read_int_seven"
-assoc_read_int_eleven="$(zig_hot assoc Decoder.read_int --file src/cdc/amqp/protocol.zig 'fn read_int(self: *Decoder, comptime T: type) Error!T { _ = self; return @as(T, 11); }' 2>&1)"
-expect_hot_success "$assoc_read_int_eleven"
-expect_eval_value 'cdc.amqp.protocol.Decoder.read_bool(cdc.amqp.protocol.Decoder.init([1]))' "true"
-expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protocol.Decoder.init([0,1,0,2])).class' "11"
-expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protocol.Decoder.init([0,1,0,2])).method' "11"
-dissoc_read_int_stress="$(zig_hot dissoc Decoder.read_int 2>&1)"
-expect_hot_success "$dissoc_read_int_stress"
-expect_eval_value 'cdc.amqp.protocol.Decoder.read_bool(cdc.amqp.protocol.Decoder.init([1]))' "true"
-expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protocol.Decoder.init([0,1,0,2])).class' "1"
-expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protocol.Decoder.init([0,1,0,2])).method' "2"
-echo "assoc Decoder.read_int rapid specialization replay keeps latest live version: OK"
+create_accounts_validation="$(run_tb_repl 'create_accounts id=1 flags=debits_must_not_exceed_credits code=10 ledger=700, id=2 code=10 ledger=700;')"
+expect_contains "$create_accounts_validation" '"status": ".created"'
+baseline_transfer_validation="$(run_tb_repl 'create_transfers id=1 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;')"
+expect_contains "$baseline_transfer_validation" '"status": ".exceeds_credits"'
+read -r debits_exceed_start debits_exceed_end <<<"$(tigerbeetle_source_debits_exceed_credits_range)"
+patch_tigerbeetle_debits_exceed_credits_probe allow
+reload_debits_allow="$(zig_hot reload "$TIGERBEETLE_SOURCE_REL" "$debits_exceed_start" "$debits_exceed_end" 2>&1)"
+expect_hot_success "$reload_debits_allow"
+expect_contains "$reload_debits_allow" "decl=Account.debits_exceed_credits;kind=function_decl"
+allowed_transfer_validation="$(run_tb_repl 'create_transfers id=2 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;')"
+expect_contains "$allowed_transfer_validation" '"status": ".created"'
+patch_tigerbeetle_debits_exceed_credits_probe deny
+reload_debits_deny="$(zig_hot reload "$TIGERBEETLE_SOURCE_REL" "$debits_exceed_start" "$debits_exceed_end" 2>&1)"
+expect_hot_success "$reload_debits_deny"
+expect_contains "$reload_debits_deny" "decl=Account.debits_exceed_credits;kind=function_decl"
+denied_transfer_validation="$(run_tb_repl 'create_transfers id=3 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;')"
+expect_contains "$denied_transfer_validation" '"status": ".exceeds_credits"'
+
+patch_tigerbeetle_debits_exceed_credits_probe allow
+reload_debits_allow_log="$(mktemp "$ROOT_DIR/.tb-hot-reload-allow-XXXXXX")"
+(
+  zig_hot reload "$TIGERBEETLE_SOURCE_REL" "$debits_exceed_start" "$debits_exceed_end" >"$reload_debits_allow_log" 2>&1
+) &
+reload_debits_allow_pid=$!
+wait_for_promotion_telemetry_at_least "building" 1
+patch_tigerbeetle_debits_exceed_credits_probe deny
+reload_debits_deny_log="$(mktemp "$ROOT_DIR/.tb-hot-reload-deny-XXXXXX")"
+(
+  zig_hot reload "$TIGERBEETLE_SOURCE_REL" "$debits_exceed_start" "$debits_exceed_end" >"$reload_debits_deny_log" 2>&1
+) &
+reload_debits_deny_pid=$!
+wait "$reload_debits_allow_pid"
+reload_debits_allow="$(cat "$reload_debits_allow_log")"
+rm -f "$reload_debits_allow_log"
+expect_hot_success "$reload_debits_allow"
+expect_contains "$reload_debits_allow" "decl=Account.debits_exceed_credits;kind=function_decl"
+wait "$reload_debits_deny_pid"
+reload_debits_deny="$(cat "$reload_debits_deny_log")"
+rm -f "$reload_debits_deny_log"
+expect_hot_success "$reload_debits_deny"
+expect_contains "$reload_debits_deny" "decl=Account.debits_exceed_credits;kind=function_decl"
+wait_for_promotion_telemetry_at_least "discarded-stale-total" 1
+promotion_telemetry_output="$(zig_hot promotion-telemetry 2>&1)"
+expect_hot_success "$promotion_telemetry_output"
+expect_contains "$promotion_telemetry_output" "discarded-stale-total="
+expect_contains "$promotion_telemetry_output" "worker-count=$HOT_TEST_PROMOTION_WORKERS"
+denied_transfer_overlap_validation="$(run_tb_repl 'create_transfers id=4 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;')"
+expect_contains "$denied_transfer_overlap_validation" '"status": ".exceeds_credits"'
+restore_tigerbeetle_source
+reload_debits_restore="$(zig_hot reload "$TIGERBEETLE_SOURCE_REL" "$debits_exceed_start" "$debits_exceed_end" 2>&1)"
+expect_hot_success "$reload_debits_restore"
+expect_contains "$reload_debits_restore" "decl=Account.debits_exceed_credits;kind=function_decl"
+restored_transfer_validation="$(run_tb_repl 'create_transfers id=5 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;')"
+expect_contains "$restored_transfer_validation" '"status": ".exceeds_credits"'
+echo "reload Account.debits_exceed_credits rapid repeated edits keep latest live version: OK"
 
 expect_eval_value 'cdc.amqp.protocol.Decoder.read_field(cdc.amqp.protocol.Decoder.init([66,1]))' ".{ .uint8 = 1 }"
 assoc_read_enum="$(zig_hot assoc --no-native Decoder.read_enum --file src/cdc/amqp/protocol.zig 'fn read_enum(self: *Decoder, comptime Enum: type) Error!Enum { _ = self; return @as(Enum, @enumFromInt(86)); }' 2>&1)"

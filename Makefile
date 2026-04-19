@@ -13,7 +13,7 @@ HOT_ZIG_CACHE_ARGS := --cache-dir "$(HOT_BUILD_CACHE_DIR)" --global-cache-dir "$
 HOT_CONFIG_FILE := $(REPO_ROOT)/zig-out/share/zig-hot/tigerbeetle.config
 HOT_TEST_CLEAN ?= 0
 HOT_TEST_PROMOTION_WORKERS ?= 2
-HOT_TEST_PROMOTION_DELAY_MS ?= 300
+HOT_TEST_PROMOTION_DELAY_MS ?= 2000
 
 hot-stop:
 	@set -eu; \
@@ -149,7 +149,7 @@ hot-test: hot-stop
 		tail -f /dev/null >"$(HOT_STDIN)" & \
 		stdin_pid=$$!; \
 		echo "$$stdin_pid" >"$(HOT_STDIN_PID)"; \
-		"$${hot_env[@]}" "$$zig_bin" build $(HOT_ZIG_CACHE_ARGS) hot-run -- start --addresses=0 --development "$(HOT_DB)" <"$(HOT_STDIN)" >"$(HOT_LOG)" 2>&1 & \
+		"$${hot_env[@]}" "$$zig_bin" build $(HOT_ZIG_CACHE_ARGS) -Dhot-promotion-workers="$(HOT_TEST_PROMOTION_WORKERS)" -Dhot-promotion-delay-ms="$(HOT_TEST_PROMOTION_DELAY_MS)" hot-run -- start --addresses=0 --development "$(HOT_DB)" <"$(HOT_STDIN)" >"$(HOT_LOG)" 2>&1 & \
 		run_pid=$$!; \
 		echo "$$run_pid" >"$(HOT_PID)"; \
 		ZIG_BIN="$$zig_bin" \

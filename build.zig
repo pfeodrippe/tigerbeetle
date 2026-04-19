@@ -735,6 +735,12 @@ fn build_tigerbeetle(
                 b.fmt("{d}", .{options.hot_promotion_delay_ms}),
             );
         }
+        if (options.hot_promotion_workers != 0) {
+            hot_run_cmd.setEnvironmentVariable(
+                "ZIG_HOT_PROMOTION_WORKERS",
+                b.fmt("{d}", .{options.hot_promotion_workers}),
+            );
+        }
         hot.configureRun(hot_run_cmd);
         steps.hot_run.dependOn(&hot_run_cmd.step);
     } else {
