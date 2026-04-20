@@ -1,0 +1,205 @@
+-- allium: 1
+-- client-sessions.allium
+-- Scope: bounded client-session lifecycle aligned with docs/tla/ClientSessions.tla.
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum SessionStatus { active | evicted | terminated }
+enum SessionError { session_evicted | in_flight_request_exists }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity ClientSession {
+    client_session_id: Integer
+    client_id: Integer
+    status: SessionStatus
+
+    registered_at: Timestamp
+    last_committed_at: Timestamp?
+
+    in_flight_request_id: Integer?
+    last_reply_checksum: String?
+}
+
+entity SessionEvent {
+    session: ClientSession
+    kind: registered | evicted | request_submitted | reply_received | request_retried | terminated
+    timestamp: Timestamp
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    clients_max: Integer = 64
+    max_clock: Integer = 20
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule RegisterSessionWithoutEviction {
+    when: ClientRegistrationRequested(client_id)
+
+    let active_sessions = ClientSessions where status = active
+
+    requires: active_sessions.count < config.clients_max
+
+    ensures: ClientSession.created(
+        client_session_id: NextSessionNumber(),
+        client_id: client_id,
+        status: active,
+        registered_at: now,
+        last_committed_at: null,
+        in_flight_request_id: null,
+        last_reply_checksum: null
+    )
+
+    ensures: SessionEvent.created(
+        session: ClientSession{client_id: client_id, status: active},
+        kind: registered,
+        timestamp: now
+    )
+}
+
+rule RegisterSessionWithDeterministicEviction {
+    when: ClientRegistrationRequested(client_id)
+
+    let active_sessions = ClientSessions where status = active
+    let evictee = LeastRecentlyCommittedSession(active_sessions)
+
+    requires: active_sessions.count >= config.clients_max
+    requires: exists evictee
+
+    ensures: evictee.status = evicted
+    ensures: evictee.in_flight_request_id = null
+
+    ensures: SessionEvent.created(
+        session: evictee,
+        kind: evicted,
+        timestamp: now
+    )
+
+    ensures: ClientSession.created(
+        client_session_id: NextSessionNumber(),
+        client_id: client_id,
+        status: active,
+        registered_at: now,
+        last_committed_at: null,
+        in_flight_request_id: null,
+        last_reply_checksum: null
+    )
+
+    ensures: SessionEvent.created(
+        session: ClientSession{client_id: client_id, status: active},
+        kind: registered,
+        timestamp: now
+    )
+}
+
+rule ActiveSessionCanHaveOnlyOneInFlightRequest {
+    when: ClientRequestSubmitted(session, request_id)
+
+    requires: session.status = active
+    requires: session.in_flight_request_id = null
+
+    ensures: session.in_flight_request_id = request_id
+
+    ensures: SessionEvent.created(
+        session: session,
+        kind: request_submitted,
+        timestamp: now
+    )
+
+    ensures: RequestForwardedToCluster(session: session, request_id: request_id)
+}
+
+rule RejectSubmissionWhenRequestAlreadyInFlight {
+    when: ClientRequestSubmitted(session, request_id)
+
+    requires: session.status = active
+    requires: session.in_flight_request_id != null
+
+    ensures: ClientSessionError(
+        session: session,
+        request_id: request_id,
+        error: in_flight_request_exists
+    )
+}
+
+rule RejectSubmissionFromEvictedOrTerminatedSession {
+    when: ClientRequestSubmitted(session, request_id)
+
+    requires: session.status in {evicted, terminated}
+
+    ensures: ClientSessionError(
+        session: session,
+        request_id: request_id,
+        error: session_evicted
+    )
+}
+
+rule ReceiveReplyClearsInFlightAndAdvancesSession {
+    when: ClusterReplyDelivered(session, request_id, reply_checksum)
+
+    requires: session.status = active
+    requires: session.in_flight_request_id = request_id
+
+    ensures: session.in_flight_request_id = null
+    ensures: session.last_reply_checksum = reply_checksum
+    ensures: session.last_committed_at = now
+
+    ensures: SessionEvent.created(
+        session: session,
+        kind: reply_received,
+        timestamp: now
+    )
+}
+
+rule RetryUntilReplyOrTermination {
+    when: RequestDeliveryUncertain(session, request_id)
+
+    requires: session.status = active
+    requires: session.in_flight_request_id = request_id
+
+    ensures: SessionEvent.created(
+        session: session,
+        kind: request_retried,
+        timestamp: now
+    )
+
+    ensures: RequestRetriedBySameSession(request_id: request_id, session: session)
+}
+
+rule SessionRestartCreatesNewSessionIdentity {
+    when: ClientProcessRestarted(previous_session, new_client_id)
+
+    ensures: previous_session.status = terminated
+
+    ensures: ClientRegistrationRequested(client_id: new_client_id)
+}
+
+------------------------------------------------------------
+-- Model-Checked Guarantees (docs/tla/ClientSessions.tla)
+------------------------------------------------------------
+
+-- Safety invariants mirrored in the TLA model:
+--   - ActiveSessionCountBounded
+--   - NonActiveSessionsHaveNoInflight
+--   - AtMostOneInflightPerActiveSession
+--   - InflightRequestBelongsToActiveSession
+--   - ActiveSessionsHaveAllocatedIds
+--   - CommittedTimestampsDoNotExceedClock
+--
+-- Temporal properties mirrored in the TLA model:
+--   - []TypeOK
+--   - [] (clock' >= clock)
+--   - [] (session.last_committed_at' >= session.last_committed_at)
+--   - all work queues eventually drain (`<>` / `~>`)
+--   - in-flight requests eventually clear or session leaves active state (`~>`)
