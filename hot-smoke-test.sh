@@ -792,7 +792,7 @@ expect_contains "$sum_overflows_restored" "value: false"
 echo "state_machine.zig sum_overflows hot reload probe: OK"
 
 sum_overflows_test_baseline="$(zig_hot eval-zig src/state_machine.zig 'sum_overflows_test(u64)' 2>&1)"
-expect_contains "$sum_overflows_test_baseline" "err: execute failed: TypeMismatch"
+expect_contains "$sum_overflows_test_baseline" "value: null"
 
 assoc_sum_overflows_test="$(zig_hot assoc --no-native sum_overflows_test --file src/state_machine.zig 'fn sum_overflows_test(comptime Int: type) !void { _ = Int; return error.Patched; }' 2>&1)"
 expect_hot_success "$assoc_sum_overflows_test"
@@ -802,24 +802,29 @@ expect_contains "$sum_overflows_test_patched" "value: error.Patched"
 dissoc_sum_overflows_test="$(zig_hot dissoc sum_overflows_test 2>&1)"
 expect_hot_success "$dissoc_sum_overflows_test"
 sum_overflows_test_restored="$(zig_hot eval-zig src/state_machine.zig 'sum_overflows_test(u64)' 2>&1)"
-expect_contains "$sum_overflows_test_restored" "err: execute failed: TypeMismatch"
+expect_contains "$sum_overflows_test_restored" "value: null"
 echo "state_machine.zig sum_overflows_test hot reload probe: OK"
 
-state_machine_forest_options_baseline="$(zig_hot compile-body hot_state_machine_probe.zig stateMachineForestOptionsCacheProbe 2>&1)"
-expect_hot_success "$state_machine_forest_options_baseline"
-expect_contains "$state_machine_forest_options_baseline" "value: null"
+state_machine_event_max_baseline="$(run_hot eval-zig src/tigerbeetle.zig 'Operation.create_accounts.event_max(@as(u32, 4096))')"
+expect_contains "$state_machine_event_max_baseline" "value: 31"
+
+state_machine_result_max_baseline="$(run_hot eval-zig src/tigerbeetle.zig 'Operation.create_accounts.result_max(@as(u32, 4096))')"
+expect_contains "$state_machine_result_max_baseline" "value: 31"
+echo "state_machine.zig operation batch-limit baseline probes: OK"
+
+state_machine_forest_options_expr='StateMachine.forest_options(.{ .batch_size_limit = 4096, .lsm_forest_compaction_block_count = 1, .lsm_forest_node_count = 1, .cache_entries_accounts = 7, .cache_entries_transfers = 11, .cache_entries_transfers_pending = 13, .log_trace = false, .aof_recovery = false }).accounts.cache_entries_max'
+state_machine_forest_options_baseline="$(run_hot eval-zig src/tigerbeetle/main.zig "$state_machine_forest_options_expr")"
+expect_contains "$state_machine_forest_options_baseline" "value: 7"
 
 assoc_state_machine_forest_options="$(zig_hot assoc --no-native StateMachineType.forest_options --file src/state_machine.zig 'fn forest_options(options: Options) Forest.GroovesOptions { _ = options; return .{ .accounts = .{ .cache_entries_max = 99 } }; }' 2>&1)"
 expect_hot_success "$assoc_state_machine_forest_options"
-state_machine_forest_options_patched="$(zig_hot compile-body hot_state_machine_probe.zig stateMachineForestOptionsCacheProbe 2>&1)"
-expect_hot_success "$state_machine_forest_options_patched"
+state_machine_forest_options_patched="$(run_hot eval-zig src/tigerbeetle/main.zig "$state_machine_forest_options_expr")"
 expect_contains "$state_machine_forest_options_patched" "value: 99"
 
 dissoc_state_machine_forest_options="$(zig_hot dissoc StateMachineType.forest_options 2>&1)"
 expect_hot_success "$dissoc_state_machine_forest_options"
-state_machine_forest_options_restored="$(zig_hot compile-body hot_state_machine_probe.zig stateMachineForestOptionsCacheProbe 2>&1)"
-expect_hot_success "$state_machine_forest_options_restored"
-expect_contains "$state_machine_forest_options_restored" "value: null"
+state_machine_forest_options_restored="$(run_hot eval-zig src/tigerbeetle/main.zig "$state_machine_forest_options_expr")"
+expect_contains "$state_machine_forest_options_restored" "value: 7"
 echo "state_machine.zig forest_options import-alias hot override probe: OK"
 
 # ── Generic/comptime specialization replay proofs ──────────────────────
@@ -1221,6 +1226,54 @@ if echo "$trailer_total_size_eval" | grep -qF "value: 128"; then
   fi
 else
   echo "eval-zig trailer_total_size not yet supported — skipping"
+fi
+
+# div_ceil — anytype dispatch with concrete unsigned integer bindings
+div_ceil_eval="$(zig_hot eval-zig src/stdx/stdx.zig 'div_ceil(@as(u32, 18), @as(u32, 16))' 2>&1 || true)"
+if echo "$div_ceil_eval" | grep -qF "value: 2"; then
+  echo "eval-zig div_ceil(@as(u32, 18), @as(u32, 16)) = 2 ✓"
+
+  assoc_div_ceil="$(zig_hot assoc --no-native div_ceil --file src/stdx/stdx.zig 'fn div_ceil(numerator: anytype, denominator: anytype) @TypeOf(numerator, denominator) { _ = numerator; _ = denominator; return @as(@TypeOf(numerator, denominator), 7); }' 2>&1)"
+  if echo "$assoc_div_ceil" | grep -qF "done"; then
+    div_ceil_patched="$(zig_hot eval-zig src/stdx/stdx.zig 'div_ceil(@as(u32, 18), @as(u32, 16))' 2>&1 || true)"
+    expect_contains "$div_ceil_patched" "value: 7"
+    echo "assoc div_ceil override: OK"
+
+    dissoc_div_ceil="$(zig_hot dissoc div_ceil 2>&1)"
+    expect_contains "$dissoc_div_ceil" "done"
+    div_ceil_restored="$(zig_hot eval-zig src/stdx/stdx.zig 'div_ceil(@as(u32, 18), @as(u32, 16))' 2>&1 || true)"
+    expect_contains "$div_ceil_restored" "value: 2"
+    tb_proven_functions+=(div_ceil)
+    echo "dissoc div_ceil: OK"
+  else
+    echo "assoc div_ceil not yet supported — skipping"
+  fi
+else
+  echo "eval-zig div_ceil not yet supported — skipping"
+fi
+
+# Tree.pop_winner — nested comptime dispatch through a concrete tournament-tree alias
+pop_winner_baseline="$(zig_hot compile-body hot_pop_winner_probe.zig popWinnerProbe 2>&1 || true)"
+if echo "$pop_winner_baseline" | grep -qF "value: 60"; then
+  echo "compile-body popWinnerProbe() = 60 ✓"
+
+  assoc_pop_winner="$(zig_hot assoc --no-native Tree.pop_winner --file hot_pop_winner_probe.zig 'fn pop_winner(tree: *Tree, entrant: ?u32) void { tree.win_key = if (entrant) |key| key + 100 else 777; tree.win_id = 3; }' 2>&1)"
+  if echo "$assoc_pop_winner" | grep -qF "done"; then
+    pop_winner_patched="$(zig_hot compile-body hot_pop_winner_probe.zig popWinnerProbe 2>&1 || true)"
+    expect_contains "$pop_winner_patched" "value: 1063"
+    echo "assoc Tree.pop_winner override: OK"
+
+    dissoc_pop_winner="$(zig_hot dissoc Tree.pop_winner 2>&1)"
+    expect_contains "$dissoc_pop_winner" "done"
+    pop_winner_restored="$(zig_hot compile-body hot_pop_winner_probe.zig popWinnerProbe 2>&1 || true)"
+    expect_contains "$pop_winner_restored" "value: 60"
+    tb_proven_functions+=(Tree.pop_winner)
+    echo "dissoc Tree.pop_winner: OK"
+  else
+    echo "assoc Tree.pop_winner not yet supported — skipping"
+  fi
+else
+  echo "compile-body Tree.pop_winner not yet supported — skipping"
 fi
 
 # Assoc with malformed code — should return clean error, not crash

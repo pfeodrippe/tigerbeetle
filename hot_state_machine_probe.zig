@@ -1,4 +1,6 @@
+const std = @import("std");
 const tigerbeetle_main = @import("src/tigerbeetle/main.zig");
+
 fn stateMachineForestOptionsReadProbe() u32 {
     const options = tigerbeetle_main.StateMachine.forest_options(.{
         .batch_size_limit = 4096,
