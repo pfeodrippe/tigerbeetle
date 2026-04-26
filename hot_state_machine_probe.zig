@@ -1,5 +1,8 @@
-const std = @import("std");
+const constants = @import("src/constants.zig");
 const tigerbeetle_main = @import("src/tigerbeetle/main.zig");
+
+const StateMachine = tigerbeetle_main.StateMachine;
+const Operation = StateMachine.Operation;
 
 fn stateMachineForestOptionsReadProbe() u32 {
     const options = tigerbeetle_main.StateMachine.forest_options(.{
@@ -27,4 +30,14 @@ fn stateMachineForestOptionsCacheProbe() u32 {
         .aof_recovery = false,
     });
     return options.accounts.cache_entries_max;
+}
+
+fn stateMachineCommitAssocProbe() usize {
+    _ = constants.message_body_size_max;
+    return StateMachine.commit(undefined, 1, 1, 1, .pulse, null, null);
+}
+
+fn stateMachineExecuteMultiBatchAssocProbe() usize {
+    _ = constants.message_body_size_max;
+    return StateMachine.execute_multi_batch(undefined, 1, Operation.create_accounts, null, null);
 }

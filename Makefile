@@ -9,6 +9,9 @@ HOT_STDIN_PID := $(REPO_ROOT)/.hot-run.stdin.pid
 HOT_PORT_FILE := $(REPO_ROOT)/.nrepl-port
 HOT_BUILD_CACHE_DIR ?= $(REPO_ROOT)/.zig-hot-build-cache
 HOT_GLOBAL_CACHE_DIR ?= $(REPO_ROOT)/.zig-hot-global-cache
+HOT_BUILD_CACHE_MAX_GIB ?= 24
+HOT_BUILD_CACHE_RESET_TOOL ?= $(abspath $(REPO_ROOT)/../..)/tools/reset-zig-build-cache.sh
+HOT_DB_MIN_SIZE ?= 1141374976
 HOT_ZIG_CACHE_ARGS := --cache-dir "$(HOT_BUILD_CACHE_DIR)" --global-cache-dir "$(HOT_GLOBAL_CACHE_DIR)"
 HOT_CONFIG_FILE := $(REPO_ROOT)/zig-out/share/zig-hot/tigerbeetle.config
 HOT_TEST_CLEAN ?= 0
@@ -76,11 +79,24 @@ hot-run: hot-stop
 		prepend_lib_dir "$$ZLIB_PREFIX/lib"; \
 		hot_env=(env DYLD_LIBRARY_PATH="$${DYLD_LIBRARY_PATH:-}"); \
 		if [[ -n "$(HOT_ZIG_LIB_DIR)" ]]; then hot_env+=(ZIG_LIB_DIR="$(HOT_ZIG_LIB_DIR)"); fi; \
+		if [ -x "$(HOT_BUILD_CACHE_RESET_TOOL)" ]; then \
+			"$(HOT_BUILD_CACHE_RESET_TOOL)" "$(HOT_BUILD_CACHE_DIR)" "$(HOT_BUILD_CACHE_MAX_GIB)" "tigerbeetle hot build cache"; \
+		fi; \
 		mkdir -p "$(HOT_BUILD_CACHE_DIR)" "$(HOT_GLOBAL_CACHE_DIR)"; \
 		rm -f "$(HOT_LOG)" "$(HOT_PID)" "$(HOT_PORT_FILE)" "$(HOT_STDIN)" "$(HOT_STDIN_PID)" "$(HOT_CONFIG_FILE)"; \
-		if [[ ! -f "$(HOT_DB)" ]]; then \
-			(cd "$(REPO_ROOT)" && "$${hot_env[@]}" "$$zig_bin" build $(HOT_ZIG_CACHE_ARGS) run -- format --cluster=0 --replica=0 --replica-count=1 --development "$(HOT_DB)") >/dev/null; \
-		fi; \
+			format_db=0; \
+			if [[ ! -f "$(HOT_DB)" ]]; then \
+				format_db=1; \
+			else \
+				db_size=$$(stat -f '%z' "$(HOT_DB)" 2>/dev/null || echo 0); \
+				if [[ "$$db_size" -lt "$(HOT_DB_MIN_SIZE)" ]]; then \
+					rm -f "$(HOT_DB)"; \
+					format_db=1; \
+				fi; \
+			fi; \
+			if [[ "$$format_db" == 1 ]]; then \
+				(cd "$(REPO_ROOT)" && "$${hot_env[@]}" "$$zig_bin" build $(HOT_ZIG_CACHE_ARGS) run -- format --cluster=0 --replica=0 --replica-count=1 --development "$(HOT_DB)") >/dev/null; \
+			fi; \
 		mkfifo "$(HOT_STDIN)"; \
 		tail -f /dev/null >"$(HOT_STDIN)" & \
 		stdin_pid=$$!; \
@@ -139,25 +155,40 @@ hot-test: hot-stop
 		prepend_lib_dir "$$ZLIB_PREFIX/lib"; \
 		hot_env=(env DYLD_LIBRARY_PATH="$${DYLD_LIBRARY_PATH:-}"); \
 		if [[ -n "$(HOT_ZIG_LIB_DIR)" ]]; then hot_env+=(ZIG_LIB_DIR="$(HOT_ZIG_LIB_DIR)"); fi; \
+		if [ -x "$(HOT_BUILD_CACHE_RESET_TOOL)" ]; then \
+			"$(HOT_BUILD_CACHE_RESET_TOOL)" "$(HOT_BUILD_CACHE_DIR)" "$(HOT_BUILD_CACHE_MAX_GIB)" "tigerbeetle hot build cache"; \
+		fi; \
 		mkdir -p "$(HOT_BUILD_CACHE_DIR)" "$(HOT_GLOBAL_CACHE_DIR)"; \
-		rm -f "$(HOT_LOG)" "$(HOT_PID)" "$(HOT_PORT_FILE)" "$(HOT_STDIN)" "$(HOT_STDIN_PID)" "$(HOT_CONFIG_FILE)"; \
-		cleanup() { "$(MAKE)" hot-stop >/dev/null 2>&1 || true; }; \
-		trap cleanup EXIT INT TERM; \
-		rm -f "$(HOT_DB)"; \
-		(cd "$(REPO_ROOT)" && "$${hot_env[@]}" "$$zig_bin" build $(HOT_ZIG_CACHE_ARGS) run -- format --cluster=0 --replica=0 --replica-count=1 --development "$(HOT_DB)") >/dev/null; \
-		mkfifo "$(HOT_STDIN)"; \
-		tail -f /dev/null >"$(HOT_STDIN)" & \
-		stdin_pid=$$!; \
+			rm -f "$(HOT_LOG)" "$(HOT_PID)" "$(HOT_PORT_FILE)" "$(HOT_STDIN)" "$(HOT_STDIN_PID)" "$(HOT_CONFIG_FILE)"; \
+			cleanup() { "$(MAKE)" hot-stop >/dev/null 2>&1 || true; }; \
+			trap cleanup EXIT INT TERM; \
+			format_db=0; \
+			if [[ ! -f "$(HOT_DB)" ]]; then \
+				format_db=1; \
+			else \
+				db_size=$$(stat -f '%z' "$(HOT_DB)" 2>/dev/null || echo 0); \
+				if [[ "$$db_size" -lt "$(HOT_DB_MIN_SIZE)" ]]; then \
+					rm -f "$(HOT_DB)"; \
+					format_db=1; \
+				fi; \
+			fi; \
+			if [[ "$$format_db" == 1 ]]; then \
+				(cd "$(REPO_ROOT)" && "$${hot_env[@]}" "$$zig_bin" build $(HOT_ZIG_CACHE_ARGS) run -- format --cluster=0 --replica=0 --replica-count=1 --development "$(HOT_DB)") >/dev/null; \
+			fi; \
+			mkfifo "$(HOT_STDIN)"; \
+			tail -f /dev/null >"$(HOT_STDIN)" & \
+			stdin_pid=$$!; \
 		echo "$$stdin_pid" >"$(HOT_STDIN_PID)"; \
 		"$${hot_env[@]}" "$$zig_bin" build $(HOT_ZIG_CACHE_ARGS) -Dhot-promotion-workers="$(HOT_TEST_PROMOTION_WORKERS)" -Dhot-promotion-delay-ms="$(HOT_TEST_PROMOTION_DELAY_MS)" hot-run -- start --addresses=0 --development "$(HOT_DB)" <"$(HOT_STDIN)" >"$(HOT_LOG)" 2>&1 & \
 		run_pid=$$!; \
 		echo "$$run_pid" >"$(HOT_PID)"; \
-		ZIG_BIN="$$zig_bin" \
-		ZIG_LIB_DIR="$(HOT_ZIG_LIB_DIR)" \
-		HOT_CONFIG_FILE="$(HOT_CONFIG_FILE)" \
-		HOT_TEST_PROMOTION_WORKERS="$(HOT_TEST_PROMOTION_WORKERS)" \
-		PORT_FILE="$(HOT_PORT_FILE)" \
-		./hot-smoke-test.sh'
+			ZIG_BIN="$$zig_bin" \
+			ZIG_LIB_DIR="$(HOT_ZIG_LIB_DIR)" \
+			HOT_CONFIG_FILE="$(HOT_CONFIG_FILE)" \
+			HOT_PID_FILE="$(HOT_PID)" \
+			HOT_TEST_PROMOTION_WORKERS="$(HOT_TEST_PROMOTION_WORKERS)" \
+			PORT_FILE="$(HOT_PORT_FILE)" \
+			./hot-smoke-test.sh'
 .PHONY: hot-test
 
 hot-test-clean: HOT_TEST_CLEAN=1

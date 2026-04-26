@@ -7,6 +7,7 @@ ZIG_LIB_DIR="${ZIG_LIB_DIR:-${HOT_ZIG_LIB_DIR:-}}"
 PORT_FILE="${PORT_FILE:-$ROOT_DIR/.nrepl-port}"
 HOT_CONFIG_FILE="${HOT_CONFIG_FILE:-$ROOT_DIR/zig-out/share/zig-hot/tigerbeetle.config}"
 HOT_LOG="${HOT_LOG:-$ROOT_DIR/.hot-run.log}"
+HOT_PID_FILE="${HOT_PID_FILE:-$ROOT_DIR/.hot-run.pid}"
 HOT_TEST_PROMOTION_WORKERS="${HOT_TEST_PROMOTION_WORKERS:-2}"
 HOT_REPL_BUILD_CACHE_DIR="${HOT_REPL_BUILD_CACHE_DIR:-$ROOT_DIR/.zig-hot-client-build-cache}"
 HOT_REPL_GLOBAL_CACHE_DIR="${HOT_REPL_GLOBAL_CACHE_DIR:-$ROOT_DIR/.zig-hot-client-global-cache}"
@@ -15,6 +16,14 @@ TIGERBEETLE_SOURCE_REL="src/tigerbeetle.zig"
 TIGERBEETLE_SOURCE_FILE="$ROOT_DIR/$TIGERBEETLE_SOURCE_REL"
 TIGERBEETLE_SOURCE_BACKUP=""
 TIGERBEETLE_SOURCE_RESTORE_NEEDED=0
+TB_HOT_ID_BASE="${TB_HOT_ID_BASE:-$(( ($$ * 1000) + SECONDS + 1 ))}"
+TB_HOT_ACCOUNT_ID_1=$((TB_HOT_ID_BASE * 10 + 1))
+TB_HOT_ACCOUNT_ID_2=$((TB_HOT_ID_BASE * 10 + 2))
+TB_HOT_TRANSFER_ID_1=$((TB_HOT_ID_BASE * 10 + 101))
+TB_HOT_TRANSFER_ID_2=$((TB_HOT_ID_BASE * 10 + 102))
+TB_HOT_TRANSFER_ID_3=$((TB_HOT_ID_BASE * 10 + 103))
+TB_HOT_TRANSFER_ID_4=$((TB_HOT_ID_BASE * 10 + 104))
+TB_HOT_TRANSFER_ID_5=$((TB_HOT_ID_BASE * 10 + 105))
 
 if [[ "$ZIG_BIN" == */* ]]; then
   [[ -x "$ZIG_BIN" ]] || {
@@ -50,17 +59,38 @@ prepend_lib_dir "$ZSTD_PREFIX/lib"
 prepend_lib_dir "$LIBXML2_PREFIX/lib"
 prepend_lib_dir "$ZLIB_PREFIX/lib"
 
+hot_run_pid() {
+  [[ -f "$HOT_PID_FILE" ]] || return 1
+  local pid
+  pid="$(cat "$HOT_PID_FILE" 2>/dev/null || true)"
+  [[ -n "$pid" ]] || return 1
+  printf '%s\n' "$pid"
+}
+
 wait_for_port_file() {
   local timeout="${PORT_FILE_TIMEOUT:-600}"
   local deadline=$((SECONDS + timeout))
+  local run_pid=""
   while (( SECONDS < deadline )); do
     if [[ -s "$PORT_FILE" ]]; then
       return 0
+    fi
+    if run_pid="$(hot_run_pid)"; then
+      if ! kill -0 "$run_pid" >/dev/null 2>&1; then
+        echo "error: TigerBeetle hot-run exited before nREPL started" >&2
+        if [[ -f "$HOT_LOG" ]]; then
+          tail -n 120 "$HOT_LOG" >&2
+        fi
+        exit 1
+      fi
     fi
     sleep 1
   done
 
   echo "error: timed out after ${timeout}s waiting for $PORT_FILE" >&2
+  if [[ -f "$HOT_LOG" ]]; then
+    tail -n 120 "$HOT_LOG" >&2
+  fi
   exit 1
 }
 
@@ -827,6 +857,141 @@ state_machine_forest_options_restored="$(run_hot eval-zig src/tigerbeetle/main.z
 expect_contains "$state_machine_forest_options_restored" "value: 7"
 echo "state_machine.zig forest_options import-alias hot override probe: OK"
 
+state_machine_tree_values_count_expr='StateMachine.forest_options(.{ .batch_size_limit = 4096, .lsm_forest_compaction_block_count = 1, .lsm_forest_node_count = 1, .cache_entries_accounts = 7, .cache_entries_transfers = 11, .cache_entries_transfers_pending = 13, .log_trace = false, .aof_recovery = false }).accounts.tree_options_object.batch_value_count_limit'
+state_machine_tree_values_count_baseline="$(run_hot eval-zig src/tigerbeetle/main.zig "$state_machine_tree_values_count_expr")"
+expect_hot_success "$state_machine_tree_values_count_baseline"
+if grep -qF "value: 4242" <<<"$state_machine_tree_values_count_baseline"; then
+  echo "error: unexpected StateMachineType.tree_values_count baseline collided with patch sentinel" >&2
+  echo "$state_machine_tree_values_count_baseline" >&2
+  exit 1
+fi
+assoc_state_machine_tree_values_count="$(zig_hot assoc --no-native StateMachineType.tree_values_count --file src/state_machine.zig - <<'ASSOC_EOF'
+fn tree_values_count(batch_size_limit: u32) struct {
+    accounts: struct {
+        id: u32,
+        user_data_128: u32,
+        user_data_64: u32,
+        user_data_32: u32,
+        ledger: u32,
+        code: u32,
+        timestamp: u32,
+        imported: u32,
+        closed: u32,
+    },
+    transfers: struct {
+        timestamp: u32,
+        id: u32,
+        debit_account_id: u32,
+        credit_account_id: u32,
+        amount: u32,
+        pending_id: u32,
+        user_data_128: u32,
+        user_data_64: u32,
+        user_data_32: u32,
+        ledger: u32,
+        code: u32,
+        expires_at: u32,
+        imported: u32,
+        closing: u32,
+    },
+    transfers_pending: struct {
+        timestamp: u32,
+        status: u32,
+    },
+    account_events: struct {
+        timestamp: u32,
+        account_timestamp: u32,
+        transfer_pending_status: u32,
+        dr_account_id_expired: u32,
+        cr_account_id_expired: u32,
+        transfer_pending_id_expired: u32,
+        ledger_expired: u32,
+        prunable: u32,
+    },
+} {
+    _ = batch_size_limit;
+    return .{
+        .accounts = .{
+            .id = 4242,
+            .user_data_128 = 4242,
+            .user_data_64 = 4242,
+            .user_data_32 = 4242,
+            .ledger = 4242,
+            .code = 4242,
+            .timestamp = 4242,
+            .imported = 4242,
+            .closed = 4242,
+        },
+        .transfers = .{
+            .timestamp = 4343,
+            .id = 4343,
+            .debit_account_id = 4343,
+            .credit_account_id = 4343,
+            .amount = 4343,
+            .pending_id = 4343,
+            .user_data_128 = 4343,
+            .user_data_64 = 4343,
+            .user_data_32 = 4343,
+            .ledger = 4343,
+            .code = 4343,
+            .expires_at = 4343,
+            .imported = 4343,
+            .closing = 4343,
+        },
+        .transfers_pending = .{
+            .timestamp = 4444,
+            .status = 4444,
+        },
+        .account_events = .{
+            .timestamp = 4545,
+            .account_timestamp = 4545,
+            .transfer_pending_status = 4545,
+            .dr_account_id_expired = 4545,
+            .cr_account_id_expired = 4545,
+            .transfer_pending_id_expired = 4545,
+            .ledger_expired = 4545,
+            .prunable = 4545,
+        },
+    };
+}
+ASSOC_EOF
+2>&1)"
+expect_hot_success "$assoc_state_machine_tree_values_count"
+state_machine_tree_values_count_patched="$(run_hot eval-zig src/tigerbeetle/main.zig "$state_machine_tree_values_count_expr")"
+expect_hot_success "$state_machine_tree_values_count_patched"
+expect_contains "$state_machine_tree_values_count_patched" "value: 4242"
+dissoc_state_machine_tree_values_count="$(zig_hot dissoc StateMachineType.tree_values_count 2>&1)"
+expect_hot_success "$dissoc_state_machine_tree_values_count"
+state_machine_tree_values_count_restored="$(run_hot eval-zig src/tigerbeetle/main.zig "$state_machine_tree_values_count_expr")"
+expect_hot_success "$state_machine_tree_values_count_restored"
+if grep -qF "value: 4242" <<<"$state_machine_tree_values_count_restored"; then
+  echo "error: dissoc StateMachineType.tree_values_count left patched sentinel live" >&2
+  echo "$state_machine_tree_values_count_restored" >&2
+  exit 1
+fi
+tb_proven_functions+=(StateMachineType.tree_values_count)
+echo "state_machine.zig tree_values_count hot reload probe: OK"
+
+assoc_state_machine_commit="$(zig_hot assoc --no-native StateMachineType.commit --file src/state_machine.zig 'fn commit(self: *StateMachine, client: u128, op: u64, timestamp: u64, operation: Operation, message_body_used: []align(16) const u8, output_buffer: *align(16) [constants.message_body_size_max]u8) usize { _ = self; _ = client; _ = op; _ = timestamp; _ = operation; _ = message_body_used; _ = output_buffer; return 5151; }' 2>&1)"
+expect_hot_success "$assoc_state_machine_commit"
+state_machine_commit_patched="$(zig_hot compile-body hot_state_machine_probe.zig stateMachineCommitAssocProbe 2>&1 || true)"
+expect_hot_success "$state_machine_commit_patched"
+expect_contains "$state_machine_commit_patched" "value: 5151"
+dissoc_state_machine_commit="$(zig_hot dissoc StateMachineType.commit 2>&1)"
+expect_hot_success "$dissoc_state_machine_commit"
+tb_proven_functions+=(StateMachineType.commit)
+echo "state_machine.zig commit assoc probe: OK"
+
+assoc_state_machine_execute_multi_batch="$(zig_hot assoc --no-native StateMachineType.execute_multi_batch --file src/state_machine.zig 'fn execute_multi_batch(self: *StateMachine, timestamp: u64, comptime operation: Operation, message_body_used: []align(16) const u8, output_buffer: *align(16) [constants.message_body_size_max]u8) usize { _ = self; _ = timestamp; _ = operation; _ = message_body_used; _ = output_buffer; return 6262; }' 2>&1)"
+expect_hot_success "$assoc_state_machine_execute_multi_batch"
+state_machine_execute_multi_batch_patched="$(zig_hot compile-body hot_state_machine_probe.zig stateMachineExecuteMultiBatchAssocProbe 2>&1 || true)"
+expect_hot_success "$state_machine_execute_multi_batch_patched"
+expect_contains "$state_machine_execute_multi_batch_patched" "value: 6262"
+dissoc_state_machine_execute_multi_batch="$(zig_hot dissoc StateMachineType.execute_multi_batch 2>&1)"
+expect_hot_success "$dissoc_state_machine_execute_multi_batch"
+tb_proven_functions+=(StateMachineType.execute_multi_batch)
+echo "state_machine.zig execute_multi_batch assoc probe: OK"
+
 # ── Generic/comptime specialization replay proofs ──────────────────────
 
 expect_eval_value 'cdc.amqp.protocol.Decoder.read_bool(cdc.amqp.protocol.Decoder.init([1]))' "true"
@@ -844,22 +1009,24 @@ expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protoco
 expect_eval_value 'cdc.amqp.protocol.Decoder.read_method_header(cdc.amqp.protocol.Decoder.init([0,1,0,2])).method' "2"
 echo "assoc Decoder.read_int specialization replay: OK"
 
-create_accounts_validation="$(run_tb_repl 'create_accounts id=1 flags=debits_must_not_exceed_credits code=10 ledger=700, id=2 code=10 ledger=700;')"
+create_accounts_command="create_accounts id=$TB_HOT_ACCOUNT_ID_1 flags=debits_must_not_exceed_credits code=10 ledger=700, id=$TB_HOT_ACCOUNT_ID_2 code=10 ledger=700;"
+create_accounts_validation="$(run_tb_repl "$create_accounts_command")"
 expect_contains "$create_accounts_validation" '"status": ".created"'
-baseline_transfer_validation="$(run_tb_repl 'create_transfers id=1 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;')"
+
+baseline_transfer_validation="$(run_tb_repl "create_transfers id=$TB_HOT_TRANSFER_ID_1 debit_account_id=$TB_HOT_ACCOUNT_ID_1 credit_account_id=$TB_HOT_ACCOUNT_ID_2 amount=10 ledger=700 code=10;")"
 expect_contains "$baseline_transfer_validation" '"status": ".exceeds_credits"'
 read -r debits_exceed_start debits_exceed_end <<<"$(tigerbeetle_source_debits_exceed_credits_range)"
 patch_tigerbeetle_debits_exceed_credits_probe allow
 reload_debits_allow="$(zig_hot reload "$TIGERBEETLE_SOURCE_REL" "$debits_exceed_start" "$debits_exceed_end" 2>&1)"
 expect_hot_success "$reload_debits_allow"
 expect_contains "$reload_debits_allow" "decl=Account.debits_exceed_credits;kind=function_decl"
-allowed_transfer_validation="$(run_tb_repl 'create_transfers id=2 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;')"
+allowed_transfer_validation="$(run_tb_repl "create_transfers id=$TB_HOT_TRANSFER_ID_2 debit_account_id=$TB_HOT_ACCOUNT_ID_1 credit_account_id=$TB_HOT_ACCOUNT_ID_2 amount=10 ledger=700 code=10;")"
 expect_contains "$allowed_transfer_validation" '"status": ".created"'
 patch_tigerbeetle_debits_exceed_credits_probe deny
 reload_debits_deny="$(zig_hot reload "$TIGERBEETLE_SOURCE_REL" "$debits_exceed_start" "$debits_exceed_end" 2>&1)"
 expect_hot_success "$reload_debits_deny"
 expect_contains "$reload_debits_deny" "decl=Account.debits_exceed_credits;kind=function_decl"
-denied_transfer_validation="$(run_tb_repl 'create_transfers id=3 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;')"
+denied_transfer_validation="$(run_tb_repl "create_transfers id=$TB_HOT_TRANSFER_ID_3 debit_account_id=$TB_HOT_ACCOUNT_ID_1 credit_account_id=$TB_HOT_ACCOUNT_ID_2 amount=10 ledger=700 code=10;")"
 expect_contains "$denied_transfer_validation" '"status": ".exceeds_credits"'
 
 patch_tigerbeetle_debits_exceed_credits_probe allow
@@ -890,13 +1057,13 @@ promotion_telemetry_output="$(zig_hot promotion-telemetry 2>&1)"
 expect_hot_success "$promotion_telemetry_output"
 expect_contains "$promotion_telemetry_output" "discarded-stale-total="
 expect_contains "$promotion_telemetry_output" "worker-count=$HOT_TEST_PROMOTION_WORKERS"
-denied_transfer_overlap_validation="$(run_tb_repl 'create_transfers id=4 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;')"
+denied_transfer_overlap_validation="$(run_tb_repl "create_transfers id=$TB_HOT_TRANSFER_ID_4 debit_account_id=$TB_HOT_ACCOUNT_ID_1 credit_account_id=$TB_HOT_ACCOUNT_ID_2 amount=10 ledger=700 code=10;")"
 expect_contains "$denied_transfer_overlap_validation" '"status": ".exceeds_credits"'
 restore_tigerbeetle_source
 reload_debits_restore="$(zig_hot reload "$TIGERBEETLE_SOURCE_REL" "$debits_exceed_start" "$debits_exceed_end" 2>&1)"
 expect_hot_success "$reload_debits_restore"
 expect_contains "$reload_debits_restore" "decl=Account.debits_exceed_credits;kind=function_decl"
-restored_transfer_validation="$(run_tb_repl 'create_transfers id=5 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;')"
+restored_transfer_validation="$(run_tb_repl "create_transfers id=$TB_HOT_TRANSFER_ID_5 debit_account_id=$TB_HOT_ACCOUNT_ID_1 credit_account_id=$TB_HOT_ACCOUNT_ID_2 amount=10 ledger=700 code=10;")"
 expect_contains "$restored_transfer_validation" '"status": ".exceeds_credits"'
 echo "reload Account.debits_exceed_credits rapid repeated edits keep latest live version: OK"
 
@@ -976,52 +1143,34 @@ echo "dissoc Decoder.read_short_string: OK"
 # ── eval-zig proofs for pure utility functions (Phase 61A Batch 2) ───
 
 # sector_floor — alignment via divFloor, companion to already-proven sector_ceil
-sector_floor_baseline="$(zig_hot eval-zig src/vsr.zig 'sector_floor(5000)' 2>&1 || true)"
-if echo "$sector_floor_baseline" | grep -qF "value: 4096"; then
-  echo "eval-zig sector_floor(5000) = 4096 ✓"
+sector_floor_baseline="$(run_hot eval-zig src/vsr.zig 'sector_floor(5000)')"
+expect_contains "$sector_floor_baseline" "value: 4096"
 
-  # assoc override: make sector_floor always return 0
-  assoc_sector_floor="$(zig_hot assoc --no-native sector_floor --file src/vsr.zig 'fn sector_floor(offset: u64) u64 { _ = offset; return 0; }' 2>&1)"
-  if echo "$assoc_sector_floor" | grep -qF "done"; then
-    sector_floor_patched="$(zig_hot eval-zig src/vsr.zig 'sector_floor(5000)' 2>&1 || true)"
-    expect_contains "$sector_floor_patched" "value: 0"
-    echo "assoc sector_floor override (always 0): OK"
+assoc_sector_floor="$(zig_hot assoc --no-native sector_floor --file src/vsr.zig 'fn sector_floor(offset: u64) u64 { _ = offset; return 0; }' 2>&1)"
+expect_hot_success "$assoc_sector_floor"
+sector_floor_patched="$(run_hot eval-zig src/vsr.zig 'sector_floor(5000)')"
+expect_contains "$sector_floor_patched" "value: 0"
 
-    dissoc_sector_floor="$(zig_hot dissoc sector_floor 2>&1)"
-    expect_contains "$dissoc_sector_floor" "done"
-    sector_floor_restored="$(zig_hot eval-zig src/vsr.zig 'sector_floor(5000)' 2>&1 || true)"
-    expect_contains "$sector_floor_restored" "value: 4096"
-    echo "dissoc sector_floor restores original: OK"
-  else
-    echo "assoc sector_floor not yet supported — skipping"
-  fi
-else
-  echo "eval-zig sector_floor not yet supported — skipping"
-fi
+dissoc_sector_floor="$(zig_hot dissoc sector_floor 2>&1)"
+expect_hot_success "$dissoc_sector_floor"
+sector_floor_restored="$(run_hot eval-zig src/vsr.zig 'sector_floor(5000)')"
+expect_contains "$sector_floor_restored" "value: 4096"
+echo "sector_floor eval-zig + assoc/dissoc probe: OK"
 
 # fastrange — Lemire's u128 multiply-and-shift algorithm
-fastrange_baseline="$(zig_hot eval-zig src/stdx/stdx.zig 'fastrange(1000, 8)' 2>&1 || true)"
-if echo "$fastrange_baseline" | grep -qF "value: 0"; then
-  echo "eval-zig fastrange(1000, 8) = 0 ✓"
+fastrange_baseline="$(run_hot eval-zig src/stdx/stdx.zig 'fastrange(1000, 8)')"
+expect_contains "$fastrange_baseline" "value: 0"
 
-  # assoc override: make fastrange always return 42
-  assoc_fastrange="$(zig_hot assoc --no-native fastrange --file src/stdx/stdx.zig 'fn fastrange(word: u64, p: u64) u64 { _ = word; _ = p; return 42; }' 2>&1)"
-  if echo "$assoc_fastrange" | grep -qF "done"; then
-    fastrange_patched="$(zig_hot eval-zig src/stdx/stdx.zig 'fastrange(1000, 8)' 2>&1 || true)"
-    expect_contains "$fastrange_patched" "value: 42"
-    echo "assoc fastrange override (always 42): OK"
+assoc_fastrange="$(zig_hot assoc --no-native fastrange --file src/stdx/stdx.zig 'fn fastrange(word: u64, p: u64) u64 { _ = word; _ = p; return 42; }' 2>&1)"
+expect_hot_success "$assoc_fastrange"
+fastrange_patched="$(run_hot eval-zig src/stdx/stdx.zig 'fastrange(1000, 8)')"
+expect_contains "$fastrange_patched" "value: 42"
 
-    dissoc_fastrange="$(zig_hot dissoc fastrange 2>&1)"
-    expect_contains "$dissoc_fastrange" "done"
-    fastrange_restored="$(zig_hot eval-zig src/stdx/stdx.zig 'fastrange(1000, 8)' 2>&1 || true)"
-    expect_contains "$fastrange_restored" "value: 0"
-    echo "dissoc fastrange restores original: OK"
-  else
-    echo "assoc fastrange not yet supported — skipping"
-  fi
-else
-  echo "eval-zig fastrange not yet supported — skipping"
-fi
+dissoc_fastrange="$(zig_hot dissoc fastrange 2>&1)"
+expect_hot_success "$dissoc_fastrange"
+fastrange_restored="$(run_hot eval-zig src/stdx/stdx.zig 'fastrange(1000, 8)')"
+expect_contains "$fastrange_restored" "value: 0"
+echo "fastrange eval-zig + assoc/dissoc probe: OK"
 
 # Direction.reverse — enum-to-enum switch transform
 dir_reverse_baseline="$(zig_hot eval-zig src/direction.zig 'Direction.reverse(.ascending)' 2>&1 || true)"
@@ -1252,29 +1401,26 @@ else
   echo "eval-zig div_ceil not yet supported — skipping"
 fi
 
-# Tree.pop_winner — nested comptime dispatch through a concrete tournament-tree alias
+# pop_winner — nested comptime dispatch through a concrete tournament-tree alias
 pop_winner_baseline="$(zig_hot compile-body hot_pop_winner_probe.zig popWinnerProbe 2>&1 || true)"
-if echo "$pop_winner_baseline" | grep -qF "value: 60"; then
-  echo "compile-body popWinnerProbe() = 60 ✓"
+expect_hot_success "$pop_winner_baseline"
+expect_contains "$pop_winner_baseline" "value: 60"
+echo "compile-body popWinnerProbe() = 60 ✓"
 
-  assoc_pop_winner="$(zig_hot assoc --no-native Tree.pop_winner --file hot_pop_winner_probe.zig 'fn pop_winner(tree: *Tree, entrant: ?u32) void { tree.win_key = if (entrant) |key| key + 100 else 777; tree.win_id = 3; }' 2>&1)"
-  if echo "$assoc_pop_winner" | grep -qF "done"; then
-    pop_winner_patched="$(zig_hot compile-body hot_pop_winner_probe.zig popWinnerProbe 2>&1 || true)"
-    expect_contains "$pop_winner_patched" "value: 1063"
-    echo "assoc Tree.pop_winner override: OK"
+assoc_pop_winner="$(zig_hot assoc --no-native pop_winner --file hot_pop_winner_probe.zig 'fn pop_winner(tree: *Tree, entrant: ?u32) void { tree.win_key = if (entrant) |key| key + 100 else 777; tree.win_id = 3; }' 2>&1)"
+expect_hot_success "$assoc_pop_winner"
+pop_winner_patched="$(zig_hot compile-body hot_pop_winner_probe.zig popWinnerProbe 2>&1 || true)"
+expect_hot_success "$pop_winner_patched"
+expect_contains "$pop_winner_patched" "value: 1063"
+echo "assoc pop_winner override: OK"
 
-    dissoc_pop_winner="$(zig_hot dissoc Tree.pop_winner 2>&1)"
-    expect_contains "$dissoc_pop_winner" "done"
-    pop_winner_restored="$(zig_hot compile-body hot_pop_winner_probe.zig popWinnerProbe 2>&1 || true)"
-    expect_contains "$pop_winner_restored" "value: 60"
-    tb_proven_functions+=(Tree.pop_winner)
-    echo "dissoc Tree.pop_winner: OK"
-  else
-    echo "assoc Tree.pop_winner not yet supported — skipping"
-  fi
-else
-  echo "compile-body Tree.pop_winner not yet supported — skipping"
-fi
+dissoc_pop_winner="$(zig_hot dissoc pop_winner 2>&1)"
+expect_hot_success "$dissoc_pop_winner"
+pop_winner_restored="$(zig_hot compile-body hot_pop_winner_probe.zig popWinnerProbe 2>&1 || true)"
+expect_hot_success "$pop_winner_restored"
+expect_contains "$pop_winner_restored" "value: 60"
+tb_proven_functions+=(Tree.pop_winner)
+echo "dissoc pop_winner: OK"
 
 # Assoc with malformed code — should return clean error, not crash
 malformed_output="$(zig_hot assoc zeroed --file src/stdx/stdx.zig 'fn zeroed(BROKEN SYNTAX' 2>&1 || true)"
