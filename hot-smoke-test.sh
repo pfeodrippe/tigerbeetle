@@ -807,7 +807,7 @@ expect_contains "$classify_state_machine_output" "name=StateMachineType.commit b
 expect_contains "$classify_state_machine_output" "name=StateMachineType.execute_multi_batch body-class=interpreter-ready live-path=dispatch-cell"
 expect_contains "$classify_state_machine_output" "name=StateMachineType.prepare_delta_nanoseconds body-class=interpreter-ready live-path=dispatch-cell"
 expect_contains "$classify_state_machine_output" "name=StateMachineType.tree_values_count body-class=interpreter-ready live-path=dispatch-cell"
-expect_contains "$classify_state_machine_output" "name=StateMachineType body-class=native-only live-path=native-patch-candidate reason=reflection-builtin"
+expect_contains "$classify_state_machine_output" "name=StateMachineType body-class=native-only live-path=native-patch-candidate reason=parent-ptr-builtin"
 expect_contains "$classify_state_machine_output" "name=StateMachineType.reset body-class=interpreter-ready live-path=dispatch-cell"
 expect_contains "$classify_state_machine_output" "name=StateMachineType.execute_create body-class=interpreter-ready live-path=dispatch-cell"
 expect_contains "$classify_state_machine_output" "name=StateMachineType.forest_open_callback body-class=interpreter-ready live-path=dispatch-cell"
