@@ -84,6 +84,43 @@ pub fn nested_pointer_alias_score(seed: i64) i64 {
     return value;
 }
 
+pub fn type_info_integer_bits_score(seed: i64) i64 {
+    const bits = @typeInfo(u8).int.bits;
+    if (@typeInfo(u8).int.signedness != .unsigned) {
+        @compileError("unsigned integer expected");
+    }
+    return bits + seed;
+}
+
+const Hash = u64;
+const FingerPrint = u7;
+
+pub fn type_info_alias_bits_score(seed: i64) i64 {
+    const hash_bits = @typeInfo(Hash).int.bits;
+    const fp_bits = @typeInfo(FingerPrint).int.bits;
+    return seed + hash_bits - fp_bits;
+}
+
+pub fn type_info_if_tag_score(seed: i64) i64 {
+    if (@typeInfo(u8) == .int) return seed + 12;
+    return seed;
+}
+
+pub fn compile_error_guard_score(seed: i64) i64 {
+    if (@TypeOf(seed) != i64) {
+        @compileError("unexpected seed type");
+    }
+    return seed + 9;
+}
+
+pub fn catch_pointer_alias_score(seed: i64) i64 {
+    var value = seed;
+    const result: error{Nope}!*i64 = &value;
+    const ptr = result catch return 0;
+    ptr.* += 14;
+    return value;
+}
+
 pub fn for_value_pointer_score(seed: i64) i64 {
     var a = seed;
     var b = seed + 1;
