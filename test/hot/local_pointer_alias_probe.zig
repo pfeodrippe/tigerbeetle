@@ -28,9 +28,20 @@ const Holder = struct {
     items: [3]i64,
 };
 
+const Filter = struct {
+    min: i64,
+    max: i64,
+};
+
 const Limit = union(enum) {
     count: i64,
     none,
+};
+
+const FieldEnum = enum(u8) {
+    a = 1,
+    b = 2,
+    c = 3,
 };
 
 pub fn pointer_capture_field_score(seed: i64) i64 {
@@ -106,6 +117,24 @@ pub fn type_info_if_tag_score(seed: i64) i64 {
     return seed;
 }
 
+pub fn type_info_enum_fields_score(seed: i64) i64 {
+    const fields = @typeInfo(FieldEnum).@"enum".fields;
+    var total = seed;
+    inline for (fields) |field| {
+        total += field.value;
+    }
+    return total;
+}
+
+pub fn type_info_fields_index_score(seed: i64) i64 {
+    const fields = @typeInfo(FieldEnum).@"enum".fields;
+    var total = seed;
+    inline for (fields, 0..) |field, index| {
+        total += field.value * @as(i64, @intCast(index + 1));
+    }
+    return total;
+}
+
 pub fn compile_error_guard_score(seed: i64) i64 {
     if (@TypeOf(seed) != i64) {
         @compileError("unexpected seed type");
@@ -119,6 +148,51 @@ pub fn catch_pointer_alias_score(seed: i64) i64 {
     const ptr = result catch return 0;
     ptr.* += 14;
     return value;
+}
+
+pub fn orelse_pointer_alias_score(seed: i64) i64 {
+    var value = seed;
+    var maybe: ?*i64 = &value;
+    const slot = &maybe;
+    const ptr = slot.* orelse return 0;
+    ptr.* += 16;
+    return value;
+}
+
+pub fn optional_pointer_payload_score(seed: i64) i64 {
+    var holder = .{ .value = @as(?i64, seed) };
+    if (holder.value) |*value| {
+        value.* += 18;
+    }
+    return holder.value.?;
+}
+
+pub fn zipped_pointer_capture_score(seed: i64) i64 {
+    var left: [2]i64 = .{ seed, seed + 1 };
+    var right: [2]i64 = .{ seed + 2, seed + 3 };
+    for (left[0..], right[0..]) |*a, *b| {
+        a.* += 10;
+        b.* += 20;
+    }
+    return left[0] * 1000 + left[1] * 100 + right[0] * 10 + right[1];
+}
+
+pub fn labeled_block_pointer_alias_score(seed: i64) i64 {
+    var value = seed;
+    const ptr = block: {
+        break :block &value;
+    };
+    ptr.* += 22;
+    return value;
+}
+
+pub fn labeled_block_struct_store_score(seed: i64) i64 {
+    var filters: [1]Filter = .{.{ .min = 0, .max = 0 }};
+    const filter: *Filter = block: {
+        break :block &filters[0];
+    };
+    filter.* = .{ .min = seed, .max = seed + 10 };
+    return filters[0].min * 10 + filters[0].max;
 }
 
 pub fn for_value_pointer_score(seed: i64) i64 {
