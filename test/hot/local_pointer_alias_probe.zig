@@ -43,6 +43,48 @@ const FieldEnum = enum(u8) {
     b = 2,
     c = 3,
 };
+const BytePalette = [256]u8;
+const MetaItem = struct { value: i64 };
+const MetaPtr = *MetaItem;
+const MetaMaybe = ?MetaItem;
+const MetaArray = [4]MetaItem;
+const MetaExtern = extern struct { value: u8 };
+const MetaTuple = struct { u8, u16 };
+
+pub fn type_of_if_condition_score(seed: i64) i64 {
+    if (@TypeOf(seed) == i64) return seed + 31;
+    return seed;
+}
+
+pub fn type_of_var_type_score(seed: i64) i64 {
+    const holder = .{ .raw = seed };
+    var state: @TypeOf(holder.raw) = seed + 32;
+    return state;
+}
+
+pub fn type_info_pointer_optional_array_score(seed: i64) i64 {
+    const ptr_info = @typeInfo(MetaPtr).pointer;
+    const maybe_info = @typeInfo(MetaMaybe).optional;
+    const array_info = @typeInfo(MetaArray).array;
+    var total = seed;
+    if (ptr_info.size == .one) total += 10;
+    if (@typeInfo(ptr_info.child) == .@"struct") total += 20;
+    if (@typeInfo(maybe_info.child) == .@"struct") total += 30;
+    if (@typeInfo(array_info.child) == .@"struct") total += array_info.len;
+    return total;
+}
+
+pub fn type_info_struct_layout_tuple_score(seed: i64) i64 {
+    const auto_info = @typeInfo(MetaItem).@"struct";
+    const extern_info = @typeInfo(MetaExtern).@"struct";
+    const tuple_info = @typeInfo(MetaTuple).@"struct";
+    var total = seed;
+    if (auto_info.layout == .auto) total += 1;
+    if (extern_info.layout == .@"extern") total += 2;
+    if (!auto_info.is_tuple) total += 4;
+    if (tuple_info.is_tuple) total += 8;
+    return total;
+}
 
 pub fn pointer_capture_field_score(seed: i64) i64 {
     var holder = Holder{ .items = .{ seed, seed + 1, seed + 2 } };
@@ -112,6 +154,10 @@ pub fn type_info_alias_bits_score(seed: i64) i64 {
     return seed + hash_bits - fp_bits;
 }
 
+pub fn type_info_array_len_score(seed: i64) i64 {
+    return seed + @typeInfo(BytePalette).array.len;
+}
+
 pub fn type_info_if_tag_score(seed: i64) i64 {
     if (@typeInfo(u8) == .int) return seed + 12;
     return seed;
@@ -133,6 +179,24 @@ pub fn type_info_fields_index_score(seed: i64) i64 {
         total += field.value * @as(i64, @intCast(index + 1));
     }
     return total;
+}
+
+pub fn type_info_enum_count_score(seed: i64) i64 {
+    const type_info = @typeInfo(FieldEnum);
+    if (type_info != .@"enum") @compileError("enum expected");
+    const Enum = if (type_info == .@"enum") type_info.@"enum" else unreachable;
+    if (!Enum.is_exhaustive) @compileError("exhaustive enum expected");
+    return seed + Enum.fields.len;
+}
+
+pub fn type_info_enum_index_score(tag: FieldEnum) i64 {
+    const type_info = @typeInfo(@TypeOf(tag));
+    if (type_info != .@"enum") @compileError("enum expected");
+    const Enum = if (type_info == .@"enum") type_info.@"enum" else unreachable;
+    if (!Enum.is_exhaustive) @compileError("exhaustive enum expected");
+    inline for (Enum.fields, 0..) |field, index| {
+        if (field.value == @intFromEnum(tag)) return @intCast(index);
+    } else unreachable;
 }
 
 pub fn compile_error_guard_score(seed: i64) i64 {
