@@ -367,6 +367,32 @@ expect_hot_success() {
   fi
 }
 
+check_hot_probe() {
+  local label="$1"
+  local file="$2"
+  local function_name="$3"
+  local expr="$4"
+  local baseline="$5"
+  local override_source="$6"
+  local patched="$7"
+  local output
+
+  output="$(zig_hot eval-zig "$file" "$expr" 2>&1)"
+  expect_hot_success "$output"
+  expect_contains "$output" "value: $baseline"
+  output="$(zig_hot assoc --no-native "$function_name" --file "$file" "$override_source" 2>&1)"
+  expect_hot_success "$output"
+  output="$(zig_hot eval-zig "$file" "$expr" 2>&1)"
+  expect_hot_success "$output"
+  expect_contains "$output" "value: $patched"
+  output="$(zig_hot dissoc "$function_name" 2>&1)"
+  expect_hot_success "$output"
+  output="$(zig_hot eval-zig "$file" "$expr" 2>&1)"
+  expect_hot_success "$output"
+  expect_contains "$output" "value: $baseline"
+  echo "assoc/dissoc $label function: OK"
+}
+
 run_hot() {
   local output
   if ! output="$(zig_hot "$@" 2>&1)"; then
@@ -1221,6 +1247,8 @@ expect_hot_success "$for_value_pointer_restored"
 expect_contains "$for_value_pointer_restored" "value: 122"
 echo "assoc/dissoc for-value pointer payload function: OK"
 
+check_hot_probe "multi-input value pointer payload" test/hot/local_pointer_alias_probe.zig multi_input_value_pointer_score 'multi_input_value_pointer_score(1)' 33 'pub fn multi_input_value_pointer_score(seed: i64) i64 { return seed + 365; }' 366
+
 bytes_view_memset_baseline="$(zig_hot eval-zig test/hot/local_pointer_alias_probe.zig 'bytes_view_memset_score(1)' 2>&1)"
 expect_hot_success "$bytes_view_memset_baseline"
 expect_contains "$bytes_view_memset_baseline" "value: 555"
@@ -1251,6 +1279,27 @@ expect_hot_success "$nested_local_memcpy_restored"
 expect_contains "$nested_local_memcpy_restored" "value: 123"
 echo "assoc/dissoc nested-local memcpy function: OK"
 
+check_hot_probe "fixed-slice deref" test/hot/local_pointer_alias_probe.zig fixed_slice_deref_score 'fixed_slice_deref_score(4)' 45 'pub fn fixed_slice_deref_score(seed: i64) i64 { return seed + 150; }' 154
+check_hot_probe "address-of field memset" test/hot/local_pointer_alias_probe.zig address_of_field_memset_score 'address_of_field_memset_score(1)' 777 'pub fn address_of_field_memset_score(seed: i64) i64 { return seed + 160; }' 161
+check_hot_probe "optional-payload memcpy" test/hot/local_pointer_alias_probe.zig optional_payload_memcpy_score 'optional_payload_memcpy_score(1)' 123 'pub fn optional_payload_memcpy_score(seed: i64) i64 { return seed + 170; }' 171
+check_hot_probe "bytes-view pointer-capture" test/hot/local_pointer_alias_probe.zig bytes_view_pointer_capture_score 'bytes_view_pointer_capture_score(1)' 3 'pub fn bytes_view_pointer_capture_score(seed: u8) i64 { return @as(i64, @intCast(seed)) + 180; }' 181
+check_hot_probe "type-alias optional-pointer" test/hot/local_pointer_alias_probe.zig type_alias_optional_pointer_score 'type_alias_optional_pointer_score(1)' 25 'pub fn type_alias_optional_pointer_score(seed: i64) i64 { return seed + 190; }' 191
+check_hot_probe "array-access memset" test/hot/local_pointer_alias_probe.zig array_access_memset_score 'array_access_memset_score(1)' 999 'pub fn array_access_memset_score(seed: u8) i64 { return @as(i64, @intCast(seed)) + 210; }' 211
+check_hot_probe "anytype memcpy" test/hot/local_pointer_alias_probe.zig anytype_memcpy_score 'anytype_memcpy_score(1)' 231 'pub fn anytype_memcpy_score(seed: i64) i64 { const data: [3]i64 = .{ seed, seed + 1, seed + 2 }; return copyAnytype(data[0..]); }' 123
+check_hot_probe "local optional-pointer read" test/hot/local_pointer_alias_probe.zig local_optional_pointer_read_score 'local_optional_pointer_read_score(1)' 241 'pub fn local_optional_pointer_read_score(seed: i64) i64 { return seed + 260; }' 261
+check_hot_probe "TypeOf bit_length" test/hot/local_pointer_alias_probe.zig type_of_bit_length_score 'type_of_bit_length_score(1)' 9 'pub fn type_of_bit_length_score(seed: i64) i64 { return seed + 270; }' 271
+check_hot_probe "std.meta.fields TypeOf" test/hot/local_pointer_alias_probe.zig meta_fields_typeof_score 'meta_fields_typeof_score(.{ .value = 1 })' 251 'pub fn meta_fields_typeof_score(item: HotFieldItem) i64 { _ = item; return 281; }' 281
+check_hot_probe "plain typeInfo loop" test/hot/local_pointer_alias_probe.zig plain_typeinfo_loop_score 'plain_typeinfo_loop_score(1)' 303 'pub fn plain_typeinfo_loop_score(seed: i64) i64 { return seed + 320; }' 321
+check_hot_probe "pointer arithmetic" test/hot/local_pointer_alias_probe.zig pointer_arithmetic_score 'pointer_arithmetic_score(1)' 331 'pub fn pointer_arithmetic_score(seed: i64) i64 { return seed + 331; }' 332
+check_hot_probe "pointer field write" test/hot/local_pointer_alias_probe.zig pointer_field_write_score 'pointer_field_write_score(1)' 19 'pub fn pointer_field_write_score(seed: i64) i64 { return seed + 340; }' 341
+check_hot_probe "mutable call pointer alias" test/hot/local_pointer_alias_probe.zig mutable_call_pointer_alias_score 'mutable_call_pointer_alias_score(1)' 27 'pub fn mutable_call_pointer_alias_score(seed: i64) i64 { return seed + 350; }' 351
+check_hot_probe "switch deref pointer payload" test/hot/local_pointer_alias_probe.zig switch_deref_pointer_payload_score 'switch_deref_pointer_payload_score(1)' 29 'pub fn switch_deref_pointer_payload_score(seed: i64) i64 { return seed + 360; }' 361
+check_hot_probe "switch value pointer payload" test/hot/local_pointer_alias_probe.zig switch_value_pointer_payload_score 'switch_value_pointer_payload_score(1)' 31 'pub fn switch_value_pointer_payload_score(seed: i64) i64 { return seed + 370; }' 371
+check_hot_probe "TypeOf receiver init" test/hot/local_pointer_alias_probe.zig type_of_receiver_init_score 'type_of_receiver_init_score(1)' 381 'pub fn type_of_receiver_init_score(seed: i64) i64 { return seed + 390; }' 391
+check_hot_probe "nested-slice pointer capture" test/hot/local_pointer_alias_probe.zig nested_slice_pointer_capture_score 'nested_slice_pointer_capture_score(1)' 23445 'pub fn nested_slice_pointer_capture_score(seed: i64) i64 { return seed + 400; }' 401
+check_hot_probe "switch-expression pointer alias" test/hot/local_pointer_alias_probe.zig switch_expression_pointer_alias_score 'switch_expression_pointer_alias_score(1)' 411 'pub fn switch_expression_pointer_alias_score(seed: i64) i64 { return seed + 420; }' 421
+check_hot_probe "address-of orelse payload" test/hot/local_pointer_alias_probe.zig address_of_orelse_payload_score 'address_of_orelse_payload_score(1)' 431 'pub fn address_of_orelse_payload_score(seed: i64) i64 { return seed + 440; }' 441
+
 # ── Real TigerBeetle state_machine.zig frontier proofs ─────────────────────
 
 classify_state_machine_output="$(zig_hot classify src/state_machine.zig 2>&1)"
@@ -1258,7 +1307,7 @@ expect_contains "$classify_state_machine_output" "name=StateMachineType.commit b
 expect_contains "$classify_state_machine_output" "name=StateMachineType.execute_multi_batch body-class=interpreter-ready live-path=dispatch-cell"
 expect_contains "$classify_state_machine_output" "name=StateMachineType.prepare_delta_nanoseconds body-class=interpreter-ready live-path=dispatch-cell"
 expect_contains "$classify_state_machine_output" "name=StateMachineType.tree_values_count body-class=interpreter-ready live-path=dispatch-cell"
-expect_contains "$classify_state_machine_output" "name=StateMachineType body-class=native-only live-path=native-patch-candidate reason=parent-ptr-builtin"
+expect_contains "$classify_state_machine_output" "name=StateMachineType body-class=interpreter-ready live-path=dispatch-cell"
 expect_contains "$classify_state_machine_output" "name=StateMachineType.reset body-class=interpreter-ready live-path=dispatch-cell"
 expect_contains "$classify_state_machine_output" "name=StateMachineType.execute_create body-class=interpreter-ready live-path=dispatch-cell"
 expect_contains "$classify_state_machine_output" "name=StateMachineType.forest_open_callback body-class=interpreter-ready live-path=dispatch-cell"
