@@ -1299,6 +1299,9 @@ check_hot_probe "TypeOf receiver init" test/hot/local_pointer_alias_probe.zig ty
 check_hot_probe "nested-slice pointer capture" test/hot/local_pointer_alias_probe.zig nested_slice_pointer_capture_score 'nested_slice_pointer_capture_score(1)' 23445 'pub fn nested_slice_pointer_capture_score(seed: i64) i64 { return seed + 400; }' 401
 check_hot_probe "switch-expression pointer alias" test/hot/local_pointer_alias_probe.zig switch_expression_pointer_alias_score 'switch_expression_pointer_alias_score(1)' 411 'pub fn switch_expression_pointer_alias_score(seed: i64) i64 { return seed + 420; }' 421
 check_hot_probe "address-of orelse payload" test/hot/local_pointer_alias_probe.zig address_of_orelse_payload_score 'address_of_orelse_payload_score(1)' 431 'pub fn address_of_orelse_payload_score(seed: i64) i64 { return seed + 440; }' 441
+check_hot_probe "call-result pointer read" test/hot/local_pointer_alias_probe.zig call_result_pointer_read_score 'call_result_pointer_read_score(1)' 6 'pub fn call_result_pointer_read_score(seed: i64) i64 { return seed + 450; }' 451
+check_hot_probe "call-result pointer write" test/hot/local_pointer_alias_probe.zig call_result_pointer_write_score 'call_result_pointer_write_score(1)' 1233 'pub fn call_result_pointer_write_score(seed: i64) i64 { return seed + 455; }' 456
+check_hot_probe "nested-break pointer alias" test/hot/local_pointer_alias_probe.zig nested_break_pointer_alias_score 'nested_break_pointer_alias_score(1)' 463 'pub fn nested_break_pointer_alias_score(seed: i64) i64 { return seed + 470; }' 471
 
 # ── Real TigerBeetle state_machine.zig frontier proofs ─────────────────────
 

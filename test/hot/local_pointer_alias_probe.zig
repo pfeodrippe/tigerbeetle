@@ -517,3 +517,39 @@ pub fn address_of_orelse_payload_score(seed: i64) i64 {
     opts.size += 430;
     return holder.options.?.size;
 }
+
+fn hotReadOnlyItems(items: *[3]i64) []const i64 {
+    return items[0..];
+}
+
+pub fn call_result_pointer_read_score(seed: i64) i64 {
+    var items: [3]i64 = .{ seed, seed + 1, seed + 2 };
+    var total: i64 = 0;
+    for (hotReadOnlyItems(&items)) |*item| {
+        total += item.*;
+    }
+    return total;
+}
+
+fn hotMutableItems(items: *[3]i64) []i64 {
+    return items[0..];
+}
+
+pub fn call_result_pointer_write_score(seed: i64) i64 {
+    var items: [3]i64 = .{ seed, seed + 1, seed + 2 };
+    for (hotMutableItems(&items)) |*item| {
+        item.* += 10;
+    }
+    return items[0] * 100 + items[1] * 10 + items[2];
+}
+
+pub fn nested_break_pointer_alias_score(seed: i64) i64 {
+    var a = seed;
+    var b = seed + 1;
+    const ptr = pick: {
+        if ((seed & 1) == 1) break :pick &a;
+        break :pick &b;
+    };
+    ptr.* += 460;
+    return a + b;
+}
