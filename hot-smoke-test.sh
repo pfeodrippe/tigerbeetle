@@ -393,6 +393,103 @@ check_hot_probe() {
   echo "assoc/dissoc $label function: OK"
 }
 
+check_failed_assoc_preserves_current_probe() {
+  local label="$1"
+  local file="$2"
+  local function_name="$3"
+  local expr="$4"
+  local baseline="$5"
+  local valid_override="$6"
+  local patched="$7"
+  local malformed_override="$8"
+  local output
+
+  output="$(zig_hot eval-zig "$file" "$expr" 2>&1)"
+  expect_hot_success "$output"
+  expect_contains "$output" "value: $baseline"
+  output="$(zig_hot assoc --no-native "$function_name" --file "$file" "$valid_override" 2>&1)"
+  expect_hot_success "$output"
+  output="$(zig_hot eval-zig "$file" "$expr" 2>&1)"
+  expect_hot_success "$output"
+  expect_contains "$output" "value: $patched"
+  output="$(zig_hot assoc --no-native "$function_name" --file "$file" "$malformed_override" 2>&1 || true)"
+  if grep -Fq "hot-run exited" <<<"$output"; then
+    echo "error: malformed assoc crashed TigerBeetle hot runtime" >&2
+    echo "$output" >&2
+    exit 1
+  fi
+  output="$(zig_hot eval-zig "$file" "$expr" 2>&1)"
+  expect_hot_success "$output"
+  expect_contains "$output" "value: $patched"
+  output="$(zig_hot dissoc "$function_name" 2>&1)"
+  expect_hot_success "$output"
+  output="$(zig_hot eval-zig "$file" "$expr" 2>&1)"
+  expect_hot_success "$output"
+  expect_contains "$output" "value: $baseline"
+  echo "failed assoc preserves current $label override: OK"
+}
+
+check_missing_return_assoc_preserves_current_probe() {
+  local label="$1"
+  local file="$2"
+  local function_name="$3"
+  local expr="$4"
+  local baseline="$5"
+  local valid_override="$6"
+  local patched="$7"
+  local missing_return_override="$8"
+  local output
+
+  output="$(zig_hot eval-zig "$file" "$expr" 2>&1)"
+  expect_hot_success "$output"
+  expect_contains "$output" "value: $baseline"
+  output="$(zig_hot assoc --no-native "$function_name" --file "$file" "$valid_override" 2>&1)"
+  expect_hot_success "$output"
+  output="$(zig_hot eval-zig "$file" "$expr" 2>&1)"
+  expect_hot_success "$output"
+  expect_contains "$output" "value: $patched"
+  output="$(zig_hot assoc --no-native "$function_name" --file "$file" "$missing_return_override" 2>&1 || true)"
+  if grep -Fq "hot-run exited" <<<"$output"; then
+    echo "error: missing-return assoc crashed TigerBeetle hot runtime" >&2
+    echo "$output" >&2
+    exit 1
+  fi
+  output="$(zig_hot eval-zig "$file" "$expr" 2>&1)"
+  expect_hot_success "$output"
+  expect_contains "$output" "value: $patched"
+  output="$(zig_hot dissoc "$function_name" 2>&1)"
+  expect_hot_success "$output"
+  output="$(zig_hot eval-zig "$file" "$expr" 2>&1)"
+  expect_hot_success "$output"
+  expect_contains "$output" "value: $baseline"
+  echo "missing-return assoc preserves current $label override: OK"
+}
+
+check_nonexistent_assoc_preserves_probe() {
+  local label="$1"
+  local file="$2"
+  local bogus_function="$3"
+  local expr="$4"
+  local baseline="$5"
+  local bogus_source="$6"
+  local output
+
+  output="$(zig_hot eval-zig "$file" "$expr" 2>&1)"
+  expect_hot_success "$output"
+  expect_contains "$output" "value: $baseline"
+  output="$(zig_hot assoc --no-native "$bogus_function" --file "$file" "$bogus_source" 2>&1 || true)"
+  if grep -Fq "hot-run exited" <<<"$output"; then
+    echo "error: non-existent assoc crashed TigerBeetle hot runtime" >&2
+    echo "$output" >&2
+    exit 1
+  fi
+  output="$(zig_hot eval-zig "$file" "$expr" 2>&1)"
+  expect_hot_success "$output"
+  expect_contains "$output" "value: $baseline"
+  zig_hot dissoc "$bogus_function" >/dev/null 2>&1 || true
+  echo "non-existent assoc preserves $label baseline: OK"
+}
+
 run_hot() {
   local output
   if ! output="$(zig_hot "$@" 2>&1)"; then
@@ -1953,6 +2050,36 @@ expect_hot_success "$pop_winner_restored"
 expect_contains "$pop_winner_restored" "value: 60"
 tb_proven_functions+=(Tree.pop_winner)
 echo "dissoc pop_winner: OK"
+
+# ── Failure atomicity / symbol-table isolation ────────────────────────
+
+check_failed_assoc_preserves_current_probe \
+  "local pointer alias" \
+  "test/hot/local_pointer_alias_probe.zig" \
+  "read_after_bump" \
+  "read_after_bump(40)" \
+  "42" \
+  "pub fn read_after_bump(seed: i64) i64 { return seed + 900; }" \
+  "940" \
+  "pub fn read_after_bump(seed: i64) i64 { _ = seed; return ; }"
+
+check_missing_return_assoc_preserves_current_probe \
+  "local pointer alias" \
+  "test/hot/local_pointer_alias_probe.zig" \
+  "read_after_bump" \
+  "read_after_bump(40)" \
+  "42" \
+  "pub fn read_after_bump(seed: i64) i64 { return seed + 901; }" \
+  "941" \
+  "pub fn read_after_bump(seed: i64) i64 { _ = seed; }"
+
+check_nonexistent_assoc_preserves_probe \
+  "local pointer alias" \
+  "test/hot/local_pointer_alias_probe.zig" \
+  "totally_bogus_function_name" \
+  "read_after_bump(40)" \
+  "42" \
+  "pub fn totally_bogus_function_name() i64 { return 12345; }"
 
 # Assoc with malformed code — should return clean error, not crash
 malformed_output="$(zig_hot assoc zeroed --file src/stdx/stdx.zig 'fn zeroed(BROKEN SYNTAX' 2>&1 || true)"
