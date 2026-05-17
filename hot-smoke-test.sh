@@ -845,14 +845,35 @@ expect_contains "$classify_repair_budget_output" "name=RepairBudgetJournal.init 
 expect_contains "$classify_repair_budget_output" "name=RepairBudgetGrid.init body-class=interpreter-ready live-path=dispatch-cell"
 echo "repair_budget scoped-cleanup classify proof: OK"
 
-repair_budget_journal_init_probe="$(zig_hot compile-body hot_repair_budget_probe.zig repairBudgetJournalInitProbe 2>&1 || true)"
-expect_contains "$repair_budget_journal_init_probe" "fn: repairBudgetJournalInitProbe"
-expect_contains "$repair_budget_journal_init_probe" "err: execute failed: UndefinedGlobal"
+repair_budget_journal_init_probe="$(zig_hot compile-body hot_repair_budget_probe.zig repairBudgetJournalInitProbe 2>&1)"
+expect_hot_success "$repair_budget_journal_init_probe"
+expect_contains "$repair_budget_journal_init_probe" "value: 8"
 
-repair_budget_grid_init_probe="$(zig_hot compile-body hot_repair_budget_probe.zig repairBudgetGridInitProbe 2>&1 || true)"
-expect_contains "$repair_budget_grid_init_probe" "fn: repairBudgetGridInitProbe"
-expect_contains "$repair_budget_grid_init_probe" "err: execute failed: UndefinedGlobal"
-echo "repair_budget cleanup wrapper global boundary proof: OK"
+repair_budget_journal_stage_probe="$(zig_hot compile-body hot_repair_budget_probe.zig repairBudgetJournalStageProbe 2>&1)"
+expect_hot_success "$repair_budget_journal_stage_probe"
+expect_contains "$repair_budget_journal_stage_probe" "value: 50"
+
+repair_budget_grid_init_probe="$(zig_hot compile-body hot_repair_budget_probe.zig repairBudgetGridInitProbe 2>&1)"
+expect_hot_success "$repair_budget_grid_init_probe"
+expect_contains "$repair_budget_grid_init_probe" "value: 20"
+echo "repair_budget cleanup wrapper positive constructor execution: OK"
+
+check_hot_probe "repair budget journal init hot reload" hot_repair_budget_probe.zig repairBudgetJournalInitProbe 'repairBudgetJournalInitProbe()' 8 'pub fn repairBudgetJournalInitProbe() u32 { return 908; }' 908
+check_hot_probe "repair budget journal stage hot reload" hot_repair_budget_probe.zig repairBudgetJournalStageProbe 'repairBudgetJournalStageProbe()' 50 'pub fn repairBudgetJournalStageProbe() u32 { return 950; }' 950
+check_hot_probe "repair budget grid init hot reload" hot_repair_budget_probe.zig repairBudgetGridInitProbe 'repairBudgetGridInitProbe()' 20 'pub fn repairBudgetGridInitProbe() u32 { return 920; }' 920
+check_hot_probe "concrete pointer receiver hot reload" hot_repair_budget_probe.zig tigerbeetleConcretePointerReceiverProbe 'tigerbeetleConcretePointerReceiverProbe()' 77 'pub fn tigerbeetleConcretePointerReceiverProbe() u32 { return 977; }' 977
+
+concrete_compile_body_assoc="$(zig_hot assoc --no-native tigerbeetleConcretePointerReceiverProbe --file hot_repair_budget_probe.zig 'pub fn tigerbeetleConcretePointerReceiverProbe() u32 { return 977; }' 2>&1)"
+expect_hot_success "$concrete_compile_body_assoc"
+concrete_compile_body_patched="$(zig_hot compile-body hot_repair_budget_probe.zig tigerbeetleConcretePointerReceiverProbe 2>&1 || true)"
+expect_hot_success "$concrete_compile_body_patched"
+expect_contains "$concrete_compile_body_patched" "value: 977"
+concrete_compile_body_dissoc="$(zig_hot dissoc tigerbeetleConcretePointerReceiverProbe 2>&1)"
+expect_hot_success "$concrete_compile_body_dissoc"
+concrete_compile_body_restored="$(zig_hot compile-body hot_repair_budget_probe.zig tigerbeetleConcretePointerReceiverProbe 2>&1 || true)"
+expect_hot_success "$concrete_compile_body_restored"
+expect_contains "$concrete_compile_body_restored" "value: 77"
+echo "concrete pointer receiver compile-body hot reload: OK"
 
 invalidate_header_output="$(zig_hot invalidate src/vsr/message_header.zig 2>&1)"
 expect_contains "$invalidate_header_output" "impact:"
@@ -2080,6 +2101,15 @@ check_nonexistent_assoc_preserves_probe \
   "read_after_bump(40)" \
   "42" \
   "pub fn totally_bogus_function_name() i64 { return 12345; }"
+
+check_hot_probe \
+  "imported source-backed layout" \
+  "test/hot/layout_source_probe.zig" \
+  "imported_layout_size_score" \
+  "imported_layout_size_score(10)" \
+  "34" \
+  "pub fn imported_layout_size_score(seed: i64) i64 { return seed + 700; }" \
+  "710"
 
 # Assoc with malformed code — should return clean error, not crash
 malformed_output="$(zig_hot assoc zeroed --file src/stdx/stdx.zig 'fn zeroed(BROKEN SYNTAX' 2>&1 || true)"
