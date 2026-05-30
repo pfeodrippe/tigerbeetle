@@ -393,6 +393,32 @@ check_hot_probe() {
   echo "assoc/dissoc $label function: OK"
 }
 
+check_wide_marshal_probes() {
+  local file="$1"
+  local label_prefix="$2"
+
+  check_hot_probe "$label_prefix u128 direct return" "$file" hot_wide_01_direct '@as(u64, @intCast(hot_wide_01_direct(5)))' 106 'pub fn hot_wide_01_direct(seed: u64) u128 { _ = seed; return 901; }' 901
+  check_hot_probe "$label_prefix i128 direct return" "$file" hot_wide_02_signed '@as(i64, @intCast(hot_wide_02_signed(5)))' 207 'pub fn hot_wide_02_signed(seed: i64) i128 { _ = seed; return 902; }' 902
+  check_hot_probe "$label_prefix u128 array first" "$file" hot_wide_03_array_first '@as(u64, @intCast(hot_wide_03_array_first(5)[0]))' 308 'pub fn hot_wide_03_array_first(seed: u64) [3]u128 { _ = seed; return .{ 903, 0, 0 }; }' 903
+  check_hot_probe "$label_prefix u128 array second" "$file" hot_wide_04_array_second '@as(u64, @intCast(hot_wide_04_array_second(5)[1]))' 409 'pub fn hot_wide_04_array_second(seed: u64) [3]u128 { _ = seed; return .{ 0, 904, 0 }; }' 904
+  check_hot_probe "$label_prefix struct primary" "$file" hot_wide_05_struct_primary '@as(u64, @intCast(hot_wide_05_struct_primary(5).primary))' 510 'pub fn hot_wide_05_struct_primary(seed: u64) HotWidePair { _ = seed; return .{ .primary = 905, .secondary = 0 }; }' 905
+  check_hot_probe "$label_prefix struct secondary" "$file" hot_wide_06_struct_secondary '@as(u64, @intCast(hot_wide_06_struct_secondary(5).secondary))' 611 'pub fn hot_wide_06_struct_secondary(seed: u64) HotWidePair { _ = seed; return .{ .primary = 0, .secondary = 906 }; }' 906
+  check_hot_probe "$label_prefix nested pair field" "$file" hot_wide_07_nested_pair '@as(u64, @intCast(hot_wide_07_nested_pair(5).pair.secondary))' 712 'pub fn hot_wide_07_nested_pair(seed: u64) HotWideNested { _ = seed; return .{ .pair = .{ .primary = 0, .secondary = 907 }, .extra = 0 }; }' 907
+  check_hot_probe "$label_prefix nested extra field" "$file" hot_wide_08_nested_extra '@as(u64, @intCast(hot_wide_08_nested_extra(5).extra))' 813 'pub fn hot_wide_08_nested_extra(seed: u64) HotWideNested { _ = seed; return .{ .pair = .{ .primary = 0, .secondary = 0 }, .extra = 908 }; }' 908
+  check_hot_probe "$label_prefix optional u128" "$file" hot_wide_09_optional '@as(u64, @intCast(hot_wide_09_optional(5).?))' 914 'pub fn hot_wide_09_optional(seed: u64) ?u128 { _ = seed; return 909; }' 909
+  check_hot_probe "$label_prefix error-union u128" "$file" hot_wide_10_error_ok '@as(u64, @intCast(hot_wide_10_error_ok(5) catch 0))' 1015 'pub fn hot_wide_10_error_ok(seed: u64) HotWideError!u128 { _ = seed; return 910; }' 910
+  check_hot_probe "$label_prefix tagged union u128" "$file" hot_wide_11_union_wide '@as(u64, @intCast(switch (hot_wide_11_union_wide(5)) { .wide => |value| value, else => 0 }))' 1116 'pub fn hot_wide_11_union_wide(seed: u64) HotWideUnion { _ = seed; return .{ .wide = 911 }; }' 911
+  check_hot_probe "$label_prefix tagged union i128" "$file" hot_wide_12_union_signed '@as(i64, @intCast(switch (hot_wide_12_union_signed(5)) { .signed => |value| value, else => 0 }))' 1217 'pub fn hot_wide_12_union_signed(seed: i64) HotWideUnion { _ = seed; return .{ .signed = 912 }; }' 912
+  check_hot_probe "$label_prefix optional field" "$file" hot_wide_13_optional_field '@as(u64, @intCast(hot_wide_13_optional_field(5).value.?))' 1318 'pub fn hot_wide_13_optional_field(seed: u64) HotWideOptional { _ = seed; return .{ .value = 913 }; }' 913
+  check_hot_probe "$label_prefix struct array field" "$file" hot_wide_14_struct_array '@as(u64, @intCast(hot_wide_14_struct_array(5).items[1]))' 1419 'pub fn hot_wide_14_struct_array(seed: u64) HotWideArray { _ = seed; return .{ .items = .{ 0, 914 } }; }' 914
+  check_hot_probe "$label_prefix array of structs" "$file" hot_wide_15_array_of_struct '@as(u64, @intCast(hot_wide_15_array_of_struct(5)[1].secondary))' 1520 'pub fn hot_wide_15_array_of_struct(seed: u64) [2]HotWidePair { _ = seed; return .{ .{ .primary = 0, .secondary = 0 }, .{ .primary = 0, .secondary = 915 } }; }' 915
+  check_hot_probe "$label_prefix array argument" "$file" hot_wide_16_arg_array 'hot_wide_16_arg_array([2]u128{ 3, 4 })' 7 'pub fn hot_wide_16_arg_array(items: [2]u128) u64 { _ = items; return 916; }' 916
+  check_hot_probe "$label_prefix struct argument" "$file" hot_wide_17_arg_struct 'hot_wide_17_arg_struct(.{ .primary = 8, .secondary = 9 })' 17 'pub fn hot_wide_17_arg_struct(pair: HotWidePair) u64 { _ = pair; return 917; }' 917
+  check_hot_probe "$label_prefix optional argument" "$file" hot_wide_18_arg_optional 'hot_wide_18_arg_optional(18)' 18 'pub fn hot_wide_18_arg_optional(value: ?u128) u64 { _ = value; return 918; }' 918
+  check_hot_probe "$label_prefix error-union struct" "$file" hot_wide_19_error_pair '@as(u64, @intCast((hot_wide_19_error_pair(5) catch .{ .primary = 0, .secondary = 0 }).secondary))' 1924 'pub fn hot_wide_19_error_pair(seed: u64) HotWideError!HotWidePair { _ = seed; return .{ .primary = 0, .secondary = 919 }; }' 919
+  check_hot_probe "$label_prefix optional array" "$file" hot_wide_20_optional_array '@as(u64, @intCast(hot_wide_20_optional_array(5).?[0]))' 2025 'pub fn hot_wide_20_optional_array(seed: u64) ?[2]u128 { _ = seed; return .{ 920, 0 }; }' 920
+}
+
 check_failed_assoc_preserves_current_probe() {
   local label="$1"
   local file="$2"
@@ -772,7 +798,9 @@ if echo "$assoc_quorums" | grep -qF "done"; then
   expect_eval_value 'vsr.quorums(3).replication' "2"
   echo "assoc/dissoc quorums override: OK"
 else
-  echo "assoc quorums not yet supported — keeping direct field proof only"
+  echo "error: assoc quorums not yet supported" >&2
+  echo "$assoc_quorums" >&2
+  exit 1
 fi
 
 register_log_reset="$(run_hot --eval 'vsr.tb_client.exports.register_log_callback(null, false)')"
@@ -943,6 +971,8 @@ expect_hot_success "$child_pid_probe_null"
 expect_contains "$child_pid_probe_null" "value: true"
 zig_hot dissoc stdx.unshare.child_pid >/dev/null 2>&1 || true
 echo "restore child_pid runtime_addressable var override: OK"
+
+check_wide_marshal_probes test/hot/local_pointer_alias_probe.zig "TigerBeetle wide marshal"
 
 pointer_alias_baseline="$(zig_hot eval-zig test/hot/local_pointer_alias_probe.zig 'read_after_bump(40)' 2>&1)"
 expect_hot_success "$pointer_alias_baseline"
@@ -1886,10 +1916,12 @@ if echo "$ts_valid_eval" | grep -qF "value: true"; then
     expect_contains "$dissoc_ts_valid" "done"
     echo "dissoc TimestampRange.valid: OK"
   else
-    echo "assoc TimestampRange.valid not yet supported — skipping"
+    echo "error: assoc TimestampRange.valid not yet supported" >&2
+    exit 1
   fi
 else
-  echo "eval-zig TimestampRange.valid not yet supported — skipping"
+  echo "error: eval-zig TimestampRange.valid not yet supported" >&2
+    exit 1
 fi
 
 # TimestampRange.gte — pure struct construction with timestamp_max upper bound
@@ -1909,10 +1941,12 @@ if echo "$ts_gte_eval" | grep -qF "value: 7"; then
     expect_contains "$ts_gte_restored" "value: 7"
     echo "dissoc TimestampRange.gte: OK"
   else
-    echo "assoc TimestampRange.gte not yet supported — skipping"
+    echo "error: assoc TimestampRange.gte not yet supported" >&2
+    exit 1
   fi
 else
-  echo "eval-zig TimestampRange.gte not yet supported — skipping"
+  echo "error: eval-zig TimestampRange.gte not yet supported" >&2
+    exit 1
 fi
 
 # TimestampRange.lte — pure struct construction with timestamp_min lower bound
@@ -1932,10 +1966,12 @@ if echo "$ts_lte_eval" | grep -qF "value: 7"; then
     expect_contains "$ts_lte_restored" "value: 7"
     echo "dissoc TimestampRange.lte: OK"
   else
-    echo "assoc TimestampRange.lte not yet supported — skipping"
+    echo "error: assoc TimestampRange.lte not yet supported" >&2
+    exit 1
   fi
 else
-  echo "eval-zig TimestampRange.lte not yet supported — skipping"
+  echo "error: eval-zig TimestampRange.lte not yet supported" >&2
+    exit 1
 fi
 
 # snapshot_min_for_table_output — compaction half-bar snapshot math
@@ -1975,10 +2011,12 @@ if echo "$snapshot_max_eval" | grep -qF "value: true"; then
     expect_contains "$snapshot_max_restored" "value: true"
     echo "dissoc snapshot_max_for_table_input: OK"
   else
-    echo "assoc snapshot_max_for_table_input not yet supported — skipping"
+    echo "error: assoc snapshot_max_for_table_input not yet supported" >&2
+    exit 1
   fi
 else
-  echo "eval-zig snapshot_max_for_table_input not yet supported — skipping"
+  echo "error: eval-zig snapshot_max_for_table_input not yet supported" >&2
+    exit 1
 fi
 
 # multi_batch_count_max — worst-case trailer-aware batch count calculation
@@ -1998,10 +2036,12 @@ if echo "$multi_batch_count_eval" | grep -qF "value: 2"; then
     expect_contains "$multi_batch_count_restored" "value: 2"
     echo "dissoc multi_batch_count_max: OK"
   else
-    echo "assoc multi_batch_count_max not yet supported — skipping"
+    echo "error: assoc multi_batch_count_max not yet supported" >&2
+    exit 1
   fi
 else
-  echo "eval-zig multi_batch_count_max not yet supported — skipping"
+  echo "error: eval-zig multi_batch_count_max not yet supported" >&2
+    exit 1
 fi
 
 # trailer_total_size — trailer alignment through div_ceil and element-size rounding
@@ -2021,10 +2061,12 @@ if echo "$trailer_total_size_eval" | grep -qF "value: 128"; then
     expect_contains "$trailer_total_size_restored" "value: 128"
     echo "dissoc trailer_total_size: OK"
   else
-    echo "assoc trailer_total_size not yet supported — skipping"
+    echo "error: assoc trailer_total_size not yet supported" >&2
+    exit 1
   fi
 else
-  echo "eval-zig trailer_total_size not yet supported — skipping"
+  echo "error: eval-zig trailer_total_size not yet supported" >&2
+    exit 1
 fi
 
 # div_ceil — anytype dispatch with concrete unsigned integer bindings
@@ -2045,10 +2087,12 @@ if echo "$div_ceil_eval" | grep -qF "value: 2"; then
     tb_proven_functions+=(div_ceil)
     echo "dissoc div_ceil: OK"
   else
-    echo "assoc div_ceil not yet supported — skipping"
+    echo "error: assoc div_ceil not yet supported" >&2
+    exit 1
   fi
 else
-  echo "eval-zig div_ceil not yet supported — skipping"
+  echo "error: eval-zig div_ceil not yet supported" >&2
+    exit 1
 fi
 
 # pop_winner — nested comptime dispatch through a concrete tournament-tree alias

@@ -553,3 +553,118 @@ pub fn nested_break_pointer_alias_score(seed: i64) i64 {
     ptr.* += 460;
     return a + b;
 }
+
+const HotWidePair = struct {
+    primary: u128,
+    secondary: u128,
+};
+
+const HotWideNested = struct {
+    pair: HotWidePair,
+    extra: u128,
+};
+
+const HotWideOptional = struct {
+    value: ?u128,
+};
+
+const HotWideArray = struct {
+    items: [2]u128,
+};
+
+const HotWideUnion = union(enum) {
+    wide: u128,
+    signed: i128,
+    pair: HotWidePair,
+};
+
+const HotWideError = error{Wide};
+
+pub fn hot_wide_01_direct(seed: u64) u128 {
+    return @as(u128, seed) + 101;
+}
+
+pub fn hot_wide_02_signed(seed: i64) i128 {
+    return @as(i128, seed) + 202;
+}
+
+pub fn hot_wide_03_array_first(seed: u64) [3]u128 {
+    return .{ @as(u128, seed) + 303, 304, 305 };
+}
+
+pub fn hot_wide_04_array_second(seed: u64) [3]u128 {
+    return .{ 400, @as(u128, seed) + 404, 405 };
+}
+
+pub fn hot_wide_05_struct_primary(seed: u64) HotWidePair {
+    return .{ .primary = @as(u128, seed) + 505, .secondary = 506 };
+}
+
+pub fn hot_wide_06_struct_secondary(seed: u64) HotWidePair {
+    return .{ .primary = 600, .secondary = @as(u128, seed) + 606 };
+}
+
+pub fn hot_wide_07_nested_pair(seed: u64) HotWideNested {
+    return .{
+        .pair = .{ .primary = 700, .secondary = @as(u128, seed) + 707 },
+        .extra = 708,
+    };
+}
+
+pub fn hot_wide_08_nested_extra(seed: u64) HotWideNested {
+    return .{
+        .pair = .{ .primary = 800, .secondary = 801 },
+        .extra = @as(u128, seed) + 808,
+    };
+}
+
+pub fn hot_wide_09_optional(seed: u64) ?u128 {
+    return @as(u128, seed) + 909;
+}
+
+pub fn hot_wide_10_error_ok(seed: u64) HotWideError!u128 {
+    return @as(u128, seed) + 1010;
+}
+
+pub fn hot_wide_11_union_wide(seed: u64) HotWideUnion {
+    return .{ .wide = @as(u128, seed) + 1111 };
+}
+
+pub fn hot_wide_12_union_signed(seed: i64) HotWideUnion {
+    return .{ .signed = @as(i128, seed) + 1212 };
+}
+
+pub fn hot_wide_13_optional_field(seed: u64) HotWideOptional {
+    return .{ .value = @as(u128, seed) + 1313 };
+}
+
+pub fn hot_wide_14_struct_array(seed: u64) HotWideArray {
+    return .{ .items = .{ 1400, @as(u128, seed) + 1414 } };
+}
+
+pub fn hot_wide_15_array_of_struct(seed: u64) [2]HotWidePair {
+    return .{
+        .{ .primary = 1500, .secondary = 1501 },
+        .{ .primary = 1502, .secondary = @as(u128, seed) + 1515 },
+    };
+}
+
+pub fn hot_wide_16_arg_array(items: [2]u128) u64 {
+    return @intCast(items[0] + items[1]);
+}
+
+pub fn hot_wide_17_arg_struct(pair: HotWidePair) u64 {
+    return @intCast(pair.primary + pair.secondary);
+}
+
+pub fn hot_wide_18_arg_optional(value: ?u128) u64 {
+    return @intCast(value orelse 0);
+}
+
+pub fn hot_wide_19_error_pair(seed: u64) HotWideError!HotWidePair {
+    return .{ .primary = 1900, .secondary = @as(u128, seed) + 1919 };
+}
+
+pub fn hot_wide_20_optional_array(seed: u64) ?[2]u128 {
+    return .{ @as(u128, seed) + 2020, 2021 };
+}
