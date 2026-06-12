@@ -35,11 +35,27 @@ const ZipfianShuffled = stdx.ZipfianShuffled;
 
 const cli = @import("./cli.zig");
 
+const Timer = struct {
+    timer: vsr.time.Timer,
+
+    fn init(time: Time) Timer {
+        return .{ .timer = .init(time) };
+    }
+
+    fn reset(timer: *Timer) void {
+        timer.timer.reset();
+    }
+
+    fn read(timer: *Timer) u64 {
+        return timer.timer.read().ns;
+    }
+};
+
 pub fn main(
     allocator: std.mem.Allocator,
     io: *IO,
     time: Time,
-    addresses: []const std.net.Address,
+    addresses: []const stdx.net.Address,
     cli_args: *const cli.Command.Benchmark,
 ) !void {
     if (builtin.mode != .ReleaseSafe and builtin.mode != .ReleaseFast) {
@@ -128,14 +144,14 @@ pub fn main(
 
     const client_requests = try allocator.alignedAlloc(
         [constants.message_body_size_max]u8,
-        constants.cache_line_size,
+        std.mem.Alignment.fromByteUnits(constants.cache_line_size),
         clients.count(),
     );
     defer allocator.free(client_requests);
 
     const client_replies = try allocator.alignedAlloc(
         [constants.message_body_size_max]u8,
-        constants.cache_line_size,
+        std.mem.Alignment.fromByteUnits(constants.cache_line_size),
         clients.count(),
     );
     defer allocator.free(client_replies);
@@ -177,11 +193,15 @@ pub fn main(
     else
         null;
 
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout = std.Io.File.stdout().writer(std.Options.debug_io, &stdout_buffer);
+    defer stdout.flush() catch {};
+
     var benchmark = Benchmark{
         .io = io,
         .prng = &prng,
-        .timer = try std.time.Timer.start(),
-        .output = std.io.getStdOut().writer().any(),
+        .timer = .init(time),
+        .output = &stdout.interface,
         .clients = clients.slice(),
         .client_timeouts = client_timeouts,
         .client_requests = client_requests,
@@ -279,8 +299,12 @@ const TbidGenerator = struct {
     epoch_ms: u128,
     random: u80,
 
+    fn now_ms() u128 {
+        return @intCast(@divTrunc(stdx.InstantUnix.now().ns, std.time.ns_per_ms));
+    }
+
     fn init(prng: *stdx.PRNG) TbidGenerator {
-        const epoch_ms: u128 = @intCast(std.time.milliTimestamp());
+        const epoch_ms = TbidGenerator.now_ms();
         return .{
             .prng = prng,
             .epoch_ms = epoch_ms,
@@ -289,7 +313,7 @@ const TbidGenerator = struct {
     }
 
     fn next(generator: *TbidGenerator) u128 {
-        const now: u128 = @intCast(std.time.milliTimestamp());
+        const now = TbidGenerator.now_ms();
 
         if (now > generator.epoch_ms) {
             // Time advanced: use new time and new random.
@@ -312,8 +336,8 @@ const TbidGenerator = struct {
 const Benchmark = struct {
     io: *IO,
     prng: *stdx.PRNG,
-    timer: std.time.Timer,
-    output: std.io.AnyWriter,
+    timer: Timer,
+    output: *std.Io.Writer,
     clients: []Client,
 
     // Configuration:
@@ -1057,7 +1081,7 @@ const Benchmark = struct {
 };
 
 fn print_percentiles_histogram(
-    stdout: std.io.AnyWriter,
+    stdout: *std.Io.Writer,
     label: []const u8,
     histogram_buckets: []const u64,
 ) void {

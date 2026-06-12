@@ -52,7 +52,7 @@ fn parse_data(comptime Data: type, tokens: *std.mem.TokenIterator(u8, .scalar)) 
         },
         .@"struct" => {
             var data: Data = undefined;
-            inline for (std.meta.fields(Data)) |value_field| {
+            inline for (stdx.meta.fields(Data)) |value_field| {
                 const Field = value_field.type;
                 const value: Field = value: {
                     if (comptime value_field.default_value_ptr) |ptr| {
@@ -76,9 +76,9 @@ fn parse_data(comptime Data: type, tokens: *std.mem.TokenIterator(u8, .scalar)) 
             }
             return values;
         },
-        .@"union" => |info| {
+        .@"union" => {
             const variant_string = tokens.next().?;
-            inline for (info.fields) |variant_field| {
+            inline for (stdx.meta.fields(Data)) |variant_field| {
                 if (std.mem.eql(u8, variant_field.name, variant_string)) {
                     return @unionInit(
                         Data,
@@ -104,7 +104,7 @@ fn eat(tokens: *std.mem.TokenIterator(u8, .scalar), token: []const u8) bool {
 ///   error: unable to evaluate constant expression
 ///   .@"enum" => @field(Column, column_string),
 fn field(comptime Enum: type, name: []const u8) Enum {
-    inline for (std.meta.fields(Enum)) |variant| {
+    inline for (stdx.meta.fields(Enum)) |variant| {
         if (std.mem.eql(u8, variant.name, name)) {
             return @field(Enum, variant.name);
         }

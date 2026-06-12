@@ -281,8 +281,8 @@ fn devhub_metrics(shell: *Shell, cli_args: CLIArgs) !void {
         // release_client_min, so expect the eviction.
         var eviction: Header.Eviction = undefined;
 
-        const peer = try std.net.Address.parseIp4("127.0.0.1", port);
-        const stream = try std.net.tcpConnectToAddress(peer);
+        const peer = try stdx.net.Address.parseIp4("127.0.0.1", port);
+        const stream = try stdx.net.tcpConnectToAddress(peer);
         defer stream.close();
 
         var writer = stream.writer();

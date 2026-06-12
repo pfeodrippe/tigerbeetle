@@ -37,7 +37,7 @@ const build_options: BuildOptions = blk: {
     // Both the root file and Zig's `addOptions` expose the struct as identical structurally,
     // but a different type from a nominal typing perspective.
     var result: BuildOptions = undefined;
-    for (std.meta.fields(BuildOptions)) |field| {
+    for (stdx.meta.fields(BuildOptions)) |field| {
         @field(result, field.name) = launder_type(
             field.type,
             @field(vsr_options, field.name),
@@ -198,7 +198,7 @@ const ConfigCluster = struct {
     pub fn checksum(comptime config: ConfigCluster) u128 {
         @setEvalBranchQuota(10_000);
         comptime var config_bytes: []const u8 = &.{};
-        comptime for (std.meta.fields(ConfigCluster)) |field| {
+        comptime for (stdx.meta.fields(ConfigCluster)) |field| {
             const value = @field(config, field.name);
             const value_64 = @as(u64, value);
             assert(builtin.target.cpu.arch.endian() == .little);

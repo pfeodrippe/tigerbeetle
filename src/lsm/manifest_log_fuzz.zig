@@ -344,7 +344,7 @@ const Environment = struct {
         fields_initialized += 1;
         env.pending = 0;
 
-        comptime assert(fields_initialized == std.meta.fields(@This()).len);
+        comptime assert(fields_initialized == stdx.meta.fields(@This()).len);
     }
 
     fn deinit(env: *Environment) void {

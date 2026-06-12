@@ -237,9 +237,7 @@ pub fn JournalType(comptime Replica: type, comptime Storage: type) type {
 
         /// We copy-on-write to these buffers, as the in-memory headers may change while writing.
         /// The buffers belong to the IOP at the corresponding index in IOPS.
-        write_headers_sectors: *align(constants.sector_size) [
-            constants.journal_iops_write_max
-        ][constants.sector_size]u8,
+        write_headers_sectors: []align(constants.sector_size) [constants.sector_size]u8,
 
         /// A set bit indicates a chunk of redundant headers for which a read has been issued.
         header_chunks_requested: HeaderChunks = .{},
@@ -303,7 +301,7 @@ pub fn JournalType(comptime Replica: type, comptime Storage: type) type {
 
             const headers = try allocator.alignedAlloc(
                 Header.Prepare,
-                constants.sector_size,
+                std.mem.Alignment.fromByteUnits(constants.sector_size),
                 slot_count,
             );
             errdefer allocator.free(headers);
@@ -311,7 +309,7 @@ pub fn JournalType(comptime Replica: type, comptime Storage: type) type {
 
             const headers_redundant = try allocator.alignedAlloc(
                 Header.Prepare,
-                constants.sector_size,
+                std.mem.Alignment.fromByteUnits(constants.sector_size),
                 slot_count,
             );
             errdefer allocator.free(headers_redundant);
@@ -331,19 +329,19 @@ pub fn JournalType(comptime Replica: type, comptime Storage: type) type {
             errdefer allocator.free(prepare_inhabited);
             @memset(prepare_inhabited, false);
 
-            const write_headers_sectors = (try allocator.alignedAlloc(
+            const write_headers_sectors = try allocator.alignedAlloc(
                 [constants.sector_size]u8,
-                constants.sector_size,
+                std.mem.Alignment.fromByteUnits(constants.sector_size),
                 constants.journal_iops_write_max,
-            ))[0..constants.journal_iops_write_max];
+            );
             errdefer allocator.free(write_headers_sectors);
 
-            log.info("{}: slot_count={} size={} headers_size={} prepares_size={}", .{
+            log.info("{}: slot_count={} size={Bi} headers_size={Bi} prepares_size={Bi}", .{
                 replica,
                 slot_count,
-                std.fmt.fmtIntSizeBin(write_ahead_log_zone_size),
-                std.fmt.fmtIntSizeBin(headers_size),
-                std.fmt.fmtIntSizeBin(prepares_size),
+                write_ahead_log_zone_size,
+                headers_size,
+                prepares_size,
             });
 
             var journal = Journal{

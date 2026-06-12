@@ -11,6 +11,15 @@ const assert = std.debug.assert;
 
 const is_linux = builtin.target.os.tag == .linux;
 
+const WriteStreamingAllReturn =
+    @typeInfo(@TypeOf(std.Io.File.writeStreamingAll)).@"fn".return_type.?;
+
+pub const AOFWriteError = @typeInfo(WriteStreamingAllReturn).error_union.error_set;
+pub const AOFPReadError = std.Io.File.ReadPositionalError;
+pub const AOFStat = std.Io.File.Stat;
+pub const AOFStatError = std.Io.Dir.StatFileError;
+pub const AOFFStatError = std.Io.File.StatError;
+
 pub const TCPOptions = struct {
     rcvbuf: c_int,
     sndbuf: c_int,
@@ -31,22 +40,73 @@ pub const NextTickSource = enum { lsm, vsr };
 
 pub fn listen(
     fd: posix.socket_t,
-    address: std.net.Address,
+    address: stdx.net.Address,
     options: ListenOptions,
-) !std.net.Address {
+) !stdx.net.Address {
     try setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, 1);
-    try posix.bind(fd, &address.any, address.getOsSockLen());
+    try bind_socket(fd, &address.any, address.getOsSockLen());
 
     // Resolve port 0 to an actual port picked by the OS.
-    var address_resolved: std.net.Address = .{ .any = undefined };
-    var addrlen: posix.socklen_t = @sizeOf(std.net.Address);
-    try posix.getsockname(fd, &address_resolved.any, &addrlen);
+    var address_resolved: stdx.net.Address = .{ .any = undefined };
+    var addrlen: posix.socklen_t = @sizeOf(stdx.net.Address);
+    try getsockname_socket(fd, &address_resolved.any, &addrlen);
     assert(address_resolved.getOsSockLen() == addrlen);
     assert(address_resolved.any.family == address.any.family);
 
-    try posix.listen(fd, options.backlog);
+    try listen_socket(fd, options.backlog);
 
     return address_resolved;
+}
+
+fn bind_socket(
+    fd: posix.socket_t,
+    address: *const posix.sockaddr,
+    address_len: posix.socklen_t,
+) !void {
+    while (true) switch (posix.errno(posix.system.bind(fd, address, address_len))) {
+        .SUCCESS => return,
+        .INTR => continue,
+        .ADDRINUSE => return error.AddressInUse,
+        .ADDRNOTAVAIL => return error.AddressUnavailable,
+        .AFNOSUPPORT => return error.AddressFamilyUnsupported,
+        .BADF => unreachable,
+        .FAULT => unreachable,
+        .INVAL => unreachable,
+        .NOTSOCK => unreachable,
+        .NOMEM => return error.SystemResources,
+        else => |errno| return stdx.unexpected_errno("bind", errno),
+    };
+}
+
+fn getsockname_socket(
+    fd: posix.socket_t,
+    address: *posix.sockaddr,
+    address_len: *posix.socklen_t,
+) !void {
+    while (true) switch (posix.errno(posix.system.getsockname(fd, address, address_len))) {
+        .SUCCESS => return,
+        .INTR => continue,
+        .BADF => unreachable,
+        .FAULT => unreachable,
+        .INVAL => unreachable,
+        .NOTSOCK => unreachable,
+        .NOBUFS => return error.SystemResources,
+        else => |errno| return stdx.unexpected_errno("getsockname", errno),
+    };
+}
+
+fn listen_socket(fd: posix.socket_t, backlog: u31) !void {
+    while (true) switch (posix.errno(posix.system.listen(fd, backlog))) {
+        .SUCCESS => return,
+        .INTR => continue,
+        .ADDRINUSE => return error.AddressInUse,
+        .BADF => unreachable,
+        .DESTADDRREQ => return error.SocketNotBound,
+        .INVAL => unreachable,
+        .NOTSOCK => unreachable,
+        .OPNOTSUPP => return error.OperationNotSupported,
+        else => |errno| return stdx.unexpected_errno("listen", errno),
+    };
 }
 
 /// Sets the socket options.
@@ -110,52 +170,69 @@ pub fn setsockopt(fd: posix.socket_t, level: i32, option: u32, value: c_int) !vo
     try posix.setsockopt(fd, level, option, &std.mem.toBytes(value));
 }
 
-pub fn aof_blocking_write_all(fd: posix.fd_t, buffer: []const u8) posix.WriteError!void {
-    const file = std.fs.File{ .handle = fd };
-    return file.writeAll(buffer);
+fn file_from_fd(fd: posix.fd_t) std.Io.File {
+    return .{ .handle = fd, .flags = .{ .nonblocking = false } };
 }
 
-pub fn aof_blocking_pread_all(fd: posix.fd_t, buffer: []u8, offset: u64) posix.PReadError!usize {
-    const file = std.fs.File{ .handle = fd };
-    return file.preadAll(buffer, offset);
+fn dir_from_fd(fd: posix.fd_t) std.Io.Dir {
+    return .{ .handle = fd };
+}
+
+fn seek_to_end(fd: posix.fd_t) !void {
+    if (builtin.os.tag == .windows) return;
+
+    switch (posix.errno(posix.system.lseek(fd, 0, posix.SEEK.END))) {
+        .SUCCESS => {},
+        .BADF => unreachable,
+        .INVAL => return error.Unseekable,
+        .OVERFLOW => return error.Overflow,
+        .SPIPE => return error.Unseekable,
+        else => |errno| return stdx.unexpected_errno("lseek", errno),
+    }
+}
+
+pub fn aof_blocking_write_all(fd: posix.fd_t, buffer: []const u8) AOFWriteError!void {
+    return file_from_fd(fd).writeStreamingAll(std.Options.debug_io, buffer);
+}
+
+pub fn aof_blocking_pread_all(fd: posix.fd_t, buffer: []u8, offset: u64) AOFPReadError!usize {
+    return file_from_fd(fd).readPositionalAll(std.Options.debug_io, buffer, offset);
 }
 
 pub fn aof_blocking_close(fd: posix.fd_t) void {
-    const file = std.fs.File{ .handle = fd };
-    file.close();
+    file_from_fd(fd).close(std.Options.debug_io);
 }
 
-pub fn aof_blocking_stat(path: []const u8) std.fs.Dir.StatFileError!std.fs.File.Stat {
-    return std.fs.cwd().statFile(path);
+pub fn aof_blocking_stat(path: []const u8) AOFStatError!AOFStat {
+    return std.Io.Dir.cwd().statFile(std.Options.debug_io, path, .{});
 }
 
-pub fn aof_blocking_fstat(fd: posix.fd_t) std.fs.Dir.StatError!std.fs.File.Stat {
-    const file = std.fs.File{ .handle = fd };
-    return file.stat();
+pub fn aof_blocking_fstat(fd: posix.fd_t) AOFFStatError!AOFStat {
+    return file_from_fd(fd).stat(std.Options.debug_io);
 }
 
 pub fn aof_blocking_open(dir_fd: posix.fd_t, path: []const u8) !posix.fd_t {
     assert(!std.fs.path.isAbsolute(path));
 
-    const dir = std.fs.Dir{ .fd = dir_fd };
+    const dir = dir_from_fd(dir_fd);
 
-    const file = try dir.createFile(path, .{
+    const file = try dir.createFile(std.Options.debug_io, path, .{
         .read = true,
         .truncate = false,
         .exclusive = false,
         .lock = .exclusive,
     });
-    errdefer file.close();
+    errdefer file.close(std.Options.debug_io);
 
-    try file.sync();
+    try file.sync(std.Options.debug_io);
 
     // We cannot fsync the directory handle on Windows.
     // We have no way to open a directory with write access.
     if (builtin.os.tag != .windows) {
-        try std.posix.fsync(dir_fd);
+        try file_from_fd(dir_fd).sync(std.Options.debug_io);
     }
 
-    try file.seekFromEnd(0);
+    try seek_to_end(file.handle);
 
     return file.handle;
 }

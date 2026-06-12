@@ -3205,12 +3205,14 @@ fn JNIInterfaceType(comptime T: type) type {
     return struct {
         fn JniFnType(comptime function: T.FunctionTable) type {
             const Fn = @TypeOf(@field(T, @tagName(function)));
-            var fn_info = @typeInfo(Fn);
+            const fn_info = @typeInfo(Fn);
             switch (fn_info) {
-                .@"fn" => {
-                    fn_info.@"fn".calling_convention = .c;
-                    return @Type(fn_info);
-                },
+                .@"fn" => |info| return @Fn(
+                    info.param_types,
+                    info.param_attrs,
+                    info.return_type,
+                    .{ .@"callconv" = .c, .varargs = info.attrs.varargs },
+                ),
                 else => @compileError("Expected " ++ @tagName(function) ++ " to be a function"),
             }
         }

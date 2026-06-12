@@ -4,7 +4,6 @@ const builtin = @import("builtin");
 const assert = std.debug.assert;
 const math = std.math;
 const mem = std.mem;
-const meta = std.meta;
 
 const stdx = @import("stdx");
 
@@ -89,9 +88,9 @@ pub fn SetAssociativeCacheType(
     return struct {
         const SetAssociativeCache = @This();
 
-        const Tag = meta.Int(.unsigned, layout.tag_bits);
-        const Count = meta.Int(.unsigned, layout.clock_bits);
-        const Clock = meta.Int(.unsigned, clock_hand_bits);
+        const Tag = @Int(.unsigned, layout.tag_bits);
+        const Count = @Int(.unsigned, layout.clock_bits);
+        const Clock = @Int(.unsigned, clock_hand_bits);
 
         /// We don't require `value_count_max` in `init` to be a power of 2, but we do require
         /// it to be a multiple of `value_count_max_multiple`. The calculation below
@@ -177,7 +176,7 @@ pub fn SetAssociativeCacheType(
 
             const values = try allocator.alignedAlloc(
                 Value,
-                value_alignment,
+                std.mem.Alignment.fromByteUnits(value_alignment),
                 value_count_max,
             );
             errdefer allocator.free(values);
@@ -285,7 +284,7 @@ pub fn SetAssociativeCacheType(
         }
 
         /// Where each set bit represents the index of a way that has the same tag.
-        const Ways = meta.Int(.unsigned, layout.ways);
+        const Ways = @Int(.unsigned, layout.ways);
 
         inline fn search_tags(tags: *const [layout.ways]Tag, tag: Tag) Ways {
             const x: @Vector(layout.ways, Tag) = tags.*;
@@ -621,7 +620,7 @@ fn PackedUnsignedIntegerArrayType(comptime UInt: type) type {
     const uints_per_word = @divExact(word_bits, uint_bits);
 
     // An index bounded by the number of unsigned integers that fit exactly into a word.
-    const WordIndex = meta.Int(.unsigned, math.log2_int(u64, uints_per_word));
+    const WordIndex = @Int(.unsigned, math.log2_int(u64, uints_per_word));
     assert(math.maxInt(WordIndex) == uints_per_word - 1);
 
     // An index bounded by the number of bits (not unsigned integers) that fit exactly into a word.

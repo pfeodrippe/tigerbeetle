@@ -230,9 +230,9 @@ fn Aegis128LGenericType(comptime tag_bits: u9) type {
                 blocks[4] = blocks[4].xorBlocks(AesBlock.fromBytes(dst[16..32]));
             }
             var computed_tag = state.mac(tag_bits, ad.len, m.len);
-            const verify = crypto.utils.timingSafeEql([tag_length]u8, computed_tag, tag);
+            const verify = crypto.timing_safe.eql([tag_length]u8, computed_tag, tag);
             if (!verify) {
-                crypto.utils.secureZero(u8, &computed_tag);
+                crypto.secureZero(u8, &computed_tag);
                 @memset(m, undefined);
                 return error.AuthenticationFailed;
             }
@@ -255,7 +255,7 @@ fn AegisMacType(comptime T: type) type {
 
         /// Initialize a state for the MAC function
         pub fn init(key: *const [key_length]u8) AegisMac {
-            const nonce = [_]u8{0} ** T.nonce_length;
+            const nonce: [T.nonce_length]u8 = @splat(0);
             return AegisMac{
                 .state = T.State.init(key.*, nonce),
             };
@@ -287,7 +287,7 @@ fn AegisMacType(comptime T: type) type {
         /// Return an authentication tag for the current state
         pub fn final(self: *AegisMac, out: *[mac_length]u8) void {
             if (self.off > 0) {
-                var pad = [_]u8{0} ** block_length;
+                var pad = @as([block_length]u8, @splat(0));
                 @memcpy(pad[0..self.off], self.buf[0..self.off]);
                 self.state.absorb(&pad);
             }
@@ -319,8 +319,9 @@ const testing = std.testing;
 const fmt = std.fmt;
 
 test "Aegis128L test vector 1" {
-    const key: [Aegis128L.key_length]u8 = [_]u8{ 0x10, 0x01 } ++ [_]u8{0x00} ** 14;
-    const nonce: [Aegis128L.nonce_length]u8 = [_]u8{ 0x10, 0x00, 0x02 } ++ [_]u8{0x00} ** 13;
+    const key: [Aegis128L.key_length]u8 = [_]u8{ 0x10, 0x01 } ++ @as([14]u8, @splat(0x00));
+    const nonce: [Aegis128L.nonce_length]u8 =
+        [_]u8{ 0x10, 0x00, 0x02 } ++ @as([13]u8, @splat(0x00));
     const ad = [8]u8{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07 };
     const m = [32]u8{
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
@@ -353,10 +354,10 @@ test "Aegis128L test vector 1" {
 }
 
 test "Aegis128L test vector 2" {
-    const key: [Aegis128L.key_length]u8 = [_]u8{0x00} ** 16;
-    const nonce: [Aegis128L.nonce_length]u8 = [_]u8{0x00} ** 16;
+    const key: [Aegis128L.key_length]u8 = @splat(0x00);
+    const nonce: [Aegis128L.nonce_length]u8 = @splat(0x00);
     const ad = [_]u8{};
-    const m = [_]u8{0x00} ** 16;
+    const m = @as([16]u8, @splat(0x00));
     var c: [m.len]u8 = undefined;
     var m2: [m.len]u8 = undefined;
     var tag: [Aegis128L.tag_length]u8 = undefined;
@@ -370,8 +371,8 @@ test "Aegis128L test vector 2" {
 }
 
 test "Aegis128L test vector 3" {
-    const key: [Aegis128L.key_length]u8 = [_]u8{0x00} ** 16;
-    const nonce: [Aegis128L.nonce_length]u8 = [_]u8{0x00} ** 16;
+    const key: [Aegis128L.key_length]u8 = @splat(0x00);
+    const nonce: [Aegis128L.nonce_length]u8 = @splat(0x00);
     const ad = [_]u8{};
     const m = [_]u8{};
     var c: [m.len]u8 = undefined;
@@ -386,7 +387,7 @@ test "Aegis128L test vector 3" {
 }
 
 test "Aegis MAC" {
-    const key = [_]u8{0x00} ** Aegis128LMac.key_length;
+    const key = @as([Aegis128LMac.key_length]u8, @splat(0x00));
     var msg: [64]u8 = undefined;
     for (&msg, 0..) |*m, i| {
         m.* = @as(u8, @truncate(i));
@@ -414,7 +415,7 @@ test "Aegis MAC" {
     try assertEqual("f8840849602738d81037cbaa0f584ea95759e2ac60263ce77346bcdc79fe4319", &tag);
 
     var empty: [0]u8 = undefined;
-    const nonce = [_]u8{0x00} ** Aegis128L_256.nonce_length;
+    const nonce = @as([Aegis128L_256.nonce_length]u8, @splat(0x00));
     Aegis128L_256.encrypt(&empty, &tag, &empty, &msg, nonce, key);
     try assertEqual("f8840849602738d81037cbaa0f584ea95759e2ac60263ce77346bcdc79fe4319", &tag);
 

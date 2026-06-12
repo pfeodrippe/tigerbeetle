@@ -54,7 +54,7 @@ pub fn ManifestLevelType(
         );
 
         pub const KeyMaxSnapshotMin = packed struct(KeyMaxSnapshotMin.Int) {
-            pub const Int = std.meta.Int(
+            pub const Int = @Int(
                 .unsigned,
                 @bitSizeOf(u64) + @bitSizeOf(Key),
             );
@@ -921,17 +921,17 @@ pub fn TestContextType(
             try context.level.init(testing.allocator, &context.pool);
             errdefer context.level.deinit(testing.allocator, &context.pool);
 
-            context.reference = std.ArrayList(TableInfo).init(testing.allocator);
-            errdefer context.reference.deinit();
+            context.reference = .empty;
+            errdefer context.reference.deinit(testing.allocator);
         }
 
         fn deinit(context: *TestContext) void {
             context.level.deinit(testing.allocator, &context.pool);
             context.pool.deinit(testing.allocator);
 
-            for (context.snapshot_tables.slice()) |tables| tables.deinit();
+            for (context.snapshot_tables.slice()) |*tables| tables.deinit(testing.allocator);
 
-            context.reference.deinit();
+            context.reference.deinit(testing.allocator);
         }
 
         fn run(context: *TestContext) !void {
@@ -1010,7 +1010,7 @@ pub fn TestContextType(
                 if (index < context.reference.items.len) {
                     assert(context.reference.items[index].key_min > table.key_max);
                 }
-                context.reference.insert(index, table) catch unreachable;
+                context.reference.insert(testing.allocator, index, table) catch unreachable;
             }
 
             context.inserts += count;
@@ -1076,8 +1076,8 @@ pub fn TestContextType(
 
             context.snapshots.push(context.take_snapshot());
 
-            var tables = std.ArrayList(TableInfo).init(testing.allocator);
-            try tables.insertSlice(0, context.reference.items);
+            var tables: std.ArrayList(TableInfo) = .empty;
+            try tables.insertSlice(testing.allocator, 0, context.reference.items);
             context.snapshot_tables.push(tables);
         }
 
@@ -1088,7 +1088,7 @@ pub fn TestContextType(
 
             _ = context.snapshots.swap_remove(index);
             var tables = context.snapshot_tables.swap_remove(index);
-            defer tables.deinit();
+            defer tables.deinit(testing.allocator);
 
             // Use this memory as a scratch buffer since it's conveniently already allocated.
             tables.clearRetainingCapacity();
@@ -1098,10 +1098,10 @@ pub fn TestContextType(
             // Ensure that iteration with a null key range in both directions is tested.
             if (context.prng.boolean()) {
                 var it = context.level.iterator(.invisible, snapshots, .ascending, null);
-                while (it.next()) |table| try tables.append(table.*);
+                while (it.next()) |table| try tables.append(testing.allocator, table.*);
             } else {
                 var it = context.level.iterator(.invisible, snapshots, .descending, null);
-                while (it.next()) |table| try tables.append(table.*);
+                while (it.next()) |table| try tables.append(testing.allocator, table.*);
                 mem.reverse(TableInfo, tables.items);
             }
 
@@ -1157,12 +1157,12 @@ pub fn TestContextType(
             }
 
             {
-                var to_remove = std.ArrayList(TableInfo).init(testing.allocator);
-                defer to_remove.deinit();
+                var to_remove: std.ArrayList(TableInfo) = .empty;
+                defer to_remove.deinit(testing.allocator);
 
                 for (context.reference.items[index..][0..count]) |table| {
                     if (table.invisible(context.snapshots.slice())) {
-                        try to_remove.append(table);
+                        try to_remove.append(testing.allocator, table);
                     }
                 }
 
@@ -1190,7 +1190,12 @@ pub fn TestContextType(
                 }
             }
 
-            context.reference.replaceRange(index, count, &[0]TableInfo{}) catch unreachable;
+            context.reference.replaceRange(
+                testing.allocator,
+                index,
+                count,
+                &[0]TableInfo{},
+            ) catch unreachable;
 
             context.removes += count;
 

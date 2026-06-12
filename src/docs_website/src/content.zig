@@ -72,7 +72,7 @@ fn load_page(arena: Allocator, base: std.fs.Dir, path: []const u8, page_buffer: 
             if (std.mem.eql(u8, entry.name, "TIGER_STYLE.md")) continue;
             if (std.mem.eql(u8, entry.name, "ARCHITECTURE.md")) continue;
             for (content.children) |child| {
-                const name = std.mem.trimRight(
+                const name = std.mem.trimEnd(
                     u8,
                     cut_prefix(child.path, "./") orelse child.path,
                     "/",

@@ -59,7 +59,7 @@ pub fn main(_: *Shell, gpa: std.mem.Allocator, cli_args: CLIArgs) !void {
     }
 }
 
-fn run_protocol_test(gpa: std.mem.Allocator, options: struct { host: std.net.Address }) !void {
+fn run_protocol_test(gpa: std.mem.Allocator, options: struct { host: stdx.net.Address }) !void {
     var context: AmqpContext = undefined;
     try context.init(gpa);
     defer context.deinit(gpa);
@@ -269,7 +269,7 @@ fn run_protocol_test(gpa: std.mem.Allocator, options: struct { host: std.net.Add
 
 fn run_serialization_test(
     gpa: std.mem.Allocator,
-    options: struct { host: std.net.Address },
+    options: struct { host: stdx.net.Address },
 ) !void {
     var context: AmqpContext = undefined;
     try context.init(gpa);
@@ -372,7 +372,7 @@ fn run_cdc_test(
     gpa: std.mem.Allocator,
     options: struct {
         transfer_count: u32,
-        host: std.net.Address,
+        host: stdx.net.Address,
     },
 ) !void {
     var amqp_context: AmqpContext = undefined;
@@ -538,7 +538,7 @@ fn run_cdc_test(
 fn run_timeout_test(
     gpa: std.mem.Allocator,
     options: struct {
-        host: std.net.Address,
+        host: stdx.net.Address,
     },
 ) !void {
     var amqp_context: AmqpContext = undefined;
@@ -648,7 +648,7 @@ const AmqpContext = struct {
         self.io.deinit();
     }
 
-    pub fn connect(self: *AmqpContext, host: std.net.Address) !void {
+    pub fn connect(self: *AmqpContext, host: stdx.net.Address) !void {
         assert(!self.busy);
         self.busy = true;
         try self.client.connect(&callback, .{
@@ -788,7 +788,7 @@ const VSRContext = struct {
         self.message_pool = try MessagePool.init(gpa, .client);
         errdefer self.message_pool.deinit(gpa);
 
-        const address = try std.net.Address.parseIp4("127.0.0.1", port);
+        const address = try stdx.net.Address.parseIp4("127.0.0.1", port);
         self.client = try Client.init(
             gpa,
             time,
@@ -910,7 +910,7 @@ const TmpRabbitMQ = struct {
     const rabbitmq4 = "rabbitmq:4";
 
     id: u128,
-    host: std.net.Address,
+    host: stdx.net.Address,
     process: std.process.Child,
 
     pub fn init(
@@ -937,7 +937,7 @@ const TmpRabbitMQ = struct {
         );
         errdefer _ = process.kill() catch unreachable;
 
-        const host: std.net.Address = host: {
+        const host: stdx.net.Address = host: {
             const stdout = try try_execute(shell, "docker port {id}", .{ .id = id });
             // The command `docker port` outputs multiple lines:
             // 5672/tcp -> 0.0.0.0:32773
@@ -948,7 +948,7 @@ const TmpRabbitMQ = struct {
                 // Last index of `:`, because ipv6 can be `[::]:port`.
                 const index = std.mem.lastIndexOfScalar(u8, host, ':') orelse continue;
                 const port = try stdx.parse_int(u16, host[index + 1 ..], .{});
-                break :host try std.net.Address.parseIp4("127.0.0.1", port);
+                break :host try stdx.net.Address.parseIp4("127.0.0.1", port);
             }
             try testing.expect(false);
             unreachable;

@@ -153,8 +153,8 @@ fn SegmentedArrayBaseType(
             for (array.nodes[0..array.node_count]) |node| {
                 node_pool.release(@ptrCast(@alignCast(node.?)));
             }
-            allocator.free(array.nodes);
-            allocator.free(array.indexes);
+            allocator.destroy(array.nodes);
+            allocator.destroy(array.indexes);
         }
 
         pub fn reset(array: *SegmentedArray, node_pool: *NodePool) void {

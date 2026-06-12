@@ -8,6 +8,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 
+pub var process_environ: ?std.process.Environ = null;
+
 pub const BitSetType = @import("bit_set.zig").BitSetType;
 pub const IOPSType = @import("iops.zig").IOPSType;
 pub const BoundedArrayType = @import("bounded_array.zig").BoundedArrayType;
@@ -28,6 +30,8 @@ pub const timeit = @import("debug.zig").timeit;
 pub const unshare = @import("unshare.zig");
 pub const windows = @import("windows.zig");
 pub const radix_sort = @import("radix.zig").sort;
+pub const meta = @import("meta.zig");
+pub const net = @import("net.zig");
 
 pub const Instant = @import("time_units.zig").Instant;
 pub const Duration = @import("time_units.zig").Duration;
@@ -68,6 +72,20 @@ pub inline fn div_ceil(numerator: anytype, denominator: anytype) @TypeOf(numerat
 
     if (numerator == 0) return 0;
     return @divFloor(numerator - 1, denominator) + 1;
+}
+
+pub fn repeat(comptime string: []const u8, comptime count: usize) *const [string.len * count:0]u8 {
+    return &struct {
+        const value = blk: {
+            var result: [string.len * count:0]u8 = undefined;
+            for (0..count) |i| {
+                for (string, result[i * string.len ..][0..string.len]) |source, *target| {
+                    target.* = source;
+                }
+            }
+            break :blk result;
+        };
+    }.value;
 }
 
 test "div_ceil" {
@@ -176,7 +194,11 @@ pub inline fn disjoint_slices(comptime A: type, comptime B: type, a: []const A, 
 }
 
 test "disjoint_slices" {
-    const a = try std.testing.allocator.alignedAlloc(u8, @sizeOf(u32), 8 * @sizeOf(u32));
+    const a = try std.testing.allocator.alignedAlloc(
+        u8,
+        std.mem.Alignment.fromByteUnits(@sizeOf(u32)),
+        8 * @sizeOf(u32),
+    );
     defer std.testing.allocator.free(a);
 
     const b = try std.testing.allocator.alloc(u32, 8);
@@ -231,7 +253,7 @@ pub fn bytes_as_slice(
         else => unreachable,
     }
 
-    break :type if (type_info.pointer.is_const) []const T else []T;
+    break :type if (type_info.pointer.attrs.@"const") []const T else []T;
 } {
     switch (precision) {
         .exact => {
@@ -339,7 +361,7 @@ pub const log = if (builtin.is_test)
     // Downgrade `err` to `warn` for tests.
     // Zig fails any test that does `log.err`, but we want to test those code paths here.
     struct {
-        pub fn scoped(comptime scope: @Type(.enum_literal)) type {
+        pub fn scoped(comptime scope: @TypeOf(.enum_literal)) type {
             const base = std.log.scoped(scope);
             return struct {
                 pub const err = warn;
@@ -355,7 +377,7 @@ else
 /// An alternative to the default logFn from `std.log`, which prepends a UTC timestamp.
 pub fn log_with_timestamp(
     comptime message_level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
+    comptime scope: @TypeOf(.enum_literal),
     comptime format: []const u8,
     args: anytype,
 ) void {
@@ -363,14 +385,13 @@ pub fn log_with_timestamp(
     const scope_prefix = if (scope == .default) ": " else "(" ++ @tagName(scope) ++ "): ";
     const instant_unix = InstantUnix.now();
 
-    const stderr = std.io.getStdErr().writer();
-    var buffered_writer = std.io.bufferedWriter(stderr);
-    const writer = buffered_writer.writer();
+    var timestamp_buffer: [32]u8 = undefined;
+    var timestamp_writer: std.Io.Writer = .fixed(&timestamp_buffer);
 
     nosuspend {
-        instant_unix.format("", .{}, writer) catch return;
-        writer.print(" " ++ level_text ++ scope_prefix ++ format ++ "\n", args) catch return;
-        buffered_writer.flush() catch return;
+        instant_unix.format(&timestamp_writer) catch return;
+        std.debug.print("{s} " ++ level_text ++ scope_prefix, .{timestamp_writer.buffered()});
+        std.debug.print(format ++ "\n", args);
     }
 }
 
@@ -422,8 +443,8 @@ fn has_pointers(comptime T: type) bool {
         .bool, .int, .@"enum" => return false,
 
         .array => |info| return comptime has_pointers(info.child),
-        .@"struct" => |info| {
-            inline for (info.fields) |field| {
+        .@"struct" => {
+            inline for (meta.fields(T)) |field| {
                 if (comptime has_pointers(field.type)) return true;
             }
             return false;
@@ -433,6 +454,7 @@ fn has_pointers(comptime T: type) bool {
 
 /// Checks that a type does not have implicit padding.
 pub fn no_padding(comptime T: type) bool {
+    @setEvalBranchQuota(100_000);
     comptime switch (@typeInfo(T)) {
         .void => return true,
         .int => return @bitSizeOf(T) == 8 * @sizeOf(T),
@@ -441,12 +463,12 @@ pub fn no_padding(comptime T: type) bool {
             switch (info.layout) {
                 .auto => return false,
                 .@"extern" => {
-                    for (info.fields) |field| {
+                    for (meta.fields(T)) |field| {
                         if (!no_padding(field.type)) return false;
                     }
 
                     // Check offsets of u128 and pseudo-u256 fields.
-                    for (info.fields) |field| {
+                    for (meta.fields(T)) |field| {
                         if (field.type == u128) {
                             const offset = @offsetOf(T, field.name);
                             if (offset % @sizeOf(u128) != 0) return false;
@@ -463,7 +485,7 @@ pub fn no_padding(comptime T: type) bool {
                     }
 
                     var offset = 0;
-                    for (info.fields) |field| {
+                    for (meta.fields(T)) |field| {
                         const field_offset = @offsetOf(T, field.name);
                         if (offset != field_offset) return false;
                         offset += @sizeOf(field.type);
@@ -474,7 +496,7 @@ pub fn no_padding(comptime T: type) bool {
             }
         },
         .@"enum" => |info| {
-            maybe(info.is_exhaustive);
+            maybe(info.mode == .exhaustive);
             return no_padding(info.tag_type);
         },
         .pointer => return false,
@@ -592,7 +614,7 @@ pub fn update(base: anytype, diff: anytype) @TypeOf(base) {
     assert(@typeInfo(@TypeOf(base)) == .@"struct");
 
     var updated = base;
-    inline for (std.meta.fields(@TypeOf(diff))) |f| {
+    inline for (meta.fields(@TypeOf(diff))) |f| {
         @field(updated, f.name) = @field(diff, f.name);
     }
     return updated;
@@ -658,7 +680,7 @@ pub fn has_unique_representation(comptime T: type) bool {
 
             var sum_size = @as(usize, 0);
 
-            inline for (info.fields) |field| {
+            inline for (meta.fields(T)) |field| {
                 const FieldType = field.type;
                 if (comptime !has_unique_representation(FieldType)) return false;
                 sum_size += @sizeOf(FieldType);
@@ -738,7 +760,7 @@ test "has_unique_representation" {
 
     try std.testing.expect(has_unique_representation(TestStruct10));
 
-    const TestUnion1 = packed union {
+    const TestUnion1 = extern union {
         a: u32,
         b: u16,
     };
@@ -766,7 +788,7 @@ test "has_unique_representation" {
 
     try std.testing.expect(!has_unique_representation(TestUnion4));
 
-    inline for ([_]type{ i0, u8, i16, u32, i64 }) |T| {
+    inline for ([_]type{ u0, u8, i16, u32, i64 }) |T| {
         try std.testing.expect(has_unique_representation(T));
     }
     inline for ([_]type{ i1, u9, i17, u33, i24 }) |T| {
@@ -793,7 +815,7 @@ pub fn EnumUnionType(
     comptime Enum: type,
     comptime TypeForVariant: fn (comptime variant: Enum) type,
 ) type {
-    const UnionField = std.builtin.Type.UnionField;
+    const UnionField = meta.UnionField;
 
     var fields: [std.enums.values(Enum).len]UnionField = undefined;
     for (std.enums.values(Enum), 0..) |enum_variant, i| {
@@ -804,18 +826,13 @@ pub fn EnumUnionType(
         };
     }
 
-    return @Type(.{ .@"union" = .{
-        .layout = .auto,
-        .fields = &fields,
-        .decls = &.{},
-        .tag_type = Enum,
-    } });
+    return meta.UnionType(.auto, Enum, &fields);
 }
 
 /// Constructs an `enum` type from names.
 pub fn EnumType(comptime names: anytype) type {
     comptime assert(names.len > 0);
-    const EnumField = std.builtin.Type.EnumField;
+    const EnumField = meta.EnumField;
     var fields: [names.len]EnumField = undefined;
     for (names, 0..) |name, i| {
         fields[i] = .{
@@ -824,12 +841,7 @@ pub fn EnumType(comptime names: anytype) type {
         };
     }
 
-    return @Type(.{ .@"enum" = .{
-        .fields = &fields,
-        .decls = &.{},
-        .tag_type = std.math.IntFittingRange(0, names.len),
-        .is_exhaustive = true,
-    } });
+    return meta.EnumType(std.math.IntFittingRange(0, names.len), .exhaustive, &fields);
 }
 
 /// Creates a slice to a comptime slice without triggering
@@ -841,20 +853,21 @@ pub fn comptime_slice(comptime slice: anytype, comptime len: usize) []const @Typ
 /// Return a Formatter for a u64 value representing a file size.
 /// This formatter statically checks that the number is a multiple of 1024,
 /// and represents it using the IEC measurement units (KiB, MiB, GiB, ...).
-pub fn fmt_int_size_bin_exact(comptime value: u64) std.fmt.Formatter(format_int_size_bin_exact) {
+pub fn fmt_int_size_bin_exact(comptime value: u64) struct {
+    pub fn format(_: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        return format_int_size_bin_exact(value, writer);
+    }
+} {
     comptime assert(value < 1024 or value % 1024 == 0);
-    return .{ .data = value };
+    return .{};
 }
 
 fn format_int_size_bin_exact(
     value: u64,
-    comptime fmt: []const u8,
-    options: std.fmt.FormatOptions,
-    writer: anytype,
-) !void {
-    _ = fmt;
+    writer: *std.Io.Writer,
+) std.Io.Writer.Error!void {
     if (value == 0) {
-        return std.fmt.formatBuf("0B", options, writer);
+        return writer.writeAll("0B");
     }
 
     // The worst case in terms of space needed is 20 bytes,
@@ -873,7 +886,7 @@ fn format_int_size_bin_exact(
     const suffix = magnitudes_iec[magnitude];
 
     const length: usize = length: {
-        const i = std.fmt.formatIntBuf(&buf, value_unit, 10, .lower, .{});
+        const i = std.fmt.printInt(&buf, value_unit, 10, .lower, .{});
         if (magnitude == 0) {
             buf[i] = suffix;
             break :length i + 1;
@@ -883,17 +896,17 @@ fn format_int_size_bin_exact(
         }
     };
 
-    return std.fmt.formatBuf(buf[0..length], options, writer);
+    return writer.writeAll(buf[0..length]);
 }
 
 test fmt_int_size_bin_exact {
-    try std.testing.expectFmt("0B", "{}", .{fmt_int_size_bin_exact(0)});
-    try std.testing.expectFmt("128B", "{}", .{fmt_int_size_bin_exact(128)});
-    try std.testing.expectFmt("8KiB", "{}", .{fmt_int_size_bin_exact(8 * 1024)});
-    try std.testing.expectFmt("1025KiB", "{}", .{fmt_int_size_bin_exact(1025 * 1024)});
-    try std.testing.expectFmt("12345KiB", "{}", .{fmt_int_size_bin_exact(12345 * 1024)});
-    try std.testing.expectFmt("42MiB", "{}", .{fmt_int_size_bin_exact(42 * 1024 * 1024)});
-    try std.testing.expectFmt("18014398509481983KiB", "{}", .{
+    try std.testing.expectFmt("0B", "{f}", .{fmt_int_size_bin_exact(0)});
+    try std.testing.expectFmt("128B", "{f}", .{fmt_int_size_bin_exact(128)});
+    try std.testing.expectFmt("8KiB", "{f}", .{fmt_int_size_bin_exact(8 * 1024)});
+    try std.testing.expectFmt("1025KiB", "{f}", .{fmt_int_size_bin_exact(1025 * 1024)});
+    try std.testing.expectFmt("12345KiB", "{f}", .{fmt_int_size_bin_exact(12345 * 1024)});
+    try std.testing.expectFmt("42MiB", "{f}", .{fmt_int_size_bin_exact(42 * 1024 * 1024)});
+    try std.testing.expectFmt("18014398509481983KiB", "{f}", .{
         fmt_int_size_bin_exact(std.math.maxInt(u64) - 1023),
     });
 }
@@ -959,7 +972,7 @@ pub fn array_print(
 
     comptime {
         var args_worst_case: Args = undefined;
-        for (ArgsStruct.fields, 0..) |field, index| {
+        for (meta.fields(Args), 0..) |field, index| {
             const arg_worst_case = switch (field.type) {
                 u8, u16, u32, u64, u128 => std.math.maxInt(field.type),
                 else => @compileError("array_print: unsupported type: " ++ @typeName(field.type)),
@@ -985,19 +998,62 @@ pub fn unexpected_errno(label: []const u8, err: std.posix.system.E) std.posix.Un
     });
 
     if (builtin.mode == .Debug) {
-        std.debug.dumpCurrentStackTrace(null);
+        std.debug.dumpCurrentStackTrace(.{});
     }
     return error.Unexpected;
 }
 
 pub fn unique_u128() u128 {
-    const value = std.crypto.random.int(u128);
+    const value = random_int(u128);
 
     // Broken CSPRNG is the likeliest explanation for zero or all ones.
     assert(value != 0);
     assert(value != std.math.maxInt(u128));
 
     return value;
+}
+
+pub fn random_int(comptime T: type) T {
+    var value: T = undefined;
+    random_bytes(std.mem.asBytes(&value));
+    return value;
+}
+
+pub fn random_bytes(buffer: []u8) void {
+    std.Options.debug_io.random(buffer);
+}
+
+pub fn fmt_slice_hex_lower(bytes: []const u8) std.fmt.Alt([]const u8, format_slice_hex_lower) {
+    return .{ .data = bytes };
+}
+
+fn format_slice_hex_lower(bytes: []const u8, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    for (bytes) |byte| {
+        try writer.printInt(byte, 16, .lower, .{ .width = 2, .fill = '0' });
+    }
+}
+
+pub fn once(comptime initFn: fn () void) OnceType(initFn) {
+    return .{};
+}
+
+fn OnceType(comptime initFn: fn () void) type {
+    return struct {
+        done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        lock: std.atomic.Mutex = .unlocked,
+
+        pub fn call(self: *@This()) void {
+            if (self.done.load(.acquire)) return;
+
+            while (!self.lock.tryLock()) std.atomic.spinLoopHint();
+            defer self.lock.unlock();
+
+            if (!self.done.load(.monotonic)) {
+                initFn();
+                self.done.store(true, .release);
+            }
+        }
+    };
 }
 
 /// NB: intended for parsing CLI arguments where we care to preserve the user-specified unit.

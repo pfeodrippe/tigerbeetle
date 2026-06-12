@@ -39,20 +39,21 @@ pub const IO = struct {
     run_for_ns_active: bool = false,
 
     pub fn init(entries: u12, flags: u32) !IO {
-        errdefer |err| switch (err) {
-            error.SystemOutdated => {
-                log.err("io_uring is not available", .{});
-                log.err("likely cause: the syscall is disabled by seccomp", .{});
-            },
-            error.PermissionDenied => {
-                log.err("io_uring is not available", .{});
-                log.err("likely cause: the syscall is disabled by sysctl, " ++
-                    "try 'sysctl -w kernel.io_uring_disabled=0'", .{});
-            },
-            else => {},
+        var ring = IO_Uring.init(entries, flags) catch |err| {
+            switch (err) {
+                error.SystemOutdated => {
+                    log.err("io_uring is not available", .{});
+                    log.err("likely cause: the syscall is disabled by seccomp", .{});
+                },
+                error.PermissionDenied => {
+                    log.err("io_uring is not available", .{});
+                    log.err("likely cause: the syscall is disabled by sysctl, " ++
+                        "try 'sysctl -w kernel.io_uring_disabled=0'", .{});
+                },
+                else => {},
+            }
+            return err;
         };
-
-        var ring = try IO_Uring.init(entries, flags);
         errdefer ring.deinit();
 
         // IORING_ENTER_EXT_ARG is the newest feature we currently use: it was added in 5.11.
@@ -781,7 +782,7 @@ pub const IO = struct {
         },
         connect: struct {
             socket: socket_t,
-            address: std.net.Address,
+            address: stdx.net.Address,
         },
         fsync: struct {
             fd: fd_t,
@@ -930,7 +931,7 @@ pub const IO = struct {
         ) void,
         completion: *Completion,
         socket: socket_t,
-        address: std.net.Address,
+        address: stdx.net.Address,
     ) void {
         completion.* = .{
             .io = self,
@@ -1380,9 +1381,9 @@ pub const IO = struct {
     pub fn listen(
         _: *IO,
         fd: socket_t,
-        address: std.net.Address,
+        address: stdx.net.Address,
         options: ListenOptions,
-    ) !std.net.Address {
+    ) !stdx.net.Address {
         return common.listen(fd, address, options);
     }
 
@@ -1755,7 +1756,7 @@ pub const IO = struct {
         if (!@hasField(posix.O, "DIRECT")) return false;
 
         var cookie: [16]u8 = @splat('0');
-        _ = stdx.array_print(16, &cookie, "{0x}", .{std.crypto.random.int(u64)});
+        _ = stdx.array_print(16, &cookie, "{0x}", .{stdx.random_int(u64)});
 
         const path: [:0]const u8 = "fs_supports_direct_io-" ++ cookie ++ "";
         const dir = std.fs.Dir{ .fd = dir_fd };
@@ -1807,9 +1808,9 @@ pub const IO = struct {
         }
     }
 
-    pub const PReadError = posix.PReadError;
+    pub const PReadError = common.AOFPReadError;
 
-    pub fn aof_blocking_write_all(_: *IO, fd: fd_t, buffer: []const u8) posix.WriteError!void {
+    pub fn aof_blocking_write_all(_: *IO, fd: fd_t, buffer: []const u8) common.AOFWriteError!void {
         return common.aof_blocking_write_all(fd, buffer);
     }
 
@@ -1821,11 +1822,11 @@ pub const IO = struct {
         return common.aof_blocking_close(fd);
     }
 
-    pub fn aof_blocking_stat(_: *IO, path: []const u8) std.fs.Dir.StatFileError!std.fs.File.Stat {
+    pub fn aof_blocking_stat(_: *IO, path: []const u8) common.AOFStatError!common.AOFStat {
         return common.aof_blocking_stat(path);
     }
 
-    pub fn aof_blocking_fstat(_: *IO, fd: fd_t) std.fs.Dir.StatError!std.fs.File.Stat {
+    pub fn aof_blocking_fstat(_: *IO, fd: fd_t) common.AOFFStatError!common.AOFStat {
         return common.aof_blocking_fstat(fd);
     }
 

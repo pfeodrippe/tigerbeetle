@@ -371,15 +371,7 @@ pub const MessageSummary = struct {
         entry.size += header.size;
     }
 
-    pub fn format(
-        summary: MessageSummary,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
-
+    pub fn format(summary: MessageSummary, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         const slice = comptime std.enums.values(vsr.Command);
         var commands = slice[0..slice.len].*;
         std.mem.sort(vsr.Command, &commands, summary.map, greater_than);

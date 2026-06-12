@@ -48,6 +48,8 @@ arena: std.heap.ArenaAllocator,
 
 const Flags = @This();
 
+pub var process_args: ?std.process.Args = null;
+
 pub fn init(gpa: Allocator) Flags {
     return .{
         .arena = std.heap.ArenaAllocator.init(gpa),
@@ -62,8 +64,7 @@ pub fn deinit(flags: *Flags, gpa: Allocator) void {
 
 /// Format and print an error message to stderr, then exit with an exit code of 1.
 fn fatal(comptime fmt_string: []const u8, args: anytype) noreturn {
-    const stderr = std.io.getStdErr().writer();
-    stderr.print("error: " ++ fmt_string ++ "\n", args) catch {};
+    std.debug.print("error: " ++ fmt_string ++ "\n", args);
     // NB: this status must match vsr.FatalReason.cli, but it would be wrong for flags to depend on
     // vsr. The right way would be to parametrize flags by this behavior, and let the caller inject
     // the implementation of fatal function, but let's be pragmatic here and just match the behavior
@@ -104,7 +105,12 @@ pub fn parse(flags: *Flags, comptime CLIArgs: type) CLIArgs {
 
     const arena = flags.arena.allocator();
 
-    var args = std.process.argsWithAllocator(arena) catch |err| oom(err);
+    var args = std.process.Args.Iterator.initAllocator(
+        process_args orelse fatal("process args unavailable", .{}),
+        arena,
+    ) catch |err| oom(err);
+    defer args.deinit();
+
     if (!args.skip()) fatal("executable name missing", .{});
 
     return parse_flags(arena, &args, CLIArgs);
@@ -112,11 +118,11 @@ pub fn parse(flags: *Flags, comptime CLIArgs: type) CLIArgs {
 
 fn parse_commands(
     arena: Allocator,
-    args: *std.process.ArgIterator,
+    args: *std.process.Args.Iterator,
     comptime Commands: type,
 ) Commands {
     comptime assert(@typeInfo(Commands) == .@"union");
-    comptime assert(std.meta.fields(Commands).len >= 2);
+    comptime assert(stdx.meta.fields(Commands).len >= 2);
 
     const first_arg = args.next() orelse fatal(
         "subcommand required, expected {s}",
@@ -126,12 +132,15 @@ fn parse_commands(
     // NB: help must be declared as *pub* const to be visible here.
     if (@hasDecl(Commands, "help")) {
         if (std.mem.eql(u8, first_arg, "-h") or std.mem.eql(u8, first_arg, "--help")) {
-            std.io.getStdOut().writeAll(Commands.help) catch std.process.exit(1);
+            std.Io.File.stdout().writeStreamingAll(
+                std.Options.debug_io,
+                Commands.help,
+            ) catch std.process.exit(1);
             std.process.exit(0);
         }
     }
 
-    inline for (comptime std.meta.fields(Commands)) |field| {
+    inline for (comptime stdx.meta.fields(Commands)) |field| {
         comptime assert(std.mem.indexOfScalar(u8, field.name, '_') == null);
         if (std.mem.eql(u8, first_arg, field.name)) {
             return @unionInit(Commands, field.name, parse_flags(arena, args, field.type));
@@ -140,7 +149,7 @@ fn parse_commands(
     fatal("unknown subcommand: '{s}'", .{first_arg});
 }
 
-fn parse_flags(arena: Allocator, args: *std.process.ArgIterator, comptime CLIArgs: type) CLIArgs {
+fn parse_flags(arena: Allocator, args: *std.process.Args.Iterator, comptime CLIArgs: type) CLIArgs {
     @setEvalBranchQuota(5_000);
 
     if (CLIArgs == void) {
@@ -156,8 +165,8 @@ fn parse_flags(arena: Allocator, args: *std.process.ArgIterator, comptime CLIArg
 
     assert(@typeInfo(CLIArgs) == .@"struct");
 
-    const fields = std.meta.fields(CLIArgs);
-    comptime var fields_named, var fields_positional: []const std.builtin.Type.StructField =
+    const fields = stdx.meta.fields(CLIArgs);
+    comptime var fields_named, var fields_positional: []const stdx.meta.StructField =
         for (fields, 0..) |field, index| {
             if (std.mem.eql(u8, field.name, "--")) {
                 assert(field.type == void);
@@ -174,7 +183,7 @@ fn parse_flags(arena: Allocator, args: *std.process.ArgIterator, comptime CLIArg
             &.{},
         };
 
-    comptime var field_extended: ?std.builtin.Type.StructField = null;
+    comptime var field_extended: ?stdx.meta.StructField = null;
     if (fields_positional.len == 1 and fields_positional[0].type == []const []const u8) {
         field_extended = fields_positional[0];
         fields_positional = fields_positional[1..];
@@ -200,7 +209,7 @@ fn parse_flags(arena: Allocator, args: *std.process.ArgIterator, comptime CLIArg
         for (fields_named[0..], 0..) |*field_right, i| {
             for (fields_named[0..i]) |*field_left| {
                 if (field_left.name.len < field_right.name.len) {
-                    std.mem.swap(std.builtin.Type.StructField, field_left, field_right);
+                    std.mem.swap(stdx.meta.StructField, field_left, field_right);
                 }
             }
         }
@@ -352,8 +361,8 @@ fn assert_valid_value_type(comptime T: type) void {
 
         if (@typeInfo(T) == .@"enum") {
             const info = @typeInfo(T).@"enum";
-            assert(info.is_exhaustive);
-            assert(info.fields.len >= 2);
+            assert(info.mode == .exhaustive);
+            assert(stdx.meta.fields(T).len >= 2);
             return;
         }
 
@@ -477,7 +486,7 @@ fn parse_value_bool(flag: []const u8, value: [:0]const u8) bool {
 
 fn parse_value_enum(comptime E: type, flag: []const u8, value: [:0]const u8) E {
     assert((flag[0] == '-' and flag[1] == '-') or flag[0] == '<');
-    comptime assert(@typeInfo(E).@"enum".is_exhaustive);
+    comptime assert(@typeInfo(E).@"enum".mode == .exhaustive);
 
     return std.meta.stringToEnum(E, value) orelse fatal(
         "{s}: expected one of {s}, but found '{s}'",
@@ -487,11 +496,11 @@ fn parse_value_enum(comptime E: type, flag: []const u8, value: [:0]const u8) E {
 
 fn fields_to_comma_list(comptime E: type) []const u8 {
     comptime {
-        const field_count = std.meta.fields(E).len;
+        const field_count = stdx.meta.fields(E).len;
         assert(field_count >= 2);
 
         var result: []const u8 = "";
-        for (std.meta.fields(E), 0..) |field, field_index| {
+        for (stdx.meta.fields(E), 0..) |field, field_index| {
             const separator = switch (field_index) {
                 0 => "",
                 else => ", ",
@@ -503,7 +512,7 @@ fn fields_to_comma_list(comptime E: type) []const u8 {
     }
 }
 
-fn flag_name(comptime field: std.builtin.Type.StructField) []const u8 {
+fn flag_name(comptime field: stdx.meta.StructField) []const u8 {
     return comptime blk: {
         assert(!std.mem.eql(u8, field.name, "-"));
         assert(!std.mem.eql(u8, field.name, "--"));
@@ -520,11 +529,11 @@ fn flag_name(comptime field: std.builtin.Type.StructField) []const u8 {
 }
 
 test flag_name {
-    const field = @typeInfo(struct { statsd: bool }).@"struct".fields[0];
+    const field = stdx.meta.fields(struct { statsd: bool })[0];
     try std.testing.expectEqualStrings(flag_name(field), "--statsd");
 }
 
-fn flag_name_positional(comptime field: std.builtin.Type.StructField) []const u8 {
+fn flag_name_positional(comptime field: stdx.meta.StructField) []const u8 {
     comptime assert(std.mem.indexOfScalar(u8, field.name, '_') == null);
     return "<" ++ field.name ++ ">";
 }
@@ -711,8 +720,10 @@ pub const main =
             ;
         };
 
-        fn main() !void {
-            var gpa_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+        fn main(process_init: std.process.Init) !void {
+            process_args = process_init.minimal.args;
+
+            var gpa_allocator = std.heap.DebugAllocator(.{}){};
             const gpa = gpa_allocator.allocator();
 
             var flags = Flags.init(gpa);
@@ -720,8 +731,11 @@ pub const main =
 
             const cli_args = flags.parse(CLIArgs);
 
-            const stdout = std.io.getStdOut();
-            const out_stream = stdout.writer();
+            var stdout_buffer: [1024]u8 = undefined;
+            var stdout = std.Io.File.stdout().writer(std.Options.debug_io, &stdout_buffer);
+            defer stdout.flush() catch {};
+
+            const out_stream = &stdout.interface;
             switch (cli_args) {
                 .empty => try out_stream.print("empty\n", .{}),
                 .prefix => |values| {
@@ -751,7 +765,7 @@ pub const main =
                     try out_stream.print("boolean: {}\n", .{values.boolean});
                     try out_stream.print("path: {s}\n", .{values.path});
                     try out_stream.print("optional: {?s}\n", .{values.optional});
-                    try out_stream.print("choice: {?s}\n", .{@tagName(values.choice)});
+                    try out_stream.print("choice: {s}\n", .{@tagName(values.choice)});
                 },
                 .subcommand => |values| {
                     switch (values) {
@@ -780,7 +794,9 @@ test "flags" {
         fn init(gpa: std.mem.Allocator) !T {
             // TODO: Avoid std.posix.getenv() as it currently causes a linker error on windows.
             // See: https://github.com/ziglang/zig/issues/8456
-            const zig_exe = try std.process.getEnvVarOwned(gpa, "ZIG_EXE"); // Set by build.zig
+            const zig_exe_env = std.c.getenv("ZIG_EXE") orelse
+                return error.EnvironmentVariableMissing;
+            const zig_exe = try gpa.dupe(u8, std.mem.span(zig_exe_env)); // Set by build.zig
             defer gpa.free(zig_exe);
 
             var tmp_dir = std.testing.tmpDir(.{});
@@ -793,8 +809,8 @@ test "flags" {
             });
             defer gpa.free(tmp_dir_path);
 
-            const output_buf = std.ArrayList(u8).init(gpa);
-            errdefer output_buf.deinit();
+            var output_buf: std.ArrayList(u8) = .empty;
+            errdefer output_buf.deinit(gpa);
 
             const flags_exe_buf = try gpa.create([std.fs.max_path_bytes]u8);
             errdefer gpa.destroy(flags_exe_buf);
@@ -806,32 +822,39 @@ test "flags" {
                 });
                 defer gpa.free(path_relative);
 
-                const this_file = try std.fs.cwd().realpath(
+                const this_file_len = try std.Io.Dir.cwd().realPathFile(
+                    std.testing.io,
                     path_relative,
                     flags_exe_buf,
                 );
+                const this_file = flags_exe_buf[0..this_file_len];
                 const argv = [_][]const u8{ zig_exe, "build-exe", this_file };
-                const exec_result = try std.process.Child.run(.{
-                    .allocator = gpa,
+                const exec_result = try std.process.run(gpa, std.testing.io, .{
                     .argv = &argv,
-                    .cwd = tmp_dir_path,
+                    .cwd = .{ .path = tmp_dir_path },
                 });
                 defer gpa.free(exec_result.stdout);
                 defer gpa.free(exec_result.stderr);
 
-                if (exec_result.term.Exited != 0) {
+                const exit_code = switch (exec_result.term) {
+                    .exited => |code| code,
+                    else => 255,
+                };
+                if (exit_code != 0) {
                     std.debug.print("{s}{s}", .{ exec_result.stdout, exec_result.stderr });
                     return error.FailedToCompile;
                 }
             }
 
-            const flags_exe = try tmp_dir.dir.realpath(
+            const flags_exe_len = try tmp_dir.dir.realPathFile(
+                std.testing.io,
                 "flags" ++ comptime builtin.target.exeFileExt(),
                 flags_exe_buf,
             );
+            const flags_exe = flags_exe_buf[0..flags_exe_len];
 
-            const sanity_check = try std.fs.openFileAbsolute(flags_exe, .{});
-            sanity_check.close();
+            const sanity_check = try std.Io.Dir.openFileAbsolute(std.testing.io, flags_exe, .{});
+            sanity_check.close(std.testing.io);
 
             return .{
                 .gpa = gpa,
@@ -844,7 +867,7 @@ test "flags" {
 
         fn deinit(t: *T) void {
             t.gpa.destroy(t.flags_exe_buf);
-            t.output_buf.deinit();
+            t.output_buf.deinit(t.gpa);
             t.tmp_dir.cleanup();
             t.* = undefined;
         }
@@ -861,8 +884,7 @@ test "flags" {
                 assert(argv[argv.len - 1].ptr == cli[cli.len - 1].ptr);
             }
 
-            const exec_result = try std.process.Child.run(.{
-                .allocator = t.gpa,
+            const exec_result = try std.process.run(t.gpa, std.testing.io, .{
                 .argv = argv,
             });
             defer t.gpa.free(exec_result.stdout);
@@ -870,14 +892,19 @@ test "flags" {
 
             t.output_buf.clearRetainingCapacity();
 
-            if (exec_result.term.Exited != 0) {
-                try t.output_buf.writer().print("status: {}\n", .{exec_result.term.Exited});
+            const exit_code = switch (exec_result.term) {
+                .exited => |code| code,
+                else => 255,
+            };
+
+            if (exit_code != 0) {
+                try t.output_buf.print(t.gpa, "status: {}\n", .{exit_code});
             }
             if (exec_result.stdout.len > 0) {
-                try t.output_buf.writer().print("stdout:\n{s}", .{exec_result.stdout});
+                try t.output_buf.print(t.gpa, "stdout:\n{s}", .{exec_result.stdout});
             }
             if (exec_result.stderr.len > 0) {
-                try t.output_buf.writer().print("stderr:\n{s}", .{exec_result.stderr});
+                try t.output_buf.print(t.gpa, "stderr:\n{s}", .{exec_result.stderr});
             }
 
             try want.diff(t.output_buf.items);

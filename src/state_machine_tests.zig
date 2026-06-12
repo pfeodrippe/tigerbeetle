@@ -643,13 +643,19 @@ fn check_version(
     var linked_events_failed: std.AutoHashMap(u128, u64) = .init(allocator);
     defer linked_events_failed.deinit();
 
-    var request: std.ArrayListAligned(u8, constants.cache_line_size) = .init(allocator);
-    defer request.deinit();
+    var request: std.ArrayListAligned(
+        u8,
+        std.mem.Alignment.fromByteUnits(constants.cache_line_size),
+    ) = .empty;
+    defer request.deinit(allocator);
 
-    try request.ensureTotalCapacity(constants.message_body_size_max);
+    try request.ensureTotalCapacity(allocator, constants.message_body_size_max);
 
-    var reply: std.ArrayListAligned(u8, constants.cache_line_size) = .init(allocator);
-    defer reply.deinit();
+    var reply: std.ArrayListAligned(
+        u8,
+        std.mem.Alignment.fromByteUnits(constants.cache_line_size),
+    ) = .empty;
+    defer reply.deinit(allocator);
 
     var operation: ?TestContext.Operation = null;
     for (test_actions) |test_action| {
@@ -699,7 +705,7 @@ fn check_version(
                 operation = .create_accounts;
 
                 var event = a.event();
-                try request.appendSlice(std.mem.asBytes(&event));
+                try request.appendSlice(allocator, std.mem.asBytes(&event));
 
                 const timestamp_commit = context.state_machine.prepare_timestamp + 1 +
                     @divExact(request.items.len, @sizeOf(Account));
@@ -725,7 +731,7 @@ fn check_version(
                             },
                             .status = a.status,
                         };
-                        try reply.appendSlice(std.mem.asBytes(&result));
+                        try reply.appendSlice(allocator, std.mem.asBytes(&result));
 
                         if (event.flags.linked) {
                             if (a.status == .linked_event_failed) {
@@ -742,7 +748,7 @@ fn check_version(
                             .index = @intCast(@divExact(request.items.len, @sizeOf(Account)) - 1),
                             .result = a.status,
                         };
-                        try reply.appendSlice(std.mem.asBytes(&result));
+                        try reply.appendSlice(allocator, std.mem.asBytes(&result));
                     },
                     else => unreachable,
                 }
@@ -752,7 +758,7 @@ fn check_version(
                 operation = .create_transfers;
 
                 var event = t.event();
-                try request.appendSlice(std.mem.asBytes(&event));
+                try request.appendSlice(allocator, std.mem.asBytes(&event));
 
                 const timestamp_commit = context.state_machine.prepare_timestamp + 1 +
                     @divExact(request.items.len, @sizeOf(Transfer));
@@ -799,7 +805,7 @@ fn check_version(
                             },
                             .status = t.status,
                         };
-                        try reply.appendSlice(std.mem.asBytes(&result));
+                        try reply.appendSlice(allocator, std.mem.asBytes(&result));
 
                         if (event.flags.linked) {
                             if (t.status == .linked_event_failed) {
@@ -816,7 +822,7 @@ fn check_version(
                             .index = @intCast(@divExact(request.items.len, @sizeOf(Transfer)) - 1),
                             .result = t.status,
                         };
-                        try reply.appendSlice(std.mem.asBytes(&result));
+                        try reply.appendSlice(allocator, std.mem.asBytes(&result));
                     },
                     else => unreachable,
                 }
@@ -825,7 +831,7 @@ fn check_version(
                 assert(operation == null or operation.? == .lookup_accounts);
                 operation = .lookup_accounts;
 
-                try request.appendSlice(std.mem.asBytes(&a.id));
+                try request.appendSlice(allocator, std.mem.asBytes(&a.id));
                 if (a.data) |data| {
                     var account = accounts.get(a.id).?;
                     account.debits_pending = data.debits_pending;
@@ -833,30 +839,30 @@ fn check_version(
                     account.credits_pending = data.credits_pending;
                     account.credits_posted = data.credits_posted;
                     account.flags.closed = data.flag_closed != null;
-                    try reply.appendSlice(std.mem.asBytes(&account));
+                    try reply.appendSlice(allocator, std.mem.asBytes(&account));
                 }
             },
             .lookup_transfer => |t| {
                 assert(operation == null or operation.? == .lookup_transfers);
                 operation = .lookup_transfers;
 
-                try request.appendSlice(std.mem.asBytes(&t.id));
+                try request.appendSlice(allocator, std.mem.asBytes(&t.id));
                 switch (t.data) {
                     .exists => |exists| {
                         if (exists) {
                             var transfer = transfers.get(t.id).?;
-                            try reply.appendSlice(std.mem.asBytes(&transfer));
+                            try reply.appendSlice(allocator, std.mem.asBytes(&transfer));
                         }
                     },
                     .amount => |amount| {
                         var transfer = transfers.get(t.id).?;
                         transfer.amount = amount;
-                        try reply.appendSlice(std.mem.asBytes(&transfer));
+                        try reply.appendSlice(allocator, std.mem.asBytes(&transfer));
                     },
                     .timestamp => |timestamp| {
                         var transfer = transfers.get(t.id).?;
                         transfer.timestamp = timestamp;
-                        try reply.appendSlice(std.mem.asBytes(&transfer));
+                        try reply.appendSlice(allocator, std.mem.asBytes(&transfer));
                     },
                 }
             },
@@ -884,7 +890,7 @@ fn check_version(
                         .reversed = f.flags_reversed != null,
                     },
                 };
-                try request.appendSlice(std.mem.asBytes(&event));
+                try request.appendSlice(allocator, std.mem.asBytes(&event));
             },
             .get_account_balances_result => |r| {
                 assert(operation.? == .get_account_balances);
@@ -896,7 +902,7 @@ fn check_version(
                     .credits_posted = r.credits_posted,
                     .timestamp = transfers.get(r.transfer_id).?.timestamp,
                 };
-                try reply.appendSlice(std.mem.asBytes(&balance));
+                try reply.appendSlice(allocator, std.mem.asBytes(&balance));
             },
             .get_account_transfers => |f| {
                 assert(operation == null or operation.? == .get_account_transfers);
@@ -922,11 +928,11 @@ fn check_version(
                         .reversed = f.flags_reversed != null,
                     },
                 };
-                try request.appendSlice(std.mem.asBytes(&event));
+                try request.appendSlice(allocator, std.mem.asBytes(&event));
             },
             .get_account_transfers_result => |id| {
                 assert(operation.? == .get_account_transfers);
-                try reply.appendSlice(std.mem.asBytes(&transfers.get(id).?));
+                try reply.appendSlice(allocator, std.mem.asBytes(&transfers.get(id).?));
             },
             .query_accounts => |f| {
                 assert(operation == null or operation.? == .query_accounts);
@@ -954,7 +960,7 @@ fn check_version(
                         .reversed = f.flags_reversed != null,
                     },
                 };
-                try request.appendSlice(std.mem.asBytes(&event));
+                try request.appendSlice(allocator, std.mem.asBytes(&event));
             },
             .query_accounts_result => |a| {
                 assert(operation.? == .query_accounts);
@@ -966,7 +972,7 @@ fn check_version(
                     account.credits_posted = data.credits_posted;
                     account.flags.closed = data.flag_closed != null;
                 }
-                try reply.appendSlice(std.mem.asBytes(&account));
+                try reply.appendSlice(allocator, std.mem.asBytes(&account));
             },
             .query_transfers => |f| {
                 assert(operation == null or operation.? == .query_transfers);
@@ -994,11 +1000,11 @@ fn check_version(
                         .reversed = f.flags_reversed != null,
                     },
                 };
-                try request.appendSlice(std.mem.asBytes(&event));
+                try request.appendSlice(allocator, std.mem.asBytes(&event));
             },
             .query_transfers_result => |id| {
                 assert(operation.? == .query_transfers);
-                try reply.appendSlice(std.mem.asBytes(&transfers.get(id).?));
+                try reply.appendSlice(allocator, std.mem.asBytes(&transfers.get(id).?));
             },
             .get_change_events => |f| {
                 assert(operation == null or operation.? == .get_change_events);
@@ -1017,11 +1023,11 @@ fn check_version(
                     .timestamp_max = timestamp_max,
                     .limit = f.limit,
                 };
-                try request.appendSlice(std.mem.asBytes(&event));
+                try request.appendSlice(allocator, std.mem.asBytes(&event));
             },
             .get_change_events_result => |*t| {
                 assert(operation.? == .get_change_events);
-                try reply.appendSlice(std.mem.asBytes(t));
+                try reply.appendSlice(allocator, std.mem.asBytes(t));
             },
             .commit => |commit_operation| {
                 assert(operation == null or operation.? == commit_operation);
@@ -1029,7 +1035,7 @@ fn check_version(
 
                 const reply_actual_buffer = try allocator.alignedAlloc(
                     u8,
-                    constants.cache_line_size,
+                    std.mem.Alignment.fromByteUnits(constants.cache_line_size),
                     constants.message_body_size_max,
                 );
                 defer allocator.free(reply_actual_buffer);
@@ -2953,7 +2959,7 @@ test "StateMachine: input_valid" {
     const allocator = std.testing.allocator;
     const input = try allocator.alignedAlloc(
         u8,
-        constants.cache_line_size,
+        std.mem.Alignment.fromByteUnits(constants.cache_line_size),
         2 * constants.message_body_size_max,
     );
     defer allocator.free(input);
@@ -3054,7 +3060,7 @@ test "StateMachine: query multi-batch input_valid" {
     const allocator = std.testing.allocator;
     const input = try allocator.alignedAlloc(
         u8,
-        constants.cache_line_size,
+        std.mem.Alignment.fromByteUnits(constants.cache_line_size),
         2 * constants.message_body_size_max,
     );
     defer allocator.free(input);

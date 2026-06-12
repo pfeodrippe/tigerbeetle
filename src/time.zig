@@ -168,8 +168,7 @@ pub const TimeOS = struct {
 
     fn realtime_unix() i64 {
         assert(is_darwin or is_linux);
-        const ts: posix.timespec = posix.clock_gettime(posix.CLOCK.REALTIME) catch unreachable;
-        return @as(i64, ts.sec) * std.time.ns_per_s + ts.nsec;
+        return @intCast(std.Io.Clock.real.now(std.Options.debug_io).nanoseconds);
     }
 
     fn tick(_: *anyopaque) void {}

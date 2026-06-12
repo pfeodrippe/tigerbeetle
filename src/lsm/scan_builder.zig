@@ -110,7 +110,7 @@ pub fn ScanBuilderType(
             timestamp_range: TimestampRange,
             direction: Direction,
         ) *Scan {
-            const field = comptime std.enums.nameCast(std.meta.FieldEnum(Scan.Dispatcher), index);
+            const field = comptime stdx.meta.name_cast(std.meta.FieldEnum(Scan.Dispatcher), index);
             const scan = self.scan_add(field) catch unreachable;
             const scan_impl = &@field(scan.dispatcher, @tagName(field));
             scan_impl.init(
@@ -135,7 +135,7 @@ pub fn ScanBuilderType(
             value: UniqueKeyType(index),
             direction: Direction,
         ) *Scan {
-            const field = comptime std.enums.nameCast(std.meta.FieldEnum(Scan.Dispatcher), index);
+            const field = comptime stdx.meta.name_cast(std.meta.FieldEnum(Scan.Dispatcher), index);
             const scan = self.scan_add(field) catch unreachable;
             const scan_impl = &@field(scan.dispatcher, @tagName(field));
             scan_impl.init(
@@ -349,30 +349,48 @@ pub fn ScanType(
         /// };
         /// ```
         pub const Dispatcher = T: {
-            var type_info = @typeInfo(union(enum) {
-                timestamp: ScanTreeType(*Context, Groove.ObjectTree, Storage),
+            const TimestampScanTree = ScanTreeType(*Context, Groove.ObjectTree, Storage);
+            const MergeUnion = ScanMergeUnionType(Groove, Storage);
+            const MergeIntersection = ScanMergeIntersectionType(Groove, Storage);
+            const MergeDifference = ScanMergeDifferenceType(Groove, Storage);
 
-                merge_union: ScanMergeUnionType(Groove, Storage),
-                merge_intersection: ScanMergeIntersectionType(Groove, Storage),
-                merge_difference: ScanMergeDifferenceType(Groove, Storage),
-            });
+            var union_fields: []const stdx.meta.UnionField = &.{
+                .{
+                    .name = "timestamp",
+                    .type = TimestampScanTree,
+                    .alignment = @alignOf(TimestampScanTree),
+                },
+                .{
+                    .name = "merge_union",
+                    .type = MergeUnion,
+                    .alignment = @alignOf(MergeUnion),
+                },
+                .{
+                    .name = "merge_intersection",
+                    .type = MergeIntersection,
+                    .alignment = @alignOf(MergeIntersection),
+                },
+                .{
+                    .name = "merge_difference",
+                    .type = MergeDifference,
+                    .alignment = @alignOf(MergeDifference),
+                },
+            };
 
             // Union fields for each index tree:
-            for (std.meta.fields(Groove.IndexTrees)) |field| {
+            for (stdx.meta.fields(Groove.IndexTrees)) |field| {
                 const IndexTree = field.type;
                 const ScanTree = ScanTreeType(*Context, IndexTree, Storage);
-                type_info.@"union".fields = type_info.@"union".fields ++
-                    [_]std.builtin.Type.UnionField{.{
-                        .name = field.name,
-                        .type = ScanTree,
-                        .alignment = @alignOf(ScanTree),
-                    }};
+                union_fields = union_fields ++ &[_]stdx.meta.UnionField{.{
+                    .name = field.name,
+                    .type = ScanTree,
+                    .alignment = @alignOf(ScanTree),
+                }};
             }
 
             // We need a tagged union for dynamic dispatching.
-            type_info.@"union".tag_type = blk: {
-                const union_fields = type_info.@"union".fields;
-                var tag_fields: [union_fields.len]std.builtin.Type.EnumField =
+            const tag_type = blk: {
+                var tag_fields: [union_fields.len]stdx.meta.EnumField =
                     undefined;
                 for (&tag_fields, union_fields, 0..) |*tag_field, union_field, i| {
                     tag_field.* = .{
@@ -381,15 +399,14 @@ pub fn ScanType(
                     };
                 }
 
-                break :blk @Type(.{ .@"enum" = .{
-                    .tag_type = std.math.IntFittingRange(0, tag_fields.len - 1),
-                    .fields = &tag_fields,
-                    .decls = &.{},
-                    .is_exhaustive = true,
-                } });
+                break :blk stdx.meta.EnumType(
+                    std.math.IntFittingRange(0, tag_fields.len - 1),
+                    .exhaustive,
+                    &tag_fields,
+                );
             };
 
-            break :T @Type(type_info);
+            break :T stdx.meta.UnionType(.auto, tag_type, union_fields);
         };
 
         dispatcher: Dispatcher,

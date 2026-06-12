@@ -41,7 +41,7 @@ fn resolve_rust_type(comptime Type: type) []const u8 {
     switch (@typeInfo(Type)) {
         .array => |info| return resolve_rust_type(info.child),
         .@"enum" => |info| return resolve_rust_type(info.tag_type),
-        .@"struct" => return resolve_rust_type(std.meta.Int(.unsigned, @bitSizeOf(Type))),
+        .@"struct" => return resolve_rust_type(@Int(.unsigned, @bitSizeOf(Type))),
         .bool => return "u8", // todo "bool"
         .int => |info| {
             assert(info.signedness == .unsigned);

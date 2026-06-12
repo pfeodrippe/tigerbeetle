@@ -102,7 +102,7 @@ test BitSetType {
                 .Word => {
                     const bit_size =
                         comptime if (N == 0) 8 else @max(8, try std.math.ceilPowerOfTwo(u16, N));
-                    assert(BitSet.Word == std.meta.Int(.unsigned, bit_size));
+                    assert(BitSet.Word == @Int(.unsigned, bit_size));
                 },
                 .Iterator => {},
                 .is_set => {

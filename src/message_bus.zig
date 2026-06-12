@@ -93,7 +93,7 @@ pub fn MessageBusType(comptime IO: type) type {
             clients_limit: ?u32 = null,
             time: Time,
         };
-        const Address = std.net.Address;
+        const Address = stdx.net.Address;
         const MessageBus = @This();
 
         /// Initialize the MessageBus for the given configuration and replica/client process.
@@ -1085,6 +1085,8 @@ pub fn MessageBusType(comptime IO: type) type {
                             //assert(!connection.send_submitted);
                         },
                         // Ignore all the remaining errors for now
+                        error.FileDescriptorInvalid,
+                        error.FileDescriptorNotASocket,
                         error.ConnectionAborted,
                         error.ConnectionResetByPeer,
                         error.BlockingOperationInProgress,

@@ -124,7 +124,7 @@ pub fn main() !void {
 
     log_performance_mode = cli_args.performance;
 
-    const seed_random = std.crypto.random.int(u64);
+    const seed_random = stdx.random_int(u64);
     const seed = seed_from_arg: {
         const seed_argument = cli_args.seed orelse break :seed_from_arg seed_random;
         break :seed_from_arg vsr.testing.parse_seed(seed_argument);

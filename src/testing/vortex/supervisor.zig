@@ -276,7 +276,7 @@ pub const Supervisor = struct {
                         // If one of the replica dies to SIGKILL, it is likely an OOM.
                         // Bubble that up to CFO so that this Vortex run is counted as neither a
                         // success or failure.
-                        std.posix.exit(@intCast(128 + term.Signal));
+                        std.process.exit(@intCast(128 + term.Signal));
                     } else {
                         fatal(.replica_exit_result, "replica exited with: {}", .{term});
                     }
@@ -667,7 +667,7 @@ pub const Supervisor = struct {
         };
         const workload_driver_release = supervisor.releases[
             switch (driver) {
-                .command => |_| supervisor.driver_executables.len - 1,
+                .command => supervisor.driver_executables.len - 1,
                 .release => |release_index| release_index,
             }
         ];
@@ -718,14 +718,13 @@ fn replicas_in_state(
 fn comma_separate_ports(allocator: std.mem.Allocator, ports: []const u16) ![]const u8 {
     assert(ports.len > 0);
 
-    var out = std.ArrayList(u8).init(allocator);
-    errdefer out.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
 
-    const writer = out.writer();
-    try writer.print("{d}", .{ports[0]});
-    for (ports[1..]) |port| try writer.print(",{d}", .{port});
+    try out.print(allocator, "{d}", .{ports[0]});
+    for (ports[1..]) |port| try out.print(allocator, ",{d}", .{port});
 
-    return out.toOwnedSlice();
+    return out.toOwnedSlice(allocator);
 }
 
 test comma_separate_ports {
@@ -850,13 +849,13 @@ const Workload = struct {
         const arg_addresses = try comma_separate_ports(allocator, proxy_ports);
         defer allocator.free(arg_addresses);
 
-        var driver_argv = std.ArrayList([]const u8).init(allocator);
-        defer driver_argv.deinit();
+        var driver_argv: std.ArrayList([]const u8) = .empty;
+        defer driver_argv.deinit(allocator);
 
         var driver_command_parts = std.mem.splitScalar(u8, driver_command, ' ');
-        while (driver_command_parts.next()) |part| try driver_argv.append(part);
-        try driver_argv.append(arg_cluster);
-        try driver_argv.append(arg_addresses);
+        while (driver_command_parts.next()) |part| try driver_argv.append(allocator, part);
+        try driver_argv.append(allocator, arg_cluster);
+        try driver_argv.append(allocator, arg_addresses);
 
         var driver = std.process.Child.init(driver_argv.items, allocator);
         driver.stdin_behavior = .Pipe;

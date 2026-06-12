@@ -269,7 +269,7 @@ const Connection = struct {
     origin_to_remote_pipe: Pipe,
     remote_to_origin_pipe: Pipe,
 
-    remote_address: ?std.net.Address = null,
+    remote_address: ?stdx.net.Address = null,
 
     accept_completion: IO.Completion = undefined,
     connect_completion: IO.Completion = undefined,
@@ -452,8 +452,8 @@ const Connection = struct {
 const Proxy = struct {
     io: *IO,
     accept_fd: std.posix.socket_t,
-    origin_address: std.net.Address, // The proxy's address.
-    remote_address: std.net.Address, // The replica's address.
+    origin_address: stdx.net.Address, // The proxy's address.
+    remote_address: stdx.net.Address, // The replica's address.
     connections: [constants.vortex.connections_count_max]Connection,
 
     fn deinit(proxy: *Proxy) void {
@@ -502,7 +502,7 @@ pub const Network = struct {
         // /proc/sys/net/ipv4/ip_local_port_range) by listening on port=0.
         // We assume that replicas' ports are from outside of that range and cannot conflict.
         for (proxies, replica_ports, 0..) |*proxy, replica_port, replica_index| {
-            const Address = std.net.Address;
+            const Address = stdx.net.Address;
             const replica_address = Address.parseIp("127.0.0.1", replica_port) catch unreachable;
             const listen_address = Address.parseIp("127.0.0.1", 0) catch unreachable;
             const listen_fd = try io.open_socket_tcp(std.posix.AF.INET, tcp_options);

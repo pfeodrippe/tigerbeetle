@@ -94,6 +94,15 @@ pub fn StorageType(comptime IO: type) type {
         dir_fd: IO.fd_t,
         fd: IO.fd_t,
 
+        fn close_fd(fd: IO.fd_t) void {
+            switch (std.posix.errno(std.posix.system.close(fd))) {
+                .SUCCESS => {},
+                .BADF => {},
+                .INTR => {},
+                else => |err| log.warn("close({}): {}", .{ fd, err }),
+            }
+        }
+
         pub fn init(io: *IO, tracer: *Tracer, options: struct {
             path: []const u8,
             size_min: u64,
@@ -106,7 +115,7 @@ pub fn StorageType(comptime IO: type) type {
             const basename = std.fs.path.basename(options.path);
 
             const dir_fd = try IO.open_dir(dirname);
-            errdefer std.posix.close(dir_fd);
+            errdefer close_fd(dir_fd);
 
             const fd = try io.open_data_file(
                 dir_fd,
@@ -115,7 +124,7 @@ pub fn StorageType(comptime IO: type) type {
                 options.purpose,
                 options.direct_io,
             );
-            errdefer std.posix.close(fd);
+            errdefer close_fd(fd);
 
             return .{
                 .io = io,
@@ -129,10 +138,10 @@ pub fn StorageType(comptime IO: type) type {
             assert(storage.fd != IO.INVALID_FILE);
             assert(storage.dir_fd != IO.INVALID_FILE);
 
-            std.posix.close(storage.fd);
+            close_fd(storage.fd);
             storage.fd = IO.INVALID_FILE;
 
-            std.posix.close(storage.dir_fd);
+            close_fd(storage.dir_fd);
             storage.dir_fd = IO.INVALID_FILE;
         }
 

@@ -204,7 +204,7 @@ pub const MessagePool = struct {
     ) error{OutOfMemory}!MessagePool {
         const buffers = try allocator.alignedAlloc(
             [constants.message_size_max]u8,
-            constants.sector_size,
+            std.mem.Alignment.fromByteUnits(constants.sector_size),
             messages_max,
         );
         errdefer allocator.free(buffers);
@@ -276,7 +276,7 @@ pub const MessagePool = struct {
     /// - `*MessageType(command)` for any `command`.
     pub fn unref(pool: *MessagePool, message: anytype) void {
         assert(@typeInfo(@TypeOf(message)) == .pointer);
-        assert(!@typeInfo(@TypeOf(message)).pointer.is_const);
+        assert(!@typeInfo(@TypeOf(message)).pointer.attrs.@"const");
 
         if (@TypeOf(message) == *Message) {
             pool.unref_base(message);
@@ -313,8 +313,8 @@ fn CommandMessageType(comptime command: vsr.Command) type {
             assert(@sizeOf(Message) == @sizeOf(CommandMessage));
 
             for (
-                std.meta.fields(Message),
-                std.meta.fields(CommandMessage),
+                stdx.meta.fields(Message),
+                stdx.meta.fields(CommandMessage),
             ) |message_field, command_message_field| {
                 assert(std.mem.eql(u8, message_field.name, command_message_field.name));
                 assert(@sizeOf(message_field.type) == @sizeOf(command_message_field.type));

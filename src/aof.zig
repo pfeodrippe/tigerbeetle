@@ -41,7 +41,7 @@ pub const AOFEntry = extern struct {
 
         // Ensure the message is the last field in the struct. When writing, the struct is truncated
         // based on the message length, so any fields after it would be truncated.
-        assert(std.meta.fieldIndex(AOFEntry, "message").? == std.meta.fields(AOFEntry).len - 1);
+        assert(std.meta.fieldIndex(AOFEntry, "message").? == stdx.meta.fields(AOFEntry).len - 1);
     }
 
     /// Calculate the actual length of the AOFEntry that needs to be written to disk.
@@ -338,7 +338,7 @@ pub fn AOFType(comptime IO: type) type {
                 allocator: std.mem.Allocator,
                 time: vsr.time.Time,
                 cluster: u128,
-                addresses: []std.net.Address,
+                addresses: []stdx.net.Address,
             ) !ReplayClient {
                 assert(addresses.len > 0);
                 assert(addresses.len <= constants.replicas_max);
@@ -501,10 +501,12 @@ pub fn AOFType(comptime IO: type) type {
             last_checksum: ?u128 = null,
 
             pub fn init(io: *IO, path: []const u8) !Iterator {
-                const file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
-                errdefer file.close();
+                const file = try std.Io.Dir.cwd().openFile(std.Options.debug_io, path, .{
+                    .mode = .read_only,
+                });
+                errdefer file.close(std.Options.debug_io);
 
-                const size = (try file.stat()).size;
+                const size = (try file.stat(std.Options.debug_io)).size;
 
                 return Iterator{ .io = io, .file_descriptor = file.handle, .size = size };
             }
@@ -598,7 +600,9 @@ pub fn AOFType(comptime IO: type) type {
             input_paths: []const []const u8,
             output_path: []const u8,
         ) !void {
-            const stdout = std.io.getStdOut().writer();
+            var stdout_buffer: [4096]u8 = undefined;
+            var stdout = std.Io.File.stdout().writer(std.Options.debug_io, &stdout_buffer);
+            defer stdout.flush() catch {};
 
             var aofs: [constants.members_max]Iterator = undefined;
             var aof_count: usize = 0;
@@ -624,7 +628,7 @@ pub fn AOFType(comptime IO: type) type {
             defer allocator.destroy(target);
 
             const dir_fd = try IO.open_dir(std.fs.path.dirname(output_path) orelse ".");
-            defer std.posix.close(dir_fd);
+            defer _ = std.posix.system.close(dir_fd);
 
             for (input_paths) |input_path| {
                 aofs[aof_count] = try Iterator.init(io, input_path);
@@ -637,7 +641,7 @@ pub fn AOFType(comptime IO: type) type {
 
             // First, iterate all AOFs and build a mapping between parent checksums and where the
             // entry is located.
-            try stdout.print("Building checksum map...\n", .{});
+            try stdout.interface.print("Building checksum map...\n", .{});
             var current_parent: ?u128 = null;
             for (aofs[0..aof_count], 0..) |*aof, i| {
                 // While building our checksum map, don't validate our hash chain. We might have a
@@ -650,7 +654,7 @@ pub fn AOFType(comptime IO: type) type {
                         switch (err) {
                             // If our magic number is corrupted, skip to the next entry.
                             error.AOFMagicNumberMismatch => {
-                                try stdout.print(
+                                try stdout.interface.print(
                                     "{s}: Skipping entry with corrupted magic number.\n",
                                     .{input_paths[i]},
                                 );
@@ -662,7 +666,7 @@ pub fn AOFType(comptime IO: type) type {
                             // one (since the pointer is only updated after a successful read,
                             // calling .skip(0)) will not do anything here.
                             error.AOFChecksumMismatch, error.AOFBodyChecksumMismatch => {
-                                try stdout.print(
+                                try stdout.interface.print(
                                     "{s}: Skipping entry with corrupted checksum.\n",
                                     .{input_paths[i]},
                                 );
@@ -671,7 +675,7 @@ pub fn AOFType(comptime IO: type) type {
                             },
 
                             error.AOFShortRead => {
-                                try stdout.print(
+                                try stdout.interface.print(
                                     "{s}: Skipping truncated entry at EOF.\n",
                                     .{input_paths[i]},
                                 );
@@ -692,7 +696,7 @@ pub fn AOFType(comptime IO: type) type {
                     const parent = header.parent;
 
                     if (current_parent == null) {
-                        try stdout.print(
+                        try stdout.interface.print(
                             "The root checksum will be {x:0>32} from {s}.\n",
                             .{ parent, input_paths[i] },
                         );
@@ -714,7 +718,7 @@ pub fn AOFType(comptime IO: type) type {
                         };
                     }
                 }
-                try stdout.print(
+                try stdout.interface.print(
                     "Finished processing {s} - extracted {} usable entries.\n",
                     .{ input_paths[i], entries_by_parent.count() },
                 );
@@ -762,7 +766,7 @@ pub fn AOFType(comptime IO: type) type {
             output_aof.close();
 
             // Validate the newly created output file
-            try stdout.print("Validating Output {s}\n", .{output_path});
+            try stdout.interface.print("Validating Output {s}\n", .{output_path});
 
             var it = try Iterator.init(io, output_path);
             defer it.close();
@@ -779,7 +783,7 @@ pub fn AOFType(comptime IO: type) type {
                 last_checksum = header.checksum;
             }
 
-            try stdout.print(
+            try stdout.interface.print(
                 "AOF {s} validated. Starting checksum: {x:0>32} Ending checksum: {x:0>32}\n",
                 .{ output_path, first_checksum orelse 0, last_checksum orelse 0 },
             );
@@ -795,8 +799,8 @@ test "aof write / read" {
     const AOFIterator = AOF.Iterator;
 
     const aof_file = "test.aof";
-    std.fs.cwd().deleteFile(aof_file) catch {};
-    defer std.fs.cwd().deleteFile(aof_file) catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, aof_file) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, aof_file) catch {};
 
     const allocator = std.testing.allocator;
 
@@ -804,7 +808,7 @@ test "aof write / read" {
     defer io.deinit();
 
     const dir_fd = try IO.open_dir(".");
-    defer std.posix.close(dir_fd);
+    defer _ = std.posix.system.close(dir_fd);
 
     var aof = try AOF.init(&io, aof_file);
 
@@ -930,7 +934,7 @@ const CLIArgs = union(enum) {
 };
 
 pub fn main() !void {
-    var gpa_instance: std.heap.GeneralPurposeAllocator(.{}) = .{};
+    var gpa_instance: std.heap.DebugAllocator(.{}) = .{};
     const gpa = gpa_instance.allocator();
 
     var time_os: vsr.time.TimeOS = .{};
@@ -957,7 +961,7 @@ pub fn main() !void {
             var it = try AOFIterator.init(&io, command.path);
             defer it.close();
 
-            var addresses_buffer: [constants.replicas_max]std.net.Address = undefined;
+            var addresses_buffer: [constants.replicas_max]stdx.net.Address = undefined;
             const addresses_parsed = try vsr.parse_addresses(command.addresses, &addresses_buffer);
             var replay =
                 try AOFReplayClient.init(&io, gpa, time, command.cluster, addresses_parsed);
@@ -972,12 +976,15 @@ pub fn main() !void {
             var data_checksum: [32]u8 = undefined;
             var blake3 = std.crypto.hash.Blake3.init(.{});
 
-            const stdout = std.io.getStdOut().writer();
+            var stdout_buffer: [4096]u8 = undefined;
+            var stdout = std.Io.File.stdout().writer(std.Options.debug_io, &stdout_buffer);
+            defer stdout.flush() catch {};
+
             while (try it.next(target)) |entry| {
                 const header = entry.header();
                 if (!AOFReplayClient.replay_message(header)) continue;
 
-                try stdout.print("{}\n", .{
+                try stdout.interface.print("{}\n", .{
                     header,
                 });
 
@@ -988,7 +995,7 @@ pub fn main() !void {
                 blake3.update(std.mem.asBytes(&header.operation));
             }
             blake3.final(data_checksum[0..]);
-            try stdout.print(
+            try stdout.interface.print(
                 "\nData checksum chain: {}\n",
                 .{@as(u128, @bitCast(data_checksum[0..@sizeOf(u128)].*))},
             );

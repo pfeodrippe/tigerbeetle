@@ -339,7 +339,7 @@ pub const Operation = enum(u8) {
     pub fn tag_name(self: Operation, comptime StateMachineOperation: type) []const u8 {
         assert(self.valid(StateMachineOperation));
         inline for (.{ Operation, StateMachineOperation }) |Enum| {
-            inline for (@typeInfo(Enum).@"enum".fields) |field| {
+            inline for (stdx.meta.fields(Enum)) |field| {
                 const op = @field(Enum, field.name);
                 if (@intFromEnum(self) == @intFromEnum(op)) {
                     return field.name;
@@ -353,16 +353,16 @@ pub const Operation = enum(u8) {
         comptime {
             @setEvalBranchQuota(20_000);
             assert(@typeInfo(StateMachineOperation) == .@"enum");
-            assert(@typeInfo(StateMachineOperation).@"enum".is_exhaustive);
+            assert(@typeInfo(StateMachineOperation).@"enum".mode == .exhaustive);
             assert(@typeInfo(StateMachineOperation).@"enum".tag_type ==
                 @typeInfo(Operation).@"enum".tag_type);
-            for (@typeInfo(StateMachineOperation).@"enum".fields) |field| {
+            for (stdx.meta.fields(StateMachineOperation)) |field| {
                 const operation = @field(StateMachineOperation, field.name);
                 if (@intFromEnum(operation) < constants.vsr_operations_reserved) {
                     @compileError("StateMachine Operation is reserved");
                 }
             }
-            for (@typeInfo(Operation).@"enum".fields) |field| {
+            for (stdx.meta.fields(Operation)) |field| {
                 const vsr_operation = @field(Operation, field.name);
                 switch (vsr_operation) {
                     // The StateMachine Operation can convert
@@ -621,7 +621,7 @@ test "ReconfigurationRequest" {
         .members_invalid,
     );
     try t.check(stdx.update(r, .{ .replica_count = 4 }), .members_count_invalid);
-    try t.check(stdx.update(r, .{ .reserved = [_]u8{1} ** 54 }), .reserved_field);
+    try t.check(stdx.update(r, .{ .reserved = @as([54]u8, @splat(1)) }), .reserved_field);
     try t.check(stdx.update(r, .{ .result = .ok }), .result_must_be_reserved);
     try t.check(stdx.update(r, .{ .epoch = 0 }), .epoch_in_the_past);
     try t.check(stdx.update(r, .{ .epoch = 3 }), .epoch_in_the_future);
@@ -647,9 +647,9 @@ test "ReconfigurationRequest" {
         .configuration_is_no_op,
     );
 
-    assert(t.tested.count() < ResultSet.initFull().count());
+    assert(t.tested.count() < ResultSet.full.count());
     t.tested.insert(.reserved);
-    assert(t.tested.count() == ResultSet.initFull().count());
+    assert(t.tested.count() == ResultSet.full.count());
 
     t.epoch = std.math.maxInt(u32);
     try t.check(r, .epoch_in_the_past);
@@ -900,8 +900,8 @@ test "exponential_backoff_with_jitter" {
 /// The caller owns the memory of the returned slice of addresses.
 pub fn parse_addresses(
     raw: []const u8,
-    out_buffer: []std.net.Address,
-) ![]std.net.Address {
+    out_buffer: []stdx.net.Address,
+) ![]stdx.net.Address {
     const address_count = std.mem.count(u8, raw, ",") + 1;
     if (address_count > out_buffer.len) return error.AddressLimitExceeded;
 
@@ -923,7 +923,7 @@ pub fn parse_addresses(
 pub fn parse_address_and_port(options: struct {
     string: []const u8,
     port_default: u16,
-}) !std.net.Address {
+}) !stdx.net.Address {
     assert(options.string.len > 0);
     assert(options.port_default > 0);
 
@@ -938,7 +938,7 @@ pub fn parse_address_and_port(options: struct {
             return parse_address(options.string, options.port_default);
         }
     } else {
-        return std.net.Address.parseIp4(
+        return stdx.net.Address.parseIp4(
             constants.address,
             stdx.parse_int(u16, options.string, .{}) catch
                 return error.PortInvalid,
@@ -946,63 +946,63 @@ pub fn parse_address_and_port(options: struct {
     }
 }
 
-fn parse_address(string: []const u8, port: u16) !std.net.Address {
+fn parse_address(string: []const u8, port: u16) !stdx.net.Address {
     if (string.len == 0) return error.AddressInvalid;
     if (string[string.len - 1] == ':') return error.AddressHasMoreThanOneColon;
 
     if (string[0] == '[' and string[string.len - 1] == ']') {
-        return std.net.Address.parseIp6(string[1 .. string.len - 1], port) catch
+        return stdx.net.Address.parseIp6(string[1 .. string.len - 1], port) catch
             return error.AddressInvalid;
     } else {
-        return std.net.Address.parseIp4(string, port) catch return error.AddressInvalid;
+        return stdx.net.Address.parseIp4(string, port) catch return error.AddressInvalid;
     }
 }
 
 test parse_addresses {
     const vectors_positive = &[_]struct {
         raw: []const u8,
-        addresses: []const std.net.Address,
+        addresses: []const stdx.net.Address,
     }{
         .{
             // Test the minimum/maximum address/port.
             .raw = "1.2.3.4:567,0.0.0.0:0,255.255.255.255:65535",
-            .addresses = &[3]std.net.Address{
-                std.net.Address.initIp4([_]u8{ 1, 2, 3, 4 }, 567),
-                std.net.Address.initIp4([_]u8{ 0, 0, 0, 0 }, 0),
-                std.net.Address.initIp4([_]u8{ 255, 255, 255, 255 }, 65535),
+            .addresses = &[3]stdx.net.Address{
+                stdx.net.Address.initIp4([_]u8{ 1, 2, 3, 4 }, 567),
+                stdx.net.Address.initIp4([_]u8{ 0, 0, 0, 0 }, 0),
+                stdx.net.Address.initIp4([_]u8{ 255, 255, 255, 255 }, 65535),
             },
         },
         .{
             // Addresses are not reordered.
             .raw = "3.4.5.6:7777,200.3.4.5:6666,1.2.3.4:5555",
-            .addresses = &[3]std.net.Address{
-                std.net.Address.initIp4([_]u8{ 3, 4, 5, 6 }, 7777),
-                std.net.Address.initIp4([_]u8{ 200, 3, 4, 5 }, 6666),
-                std.net.Address.initIp4([_]u8{ 1, 2, 3, 4 }, 5555),
+            .addresses = &[3]stdx.net.Address{
+                stdx.net.Address.initIp4([_]u8{ 3, 4, 5, 6 }, 7777),
+                stdx.net.Address.initIp4([_]u8{ 200, 3, 4, 5 }, 6666),
+                stdx.net.Address.initIp4([_]u8{ 1, 2, 3, 4 }, 5555),
             },
         },
         .{
             // Test default address and port.
             .raw = "1.2.3.4:5,4321,2.3.4.5",
-            .addresses = &[3]std.net.Address{
-                std.net.Address.initIp4([_]u8{ 1, 2, 3, 4 }, 5),
-                try std.net.Address.parseIp4(constants.address, 4321),
-                std.net.Address.initIp4([_]u8{ 2, 3, 4, 5 }, constants.port),
+            .addresses = &[3]stdx.net.Address{
+                stdx.net.Address.initIp4([_]u8{ 1, 2, 3, 4 }, 5),
+                try stdx.net.Address.parseIp4(constants.address, 4321),
+                stdx.net.Address.initIp4([_]u8{ 2, 3, 4, 5 }, constants.port),
             },
         },
         .{
             // Test addresses less than address_limit.
             .raw = "1.2.3.4:5,4321",
-            .addresses = &[2]std.net.Address{
-                std.net.Address.initIp4([_]u8{ 1, 2, 3, 4 }, 5),
-                try std.net.Address.parseIp4(constants.address, 4321),
+            .addresses = &[2]stdx.net.Address{
+                stdx.net.Address.initIp4([_]u8{ 1, 2, 3, 4 }, 5),
+                try stdx.net.Address.parseIp4(constants.address, 4321),
             },
         },
         .{
             // Test IPv6 address with default port.
             .raw = "[fe80::1ff:fe23:4567:890a]",
-            .addresses = &[_]std.net.Address{
-                std.net.Address.initIp6(
+            .addresses = &[_]stdx.net.Address{
+                stdx.net.Address.initIp6(
                     [_]u8{
                         0xfe, 0x80,
                         0,    0,
@@ -1022,8 +1022,8 @@ test parse_addresses {
         .{
             // Test IPv6 address with port.
             .raw = "[fe80::1ff:fe23:4567:890a]:1234",
-            .addresses = &[_]std.net.Address{
-                std.net.Address.initIp6(
+            .addresses = &[_]stdx.net.Address{
+                stdx.net.Address.initIp6(
                     [_]u8{
                         0xfe, 0x80,
                         0,    0,
@@ -1044,7 +1044,7 @@ test parse_addresses {
 
     const vectors_negative = &[_]struct {
         raw: []const u8,
-        err: anyerror![]std.net.Address,
+        err: anyerror![]stdx.net.Address,
     }{
         .{ .raw = "", .err = error.AddressHasTrailingComma },
         .{ .raw = ".", .err = error.AddressInvalid },
@@ -1062,7 +1062,7 @@ test parse_addresses {
         .{ .raw = "1.2.3.4:5,2.3.4.5:65536", .err = error.PortInvalid },
     };
 
-    var buffer: [3]std.net.Address = undefined;
+    var buffer: [3]stdx.net.Address = undefined;
     for (vectors_positive) |vector| {
         const addresses_actual = try parse_addresses(vector.raw, &buffer);
 
@@ -1092,7 +1092,7 @@ test "parse_addresses: fuzz" {
     var prng = stdx.PRNG.from_seed_testing();
 
     var input_bufer: [input_size_max]u8 = @splat(0);
-    var buffer: [3]std.net.Address = undefined;
+    var buffer: [3]stdx.net.Address = undefined;
     for (0..test_count) |_| {
         const input_size = prng.int_inclusive(usize, input_size_max);
         const input = input_bufer[0..input_size];
@@ -1625,14 +1625,15 @@ pub const Checkpoint = struct {
 test "Checkpoint ops diagram" {
     const Snap = stdx.Snap;
     const snap = Snap.snap_fn("src");
+    const allocator = std.testing.allocator;
 
-    var string = std.ArrayList(u8).init(std.testing.allocator);
-    defer string.deinit();
+    var string: std.ArrayList(u8) = .empty;
+    defer string.deinit(allocator);
 
-    var string2 = std.ArrayList(u8).init(std.testing.allocator);
-    defer string2.deinit();
+    var string2: std.ArrayList(u8) = .empty;
+    defer string2.deinit(allocator);
 
-    try string.writer().print(
+    try string.print(allocator,
         \\journal_slot_count={[journal_slot_count]}
         \\lsm_compaction_ops={[lsm_compaction_ops]}
         \\pipeline_prepare_queue_max={[pipeline_prepare_queue_max]}
@@ -1673,9 +1674,9 @@ test "Checkpoint ops diagram" {
         };
 
         // Marker for tidy.zig to ignore the long lines.
-        if (op % constants.journal_slot_count == 0) try string.appendSlice("OPS: ");
+        if (op % constants.journal_slot_count == 0) try string.appendSlice(allocator, "OPS: ");
 
-        try string.writer().print("{s}{:_>3}{s}", .{
+        try string.print(allocator, "{s}{:_>3}{s}", .{
             switch (op_type) {
                 .normal => " ",
                 .checkpoint => if (checkpoint_count % 2 == 0) "[" else "{",
@@ -1691,8 +1692,8 @@ test "Checkpoint ops diagram" {
             },
         });
 
-        if (last_slot) try string.append('\n');
-        if (!last_slot and last_beat) try string.append(' ');
+        if (last_slot) try string.append(allocator, '\n');
+        if (!last_slot and last_beat) try string.append(allocator, ' ');
 
         if (op_type == .checkpoint) {
             checkpoint_prev = checkpoint_next;

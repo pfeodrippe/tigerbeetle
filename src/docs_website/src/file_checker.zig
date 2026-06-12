@@ -225,7 +225,7 @@ fn check_link_external(arena: std.mem.Allocator, link: Link) !void {
     if (!check_links_external) return;
     if (https_exceptions.has(link.base)) return;
 
-    errdefer |err| log.err("got {} while checking external link '{s}'", .{ err, link.base });
+    errdefer log.err("failed while checking external link '{s}'", .{link.base});
 
     log.info("checking external link '{s}'", .{link.base});
 

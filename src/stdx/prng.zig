@@ -38,14 +38,7 @@ pub const Ratio = struct {
         return .{ .numerator = 0, .denominator = 1 };
     }
 
-    pub fn format(
-        r: Ratio,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
+    pub fn format(r: Ratio, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         if (r.numerator == 0) return writer.print("0", .{});
         return writer.print("{d}/{d}", .{ r.numerator, r.denominator });
     }
@@ -484,7 +477,7 @@ pub fn enum_weighted(prng: *PRNG, Enum: type, weights: EnumWeightsType(Enum)) En
 }
 
 fn enum_weighted_impl(prng: *PRNG, Enum: type, weights: anytype) Enum {
-    const fields = @typeInfo(Enum).@"enum".fields;
+    const fields = @import("meta.zig").fields(Enum);
     var total: u64 = 0;
     inline for (fields) |field| {
         total += @field(weights, field.name);
@@ -675,7 +668,12 @@ test "no floating point please" {
     });
     defer std.testing.allocator.free(path);
 
-    const file_text = try std.fs.cwd().readFileAlloc(std.testing.allocator, path, 64 * KiB);
+    const file_text = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        path,
+        std.testing.allocator,
+        .limited(64 * KiB),
+    );
     defer std.testing.allocator.free(file_text);
 
     assert(std.mem.indexOf(u8, file_text, "f" ++ "32") == null);

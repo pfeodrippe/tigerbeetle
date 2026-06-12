@@ -86,7 +86,7 @@ pub fn main() !void {
         log.warn("not testing upgrades", .{});
     }
 
-    const seed = args.seed orelse std.crypto.random.int(u64);
+    const seed = args.seed orelse stdx.random_int(u64);
     var prng = stdx.PRNG.from_seed(seed);
 
     // Even if we have past versions available, only use them sometimes.

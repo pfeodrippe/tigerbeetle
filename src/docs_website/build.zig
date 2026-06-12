@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) !void {
         []const u8,
         "git-commit",
         "The git commit revision of the source code.",
-    ) orelse std.mem.trimRight(u8, b.run(&.{ "git", "rev-parse", "--verify", "HEAD" }), "\n");
+    ) orelse std.mem.trimEnd(u8, b.run(&.{ "git", "rev-parse", "--verify", "HEAD" }), "\n");
 
     const pandoc_bin = get_pandoc_bin(b) orelse return;
     const vale_bin = get_vale_bin(b) orelse return;

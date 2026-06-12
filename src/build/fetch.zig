@@ -68,9 +68,10 @@ fn fetch(arena: Allocator, options: struct {
     if (stdb.exec_ok(arena, &.{ "curl", "--version" })) {
         log.debug("download: curl", .{});
         const url_file_name = options.url[std.mem.lastIndexOf(u8, options.url, "/").?..];
+        const random = random_int(u64);
         const tmp_dir = path_join(arena, &.{
             options.tmp,
-            &std.fmt.bytesToHex(std.mem.asBytes(&std.crypto.random.int(u64)), .lower),
+            &std.fmt.bytesToHex(std.mem.asBytes(&random), .lower),
         });
         defer std.fs.cwd().deleteTree(tmp_dir) catch {};
 
@@ -89,6 +90,12 @@ fn fetch(arena: Allocator, options: struct {
     }
     log.debug("download: zig fetch", .{});
     return try stdb.exec(arena, &.{ options.zig, "fetch", options.url });
+}
+
+fn random_int(comptime T: type) T {
+    var value: T = undefined;
+    std.Options.debug_io.random(std.mem.asBytes(&value));
+    return value;
 }
 
 fn path_join(arena: Allocator, components: []const []const u8) []const u8 {

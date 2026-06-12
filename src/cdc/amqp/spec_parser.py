@@ -150,7 +150,7 @@ def client_methods(root):
     print(f"        }};")
     print(f"        const value: ClientMethod = switch (tag) {{")
     print(f"            inline else => |tag_comptime| value: {{")
-    print(f"                const Method = std.meta.TagPayload(ClientMethod, tag_comptime);")
+    print(f"                const Method = @FieldType(ClientMethod, @tagName(tag_comptime));")
     print(f"                break :value @unionInit(")
     print(f"                    ClientMethod,")
     print(f"                    @tagName(tag_comptime),")

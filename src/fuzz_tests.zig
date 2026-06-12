@@ -162,7 +162,7 @@ fn main_smoke(gpa: std.mem.Allocator) !void {
 fn main_single(gpa: std.mem.Allocator, cli_args: CLIArgs) !void {
     assert(cli_args.fuzzer != .smoke);
 
-    const seed = cli_args.seed orelse std.crypto.random.int(u64);
+    const seed = cli_args.seed orelse stdx.random_int(u64);
     log.info("Fuzz seed = {}", .{seed});
 
     var time: TimeOS = .{};

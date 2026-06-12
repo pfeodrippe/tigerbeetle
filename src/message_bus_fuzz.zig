@@ -49,9 +49,9 @@ pub fn main(gpa: std.mem.Allocator, args: fuzz.FuzzArgs) !void {
     const message_bus_ping_misdirect_probability = ratio(prng.range_inclusive(u64, 0, 3), 10);
 
     const configuration = &.{
-        try std.net.Address.parseIp4("127.0.0.1", 3000),
-        try std.net.Address.parseIp4("127.0.0.1", 3001),
-        try std.net.Address.parseIp4("127.0.0.1", 3002),
+        try stdx.net.Address.parseIp4("127.0.0.1", 3000),
+        try stdx.net.Address.parseIp4("127.0.0.1", 3001),
+        try stdx.net.Address.parseIp4("127.0.0.1", 3002),
     };
 
     const command_weights = weights: {
@@ -72,7 +72,7 @@ pub fn main(gpa: std.mem.Allocator, args: fuzz.FuzzArgs) !void {
         break :weights command_weights;
     };
 
-    inline for (std.meta.fields(@TypeOf(command_weights))) |field| {
+    inline for (stdx.meta.fields(@TypeOf(command_weights))) |field| {
         log.info("command weight: {s} = {}", .{ field.name, @field(command_weights, field.name) });
     }
 
@@ -445,7 +445,7 @@ const IO = struct {
     };
 
     const SocketServer = struct {
-        address: std.net.Address,
+        address: stdx.net.Address,
         /// Invariant: completion.operation == .connect
         backlog: std.ArrayListUnmanaged(*Completion) = .empty,
     };
@@ -475,7 +475,7 @@ const IO = struct {
     const Operation = union(enum) {
         accept: struct { socket: socket_t },
         close: struct { fd: fd_t },
-        connect: struct { socket: socket_t, address: std.net.Address },
+        connect: struct { socket: socket_t, address: stdx.net.Address },
         recv: struct { socket: socket_t, buffer: []u8 },
         send: struct { socket: socket_t, buffer: []const u8 },
         timeout,
@@ -753,9 +753,9 @@ const IO = struct {
     pub fn listen(
         io: *IO,
         fd: socket_t,
-        address: std.net.Address,
+        address: stdx.net.Address,
         _: RealIO.ListenOptions,
-    ) !std.net.Address {
+    ) !stdx.net.Address {
         io.servers.putNoClobber(io.gpa, fd, .{ .address = address }) catch @panic("OOM");
         return address;
     }
@@ -841,7 +841,7 @@ const IO = struct {
         comptime callback: fn (Context, *Completion, ConnectError!void) void,
         completion: *Completion,
         socket: socket_t,
-        address: std.net.Address,
+        address: stdx.net.Address,
     ) void {
         completion.* = .{
             .context = context,

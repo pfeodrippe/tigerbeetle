@@ -148,7 +148,7 @@ const transfer_templates = table: {
     }.template;
 
     // [valid:bool][limit:bool][method]
-    var templates: [2][2][std.meta.fields(TransferPlan.Method).len]TransferTemplate = undefined;
+    var templates: [2][2][stdx.meta.fields(TransferPlan.Method).len]TransferTemplate = undefined;
 
     // template(ledger, result)
     templates[0][0][SNGL] = template(0, result(.{ .ledger_must_not_be_zero = true }));
@@ -978,7 +978,7 @@ pub fn WorkloadType(comptime AccountingStateMachine: type) type {
 
             account_filter.flags.reversed = self.prng.boolean();
 
-            const operation = comptime std.enums.nameCast(Operation, action);
+            const operation = comptime stdx.meta.name_cast(Operation, action);
             const batch_result_max = operation.result_max(self.options.batch_size_limit);
 
             // The timestamp range is restrictive to the number of transfers inserted at the
@@ -1041,7 +1041,7 @@ pub fn WorkloadType(comptime AccountingStateMachine: type) type {
             assert(body.len == 1);
             const query_filter = &body[0];
 
-            const operation = comptime std.enums.nameCast(Operation, action);
+            const operation = comptime stdx.meta.name_cast(Operation, action);
             const batch_result_max = operation.result_max(self.options.batch_size_limit);
             const limit: u32 = switch (self.prng.enum_uniform(enum {
                 zero,

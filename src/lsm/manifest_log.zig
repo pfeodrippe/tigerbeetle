@@ -157,7 +157,7 @@ pub fn ManifestLogType(comptime Storage: type) type {
                 .tables_removed = undefined,
             };
 
-            inline for (std.meta.fields(Pace)) |pace_field| {
+            inline for (stdx.meta.fields(Pace)) |pace_field| {
                 log.debug("{?}: Manifest.Pace.{s} = {d}", .{
                     grid.superblock.replica_index,
                     pace_field.name,
@@ -1111,7 +1111,7 @@ pub const Pace = struct {
                 .compact_extra_blocks = constants.lsm_manifest_compact_extra_blocks,
             });
 
-            for (std.meta.fields(Pace)) |pace_field| {
+            for (stdx.meta.fields(Pace)) |pace_field| {
                 @compileLog(std.fmt.comptimePrint("ManifestLog.Pace.{s} = {d}", .{
                     pace_field.name,
                     @field(pace, pace_field.name),

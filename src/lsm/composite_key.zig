@@ -35,7 +35,7 @@ pub fn CompositeKeyType(comptime Field: type) type {
             @divExact(@bitSizeOf(u64), 8),
         );
 
-        pub const Key = std.meta.Int(
+        pub const Key = @Int(
             .unsigned,
             // Little-endian:
             @bitSizeOf(u64) + @bitSizeOf(Field) + @bitSizeOf(Pad),

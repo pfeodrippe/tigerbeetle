@@ -8,8 +8,8 @@ const stdx = tb_client.vsr.stdx;
 const constants = @import("../../constants.zig");
 const tb = tb_client.vsr.tigerbeetle;
 
-const Mutex = std.Thread.Mutex;
-const Condition = std.Thread.Condition;
+const Mutex = std.Io.Mutex;
+const Condition = std.Io.Condition;
 
 fn RequestContextType(comptime request_size_max: comptime_int) type {
     return struct {
@@ -57,24 +57,24 @@ fn RequestContextType(comptime request_size_max: comptime_int) type {
 // Notifies the main thread when all pending requests are completed.
 const Completion = struct {
     pending: usize,
-    mutex: Mutex = .{},
-    cond: Condition = .{},
+    mutex: Mutex = .init,
+    cond: Condition = .init,
 
     pub fn complete(self: *Completion) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.mutex.unlock(std.Options.debug_io);
 
         assert(self.pending > 0);
         self.pending -= 1;
-        self.cond.signal();
+        self.cond.signal(std.Options.debug_io);
     }
 
     pub fn wait_pending(self: *Completion) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(std.Options.debug_io);
+        defer self.mutex.unlock(std.Options.debug_io);
 
         while (self.pending > 0)
-            self.cond.wait(&self.mutex);
+            self.cond.waitUncancelable(std.Options.debug_io, &self.mutex);
     }
 };
 
@@ -269,7 +269,7 @@ test "tb_client init" {
 
     // More addresses than "replicas_max" should return "TB_STATUS_ADDRESS_LIMIT_EXCEEDED":
     try assert_status(
-        ("3000," ** constants.replicas_max) ++ "3001",
+        stdx.repeat("3000,", constants.replicas_max) ++ "3001",
         error.AddressLimitExceeded,
     );
 

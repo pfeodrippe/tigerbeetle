@@ -13,7 +13,7 @@ const tigerbeetle = @import("../tigerbeetle.zig");
 const Duration = stdx.Duration;
 
 const Operation = operation_enum: {
-    var operation_fields: []const std.builtin.Type.EnumField = &[_]std.builtin.Type.EnumField{};
+    var operation_fields: []const stdx.meta.EnumField = &[_]stdx.meta.EnumField{};
 
     for (.{ vsr.Operation, tigerbeetle.Operation }, 0..) |Operation_, i| {
         for (std.meta.fieldNames(Operation_)) |field_name| {
@@ -21,61 +21,46 @@ const Operation = operation_enum: {
                 // Pulse is included by both Operation types.
                 continue;
             }
-            operation_fields = operation_fields ++ &[_]std.builtin.Type.EnumField{.{
+            operation_fields = operation_fields ++ &[_]stdx.meta.EnumField{.{
                 .name = "Operation." ++ field_name,
                 .value = @intFromEnum(@field(Operation_, field_name)),
             }};
         }
     }
 
-    break :operation_enum @Type(.{ .@"enum" = .{
-        .tag_type = u8,
-        .fields = operation_fields,
-        .decls = &.{},
-        .is_exhaustive = true,
-    } });
+    break :operation_enum stdx.meta.EnumType(u8, .exhaustive, operation_fields);
 };
 
 const TreeEnum = tree_enum: {
     const tree_ids = @import("../state_machine.zig").tree_ids;
-    var tree_fields: []const std.builtin.Type.EnumField = &[_]std.builtin.Type.EnumField{};
+    var tree_fields: []const stdx.meta.EnumField = &[_]stdx.meta.EnumField{};
 
-    for (std.meta.declarations(tree_ids)) |groove_field| {
-        const tree_ids_groove = @field(tree_ids, groove_field.name);
+    for (std.meta.declarations(tree_ids)) |groove_field_name| {
+        const tree_ids_groove = @field(tree_ids, groove_field_name);
         for (std.meta.fieldNames(@TypeOf(tree_ids_groove))) |field_name| {
-            tree_fields = tree_fields ++ &[_]std.builtin.Type.EnumField{.{
-                .name = groove_field.name ++ "." ++ field_name,
+            tree_fields = tree_fields ++ &[_]stdx.meta.EnumField{.{
+                .name = groove_field_name ++ "." ++ field_name,
                 .value = @field(tree_ids_groove, field_name),
             }};
         }
     }
 
-    break :tree_enum @Type(.{ .@"enum" = .{
-        .tag_type = u32,
-        .fields = tree_fields,
-        .decls = &.{},
-        .is_exhaustive = true,
-    } });
+    break :tree_enum stdx.meta.EnumType(u32, .exhaustive, tree_fields);
 };
 
 const GrooveEnum = groove_enum: {
     const tree_ids = @import("../state_machine.zig").tree_ids;
-    var groove_fields: []const std.builtin.Type.EnumField = &[_]std.builtin.Type.EnumField{};
+    var groove_fields: []const stdx.meta.EnumField = &[_]stdx.meta.EnumField{};
 
-    for (std.meta.declarations(tree_ids)) |groove_field| {
-        const tree_ids_groove = @field(tree_ids, groove_field.name);
-        groove_fields = groove_fields ++ &[_]std.builtin.Type.EnumField{.{
-            .name = groove_field.name,
+    for (std.meta.declarations(tree_ids)) |groove_field_name| {
+        const tree_ids_groove = @field(tree_ids, groove_field_name);
+        groove_fields = groove_fields ++ &[_]stdx.meta.EnumField{.{
+            .name = groove_field_name,
             .value = @field(tree_ids_groove, "timestamp"),
         }};
     }
 
-    break :groove_enum @Type(.{ .@"enum" = .{
-        .tag_type = u32,
-        .fields = groove_fields,
-        .decls = &.{},
-        .is_exhaustive = true,
-    } });
+    break :groove_enum stdx.meta.EnumType(u32, .exhaustive, groove_fields);
 };
 
 /// Returns the count of an exhaustive enum.
@@ -84,12 +69,12 @@ fn enum_count(EnumOrUnion: type) u8 {
     assert(type_info == .@"enum" or type_info == .@"union");
 
     const Enum = if (type_info == .@"enum")
-        type_info.@"enum"
+        EnumOrUnion
     else
-        @typeInfo(type_info.@"union".tag_type.?).@"enum";
-    assert(Enum.is_exhaustive);
+        type_info.@"union".tag_type.?;
+    assert(@typeInfo(Enum).@"enum".mode == .exhaustive);
 
-    return Enum.fields.len;
+    return stdx.meta.fields(Enum).len;
 }
 
 /// Maps an exhaustive enum value from an enum type that might potentially start with a non-zero
@@ -99,12 +84,12 @@ fn index_from_enum(enum_tag: anytype) u8 {
     assert(type_info == .@"enum" or type_info == .@"union");
 
     const Enum = if (type_info == .@"enum")
-        type_info.@"enum"
+        @TypeOf(enum_tag)
     else
-        @typeInfo(type_info.@"union".tag_type.?).@"enum";
-    assert(Enum.is_exhaustive);
+        type_info.@"union".tag_type.?;
+    assert(@typeInfo(Enum).@"enum".mode == .exhaustive);
 
-    inline for (Enum.fields, 0..) |enum_field, i| {
+    inline for (stdx.meta.fields(Enum), 0..) |enum_field, i| {
         if (enum_field.value == @intFromEnum(enum_tag)) {
             return i;
         }
@@ -366,15 +351,7 @@ pub const EventTiming = union(Event.Tag) {
         }
     }
 
-    pub fn format(
-        event: *const EventTiming,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
-
+    pub fn format(event: *const EventTiming, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (event.*) {
             inline else => |data| {
                 try format_data(data, writer);
@@ -506,15 +483,7 @@ pub const EventTracing = union(Event.Tag) {
         }
     }
 
-    pub fn format(
-        event: *const EventTracing,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
-
+    pub fn format(event: *const EventTracing, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (event.*) {
             inline else => |data| {
                 try format_data(data, writer);
@@ -688,7 +657,7 @@ pub fn format_data(
     const Data = @TypeOf(data);
     if (Data == void) return;
 
-    const fields = std.meta.fields(Data);
+    const fields = stdx.meta.fields(Data);
     inline for (fields, 0..) |data_field, i| {
         assert(data_field.type == bool or
             @typeInfo(data_field.type) == .int or
@@ -733,7 +702,7 @@ pub const EventMetricAggregate = struct {
 
 test "EventMetric slot doesn't have collisions" {
     const allocator = std.testing.allocator;
-    var stacks: std.ArrayListUnmanaged(u32) = .{};
+    var stacks: std.ArrayListUnmanaged(u32) = .empty;
     defer stacks.deinit(allocator);
 
     var g: @import("../testing/exhaustigen.zig") = .{};
@@ -782,7 +751,7 @@ test "EventMetric slot doesn't have collisions" {
 
 test "EventTiming slot doesn't have collisions" {
     const allocator = std.testing.allocator;
-    var stacks: std.ArrayListUnmanaged(u32) = .{};
+    var stacks: std.ArrayListUnmanaged(u32) = .empty;
     defer stacks.deinit(allocator);
 
     var g: @import("../testing/exhaustigen.zig") = .{};

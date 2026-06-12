@@ -140,12 +140,8 @@ pub const ProcessID = union(enum) {
 
     pub fn format(
         self: ProcessID,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
+        writer: *std.Io.Writer,
     ) !void {
-        _ = fmt;
-        _ = options;
         try switch (self) {
             .unknown => writer.writeByte('_'),
             .replica => |replica| try writer.print("{d}", .{replica.replica}),
@@ -162,12 +158,12 @@ pub const ProcessID = union(enum) {
 
 pub const Options = struct {
     /// The tracer still validates start/stop state even when writer=null.
-    writer: ?std.io.AnyWriter = null,
+    writer: ?*std.Io.Writer = null,
     statsd_options: union(enum) {
         log,
         udp: struct {
             io: *IO,
-            address: std.net.Address,
+            address: stdx.net.Address,
         },
     } = .log,
     log_trace: bool = true,
@@ -290,18 +286,18 @@ pub fn start(tracer: *Tracer, event: Event) void {
     const writer = tracer.options.writer orelse return;
     const time_elapsed = tracer.time_start.elapsed(time_now);
 
-    var buffer_stream = std.io.fixedBufferStream(tracer.buffer);
+    var buffer_stream: std.Io.Writer = .fixed(tracer.buffer);
 
     // String tid's would be much more useful.
     // They are supported by both Chrome and Perfetto, but rejected by Spall.
-    buffer_stream.writer().print("{{" ++
+    buffer_stream.print("{{" ++
         "\"pid\":{[process_id]}," ++
         "\"tid\":{[thread_id]}," ++
         "\"ph\":\"{[event]c}\"," ++
         "\"ts\":{[timestamp]}," ++
         "\"cat\":\"{[category]s}\"," ++
-        "\"name\":\"{[category]s} {[event_tracing]} {[event_timing]}\"," ++
-        "\"args\":{[args]s}" ++
+        "\"name\":\"{[category]s} {[event_tracing]f} {[event_timing]f}\"," ++
+        "\"args\":{[args]f}" ++
         "}},\n", .{
         .process_id = tracer.process_id.json(),
         .thread_id = event_tracing.stack(),
@@ -312,7 +308,7 @@ pub fn start(tracer: *Tracer, event: Event) void {
         .event_timing = event_timing,
         .args = std.json.Formatter(Event){ .value = event, .options = .{} },
     }) catch {
-        log.err("{}: {s}({}): event too large: {}", .{
+        log.err("{f}: {s}({}): event too large: {}", .{
             tracer.process_id,
             @tagName(event),
             event_tracing,
@@ -321,7 +317,7 @@ pub fn start(tracer: *Tracer, event: Event) void {
         return;
     };
 
-    writer.writeAll(buffer_stream.getWritten()) catch |err| {
+    writer.writeAll(buffer_stream.buffered()) catch |err| {
         std.debug.panic("Tracer.start: {}\n", .{err});
     };
 }
@@ -384,9 +380,9 @@ pub fn cancel(tracer: *Tracer, event_tag: Event.Tag) void {
 
 fn write_stop(tracer: *Tracer, stack: u32, time_elapsed: stdx.Duration) void {
     const writer = tracer.options.writer orelse return;
-    var buffer_stream = std.io.fixedBufferStream(tracer.buffer);
+    var buffer_stream: std.Io.Writer = .fixed(tracer.buffer);
 
-    buffer_stream.writer().print(
+    buffer_stream.print(
         "{{" ++
             "\"pid\":{[process_id]}," ++
             "\"tid\":{[thread_id]}," ++
@@ -401,7 +397,7 @@ fn write_stop(tracer: *Tracer, stack: u32, time_elapsed: stdx.Duration) void {
         },
     ) catch unreachable;
 
-    writer.writeAll(buffer_stream.getWritten()) catch |err| {
+    writer.writeAll(buffer_stream.buffered()) catch |err| {
         std.debug.panic("Tracer.stop: {}\n", .{err});
     };
 }
@@ -487,13 +483,13 @@ test "trace json and statsd" {
     const snap = Snap.snap_fn("src");
     const gpa = std.testing.allocator;
 
-    var trace_buffer: std.ArrayListUnmanaged(u8) = .empty;
-    defer trace_buffer.deinit(gpa);
+    var trace_buffer: std.Io.Writer.Allocating = .init(gpa);
+    defer trace_buffer.deinit();
 
     var time_sim = fixtures.init_time(.{});
 
     var trace = try fixtures.init_tracer(gpa, time_sim.time(), .{
-        .writer = trace_buffer.writer(gpa).any(),
+        .writer = &trace_buffer.writer,
         .process_id = .unknown,
     });
     defer trace.deinit(gpa);
@@ -522,7 +518,7 @@ test "trace json and statsd" {
         \\{"pid":1,"tid":8,"ph":"E","ts":130000},
         \\{"pid":1,"tid":0,"ph":"E","ts":160000},
         \\
-    ).diff(trace_buffer.items);
+    ).diff(trace_buffer.written());
 
     trace.start(.metrics_emit);
     time_sim.ticks += 1;

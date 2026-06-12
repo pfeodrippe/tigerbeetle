@@ -55,7 +55,7 @@ pub fn ReplType(comptime MessageBus: type) type {
 
         const Repl = @This();
 
-        fn fail(repl: *const Repl, comptime format: []const u8, arguments: anytype) !void {
+        fn fail(repl: *Repl, comptime format: []const u8, arguments: anytype) !void {
             if (!repl.interactive) {
                 try repl.terminal.print_error(format, arguments);
                 std.process.exit(1);
@@ -64,7 +64,7 @@ pub fn ReplType(comptime MessageBus: type) type {
             try repl.terminal.print(format, arguments);
         }
 
-        fn debug(repl: *const Repl, comptime format: []const u8, arguments: anytype) !void {
+        fn debug(repl: *Repl, comptime format: []const u8, arguments: anytype) !void {
             if (repl.debug_logs) {
                 try repl.terminal.print("[Debug] " ++ format, arguments);
             }
@@ -604,22 +604,22 @@ pub fn ReplType(comptime MessageBus: type) type {
                     // want the stacktrace.
                     error.AccessDenied,
                     error.BrokenPipe,
-                    error.ConnectionResetByPeer,
+                    error.Canceled,
                     error.DeviceBusy,
                     error.DiskQuota,
+                    error.FileBusy,
                     error.FileTooBig,
                     error.InputOutput,
-                    error.InvalidArgument,
                     error.LockViolation,
                     error.NoSpaceLeft,
                     error.NotOpenForWriting,
-                    error.OperationAborted,
                     error.OutOfMemory,
+                    error.PermissionDenied,
                     error.SystemResources,
                     error.Unexpected,
                     error.WouldBlock,
                     error.NoDevice,
-                    error.ProcessNotFound,
+                    error.WriteFailed,
                     => return err,
                 }
             };
@@ -648,7 +648,7 @@ pub fn ReplType(comptime MessageBus: type) type {
             io: *IO,
             time: Time,
             options: struct {
-                addresses: []const std.net.Address,
+                addresses: []const stdx.net.Address,
                 cluster_id: u128,
                 verbose: bool,
             },
@@ -768,28 +768,28 @@ pub fn ReplType(comptime MessageBus: type) type {
                                 // TODO: This will be more convenient to express
                                 // once https://github.com/ziglang/zig/issues/2473 is
                                 // in.
-                                => std.posix.exit(1),
+                                => std.process.exit(1),
 
                                 // An unexpected error for which we do
                                 // want the stacktrace.
                                 error.AccessDenied,
                                 error.BrokenPipe,
-                                error.ConnectionResetByPeer,
+                                error.Canceled,
                                 error.DeviceBusy,
                                 error.DiskQuota,
+                                error.FileBusy,
                                 error.FileTooBig,
                                 error.InputOutput,
-                                error.InvalidArgument,
                                 error.LockViolation,
                                 error.NoSpaceLeft,
                                 error.NotOpenForWriting,
-                                error.OperationAborted,
                                 error.OutOfMemory,
+                                error.PermissionDenied,
                                 error.SystemResources,
                                 error.Unexpected,
                                 error.WouldBlock,
                                 error.NoDevice,
-                                error.ProcessNotFound,
+                                error.WriteFailed,
                                 => return err,
                             }
                         };
@@ -875,7 +875,7 @@ pub fn ReplType(comptime MessageBus: type) type {
                 @TypeOf(object.*) == tb.CreateTransferResult);
 
             try repl.terminal.print("{{\n", .{});
-            inline for (@typeInfo(@TypeOf(object.*)).@"struct".fields, 0..) |object_field, i| {
+            inline for (stdx.meta.fields(@TypeOf(object.*)), 0..) |object_field, i| {
                 if (comptime std.mem.eql(u8, object_field.name, "reserved")) {
                     continue;
                     // No need to print out reserved.
@@ -889,7 +889,7 @@ pub fn ReplType(comptime MessageBus: type) type {
                     try repl.terminal.print("  \"" ++ object_field.name ++ "\": [", .{});
                     var needs_comma = false;
 
-                    inline for (@typeInfo(object_field.type).@"struct".fields) |flag_field| {
+                    inline for (stdx.meta.fields(object_field.type)) |flag_field| {
                         if (comptime !std.mem.eql(u8, flag_field.name, "padding")) {
                             if (@field(@field(object, "flags"), flag_field.name)) {
                                 if (needs_comma) {

@@ -2679,7 +2679,7 @@ const TestReplicas = struct {
     pub fn pass_all(t: *const TestReplicas, peer: ProcessSelector, direction: LinkDirection) void {
         const paths = t.peer_paths(peer, direction);
         for (paths.const_slice()) |path| {
-            t.cluster.network.link_filter(path).* = LinkFilter.initFull();
+            t.cluster.network.link_filter(path).* = .full;
         }
     }
 

@@ -292,10 +292,11 @@ test ChangelogIterator {
 test "current changelog" {
     const allocator = std.testing.allocator;
 
-    const changelog_text = try std.fs.cwd().readFileAlloc(
-        allocator,
+    const changelog_text = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
         "./CHANGELOG.md",
-        changelog_bytes_max,
+        allocator,
+        .limited(changelog_bytes_max),
     );
     defer allocator.free(changelog_text);
 

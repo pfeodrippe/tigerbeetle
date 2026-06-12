@@ -1,5 +1,9 @@
 const std = @import("std");
 
+fn spaces(comptime count: usize) *const [count]u8 {
+    return &@as([count]u8, @splat(' '));
+}
+
 /// Utility function for ad-hoc profiling.
 ///
 /// A thin wrapper around `std.time.Timer` which handles the boilerplate of
@@ -13,7 +17,7 @@ const TimeIt = struct {
 
     /// Prints elapsed time to stderr and resets the internal timer.
     pub fn print(self: *TimeIt, comptime label: []const u8) void {
-        const label_alignment = comptime " " ** (1 + (12 -| label.len));
+        const label_alignment = comptime spaces(1 + (12 -| label.len));
 
         const elapsed_ns = self.inner.lap();
         std.debug.print(
@@ -47,7 +51,7 @@ const TimeIt = struct {
         const elapsed_ns = self.inner.lap();
         if (elapsed_ns > threshold_ms * std.time.ns_per_ms) {
             std.debug.print(label ++ ": {}\n", .{std.fmt.fmtDuration(elapsed_ns)});
-            if (backtrace) std.debug.dumpCurrentStackTrace(null);
+            if (backtrace) std.debug.dumpCurrentStackTrace(.{});
         }
     }
 };

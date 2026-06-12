@@ -217,7 +217,7 @@ fn emit_enum(
     comptime mapping: TypeMapping,
     comptime int_type: []const u8,
 ) !void {
-    const is_packed_struct = @TypeOf(type_info) == std.builtin.Type.Struct;
+    const is_packed_struct = @TypeOf(type_info) == stdx.meta.Struct;
     if (is_packed_struct) {
         assert(type_info.layout == .@"packed");
         // Packed structs represented as Enum needs a Flags attribute:
@@ -467,7 +467,7 @@ pub fn generate_bindings(buffer: *std.ArrayList(u8)) !void {
                     info,
                     mapping,
                     comptime dotnet_type(
-                        std.meta.Int(.unsigned, @bitSizeOf(ZigType)),
+                        @Int(.unsigned, @bitSizeOf(ZigType)),
                     ),
                 ),
                 .@"extern" => try emit_struct(
@@ -482,7 +482,7 @@ pub fn generate_bindings(buffer: *std.ArrayList(u8)) !void {
                 ZigType,
                 info,
                 mapping,
-                comptime dotnet_type(std.meta.Int(.unsigned, @bitSizeOf(ZigType))),
+                comptime dotnet_type(@Int(.unsigned, @bitSizeOf(ZigType))),
             ),
             else => @compileError("Type cannot be represented: " ++ @typeName(ZigType)),
         }

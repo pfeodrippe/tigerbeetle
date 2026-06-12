@@ -141,9 +141,9 @@ pub const Packet = extern struct {
         assert(@alignOf(Packet) == @alignOf(Extern));
 
         // Asserting the fields are identical.
-        for (std.meta.fields(Extern)) |field_extern| {
+        for (stdx.meta.fields(Extern)) |field_extern| {
             if (std.mem.eql(u8, field_extern.name, "opaque")) continue;
-            const field_packet = std.meta.fields(Packet)[
+            const field_packet = stdx.meta.fields(Packet)[
                 std.meta.fieldIndex(
                     Packet,
                     field_extern.name,

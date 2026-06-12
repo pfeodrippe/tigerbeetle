@@ -38,7 +38,7 @@ fn trap_handler(signal: i32) callconv(.c) void {
             log.err("error killing sandboxed process: {}", .{err});
         };
     }
-    std.posix.exit(@intCast(@as(i32, 128) + signal));
+    std.process.exit(@intCast(@as(i32, 128) + signal));
 }
 
 /// Relaunch this process with new namespaces.
@@ -256,7 +256,8 @@ fn fork_and_exit(gpa: std.mem.Allocator) !void {
     // first argument so that the exe path will be correct even if
     // this process's cwd has changed relative to the original exe.
     var exe_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const exe_path = try std.fs.selfExePath(&exe_path_buffer);
+    const exe_path_len = try std.process.executablePath(std.Options.debug_io, &exe_path_buffer);
+    const exe_path = exe_path_buffer[0..exe_path_len];
 
     const args_new = try gpa.alloc([]const u8, args_ours.len);
     defer gpa.free(args_new);

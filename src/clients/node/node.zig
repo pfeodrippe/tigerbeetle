@@ -497,7 +497,7 @@ fn decode_array(comptime Event: type, env: c.napi_env, array: c.napi_value, even
             AccountBalance,
             QueryFilter,
             => {
-                inline for (std.meta.fields(Event)) |field| {
+                inline for (stdx.meta.fields(Event)) |field| {
                     const value: field.type = switch (@typeInfo(field.type)) {
                         .@"struct" => |info| @bitCast(try @field(
                             translate,
@@ -544,7 +544,7 @@ fn encode_array(comptime Result: type, env: c.napi_env, results: []const Result)
             "Failed to create " ++ @typeName(Result) ++ " object.",
         );
 
-        inline for (std.meta.fields(Result)) |field| {
+        inline for (stdx.meta.fields(Result)) |field| {
             const FieldInt = switch (@typeInfo(field.type)) {
                 .@"struct" => |info| info.backing_integer.?,
                 .@"enum" => |info| info.tag_type,

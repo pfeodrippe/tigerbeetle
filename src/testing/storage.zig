@@ -203,7 +203,11 @@ pub const Storage = struct {
 
         const prng = stdx.PRNG.from_seed(options.seed);
         const sector_count = @divExact(options.size, constants.sector_size);
-        const memory = try allocator.alignedAlloc(u8, constants.sector_size, options.size);
+        const memory = try allocator.alignedAlloc(
+            u8,
+            std.mem.Alignment.fromByteUnits(constants.sector_size),
+            options.size,
+        );
         errdefer allocator.free(memory);
 
         var memory_written = try std.DynamicBitSetUnmanaged.initEmpty(allocator, sector_count);
@@ -213,21 +217,25 @@ pub const Storage = struct {
         errdefer faults.deinit(allocator);
 
         const overlay_buffers_alloc =
-            try allocator.alignedAlloc(u8, constants.sector_size, @sizeOf(OverlayBuffers));
+            try allocator.alignedAlloc(
+                u8,
+                std.mem.Alignment.fromByteUnits(constants.sector_size),
+                @sizeOf(OverlayBuffers),
+            );
         const overlay_buffers = std.mem.bytesAsValue(OverlayBuffers, overlay_buffers_alloc);
         errdefer allocator.destroy(overlay_buffers);
 
         var reads = std.PriorityQueue(*Storage.Read, void, Storage.Read.less_than)
-            .init(allocator, {});
-        errdefer reads.deinit();
+            .initContext({});
+        errdefer reads.deinit(allocator);
 
-        try reads.ensureTotalCapacity(options.iops_read_max);
+        try reads.ensureTotalCapacity(allocator, @intCast(options.iops_read_max));
 
         var writes = std.PriorityQueue(*Storage.Write, void, Storage.Write.less_than)
-            .init(allocator, {});
-        errdefer writes.deinit();
+            .initContext({});
+        errdefer writes.deinit(allocator);
 
-        try writes.ensureTotalCapacity(options.iops_write_max);
+        try writes.ensureTotalCapacity(allocator, @intCast(options.iops_write_max));
 
         return Storage{
             .allocator = allocator,
@@ -244,8 +252,8 @@ pub const Storage = struct {
     }
 
     pub fn deinit(storage: *Storage, allocator: mem.Allocator) void {
-        storage.writes.deinit();
-        storage.reads.deinit();
+        storage.writes.deinit(allocator);
+        storage.reads.deinit(allocator);
         allocator.destroy(storage.overlay_buffers);
         storage.faults.deinit(allocator);
         storage.memory_written.deinit(allocator);
@@ -260,7 +268,7 @@ pub const Storage = struct {
             storage.writes.count(),
             storage.next_tick_queue.count(),
         });
-        while (storage.writes.removeOrNull()) |write| {
+        while (storage.writes.pop()) |write| {
             if (storage.prng.chance(storage.options.crash_fault_probability)) {
                 // Randomly corrupt one of the faulty sectors the operation targeted.
                 // TODO: inject more realistic and varied storage faults as described above.
@@ -268,7 +276,7 @@ pub const Storage = struct {
                 storage.fault_sector(write.zone, sectors.random(&storage.prng));
             }
         }
-        while (storage.reads.removeOrNull()) |_| {}
+        while (storage.reads.pop()) |_| {}
         storage.next_tick_queue.reset();
 
         assert(storage.writes.count() == 0);
@@ -332,12 +340,12 @@ pub const Storage = struct {
 
         storage.reads.items.len = 0;
         for (origin.reads.items) |read| {
-            storage.reads.add(read) catch unreachable;
+            storage.reads.push(storage.allocator, read) catch unreachable;
         }
 
         storage.writes.items.len = 0;
         for (origin.writes.items) |write| {
-            storage.writes.add(write) catch unreachable;
+            storage.writes.push(storage.allocator, write) catch unreachable;
         }
     }
 
@@ -351,13 +359,13 @@ pub const Storage = struct {
         if (read_ready_at_ns <= storage.tick_instant().ns and
             read_ready_at_ns <= write_ready_at_ns)
         {
-            const read = storage.reads.remove();
+            const read = storage.reads.pop().?;
             storage.read_sectors_finish(read);
             advanced = true;
         } else if (write_ready_at_ns <= storage.tick_instant().ns and
             write_ready_at_ns <= read_ready_at_ns)
         {
-            const write = storage.writes.remove();
+            const write = storage.writes.pop().?;
             storage.write_sectors_finish(write);
             advanced = true;
         }
@@ -441,7 +449,7 @@ pub const Storage = struct {
         };
 
         // We ensure the capacity is sufficient for constants.iops_read_max in init()
-        storage.reads.add(read) catch unreachable;
+        storage.reads.push(storage.allocator, read) catch unreachable;
     }
 
     fn read_sectors_finish(storage: *Storage, read: *Storage.Read) void {
@@ -584,7 +592,7 @@ pub const Storage = struct {
         };
 
         // We ensure the capacity is sufficient for constants.iops_write_max in init()
-        storage.writes.add(write) catch unreachable;
+        storage.writes.push(storage.allocator, write) catch unreachable;
     }
 
     fn write_sectors_finish(storage: *Storage, write: *Storage.Write) void {
@@ -1198,27 +1206,19 @@ const StackTrace = struct {
 
     fn capture() StackTrace {
         var addresses: [64]usize = undefined;
-        var stack_trace = std.builtin.StackTrace{
-            .instruction_addresses = &addresses,
-            .index = 0,
+        const stack_trace = std.debug.captureCurrentStackTrace(.{}, &addresses);
+        return StackTrace{
+            .addresses = addresses,
+            .index = stack_trace.return_addresses.len,
         };
-        std.debug.captureStackTrace(null, &stack_trace);
-        return StackTrace{ .addresses = addresses, .index = stack_trace.index };
     }
 
-    pub fn format(
-        self: StackTrace,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
+    pub fn format(self: StackTrace, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         var addresses = self.addresses;
-        const stack_trace = std.builtin.StackTrace{
-            .instruction_addresses = &addresses,
-            .index = self.index,
+        const stack_trace = std.debug.StackTrace{
+            .return_addresses = addresses[0..self.index],
+            .skipped = .none,
         };
-        try writer.print("{}", .{stack_trace});
+        try writer.print("{f}", .{std.debug.FormatStackTrace{ .stack_trace = stack_trace }});
     }
 };

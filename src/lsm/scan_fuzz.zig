@@ -197,12 +197,7 @@ const QuerySpec = struct {
 
     /// Formats the array of `QueryPart`, for debugging purposes.
     /// E.g. "((a OR b) and c)".
-    pub fn format(
-        self: *const QuerySpec,
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
+    pub fn format(self: *const QuerySpec, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         var stack: stdx.BoundedArrayType(QueryPart.Merge, query_scans_max - 1) = .{};
         var print_operator: bool = false;
         for (0..self.query.count()) |index| {
@@ -998,7 +993,7 @@ const Environment = struct {
 
                     const scan = switch (field.index) {
                         inline else => |comptime_index| scan_builder.scan_prefix(
-                            comptime std.enums.nameCast(
+                            comptime stdx.meta.name_cast(
                                 std.meta.FieldEnum(ThingsGroove.IndexTrees),
                                 comptime_index,
                             ),

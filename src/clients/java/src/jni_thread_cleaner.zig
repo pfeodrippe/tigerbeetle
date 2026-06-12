@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const stdx = @import("stdx");
 const jni = @import("jni.zig");
 
 const log = std.log.scoped(.tb_client_jni);
@@ -10,7 +11,7 @@ const assert = std.debug.assert;
 /// https://developer.android.com/training/articles/perf-jni#threads
 pub const JNIThreadCleaner = struct {
     var tls_key: ?tls.Key = null;
-    var create_key_once = std.once(create_key);
+    var create_key_once = stdx.once(create_key);
 
     /// This function calls `AttachCurrentThreadAsDaemon` to attach the current native thread to
     /// the JVM as a daemon thread. It also registers a callback to call `DetachCurrentThread`

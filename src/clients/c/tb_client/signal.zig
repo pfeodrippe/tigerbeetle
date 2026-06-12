@@ -201,7 +201,11 @@ test "signal" {
         fn notify(self: *Context) void {
             assert(std.Thread.getCurrentId() != self.main_thread_id);
             while (self.signal.status() != .shutdown_completed) {
-                std.time.sleep(delay + 1);
+                std.Io.sleep(
+                    std.Options.debug_io,
+                    .fromNanoseconds(@intCast(delay + 1)),
+                    .boot,
+                ) catch unreachable;
 
                 // Triggering the event:
                 self.signal.notify();

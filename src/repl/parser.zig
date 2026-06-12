@@ -14,9 +14,12 @@ const Terminal = @import("terminal.zig").Terminal;
 pub const Parser = struct {
     input: []const u8,
     offset: usize = 0,
-    terminal: *const Terminal,
+    terminal: *Terminal,
 
-    pub const ArgumentsList = std.ArrayListAlignedUnmanaged(u8, constants.cache_line_size);
+    pub const ArgumentsList = std.ArrayListAlignedUnmanaged(
+        u8,
+        std.mem.Alignment.fromByteUnits(constants.cache_line_size),
+    );
 
     pub const Error = error{
         IdentifierBad,
@@ -104,6 +107,10 @@ pub const Parser = struct {
         try parser.terminal.print_error("^ Near here.\n\n", .{});
     }
 
+    const TerminalPrintError = @typeInfo(
+        @typeInfo(@TypeOf(print_current_position)).@"fn".return_type.?,
+    ).error_union.error_set;
+
     fn eat_whitespace(parser: *Parser) void {
         while (parser.offset < parser.input.len and
             std.ascii.isWhitespace(parser.input[parser.offset]))
@@ -187,12 +194,12 @@ pub const Parser = struct {
         key_to_validate: []const u8,
         value_to_validate: []const u8,
     ) !void {
-        inline for (@typeInfo(ObjectSyntaxTree).@"union".fields) |object_syntax_tree_field| {
+        inline for (stdx.meta.fields(ObjectSyntaxTree)) |object_syntax_tree_field| {
             if (std.mem.eql(u8, @tagName(out.*), object_syntax_tree_field.name)) {
                 const active_value = @field(out, object_syntax_tree_field.name);
                 const ActiveValue = @TypeOf(active_value);
 
-                inline for (@typeInfo(ActiveValue).@"struct".fields) |active_value_field| {
+                inline for (stdx.meta.fields(ActiveValue)) |active_value_field| {
                     if (std.mem.eql(u8, active_value_field.name, key_to_validate)) {
                         // Handle everything but flags, and skip reserved.
                         if (comptime (!std.mem.eql(u8, active_value_field.name, "flags") and
@@ -220,9 +227,9 @@ pub const Parser = struct {
                                     flag_to_validate,
                                     std.ascii.whitespace[0..],
                                 );
-                                inline for (@typeInfo(
-                                    active_value_field.type,
-                                ).@"struct".fields) |known_flag_field| {
+                                inline for (
+                                    stdx.meta.fields(active_value_field.type),
+                                ) |known_flag_field| {
                                     if (std.mem.eql(
                                         u8,
                                         known_flag_field.name,
@@ -328,7 +335,7 @@ pub const Parser = struct {
             // Expect comma separating objects.
             if (parser.offset < parser.input.len and parser.input[parser.offset] == ',') {
                 parser.offset += 1;
-                inline for (@typeInfo(ObjectSyntaxTree).@"union".fields) |object_tree_field| {
+                inline for (stdx.meta.fields(ObjectSyntaxTree)) |object_tree_field| {
                     if (std.mem.eql(u8, @tagName(object), object_tree_field.name)) {
                         const unwrapped_field = @field(object, object_tree_field.name);
                         arguments.appendSliceAssumeCapacity(std.mem.asBytes(&unwrapped_field));
@@ -400,7 +407,7 @@ pub const Parser = struct {
 
         // Add final object.
         if (object_has_fields) {
-            inline for (@typeInfo(ObjectSyntaxTree).@"union".fields) |object_tree_field| {
+            inline for (stdx.meta.fields(ObjectSyntaxTree)) |object_tree_field| {
                 if (std.mem.eql(u8, @tagName(object), object_tree_field.name)) {
                     const unwrapped_field = @field(object, object_tree_field.name);
                     arguments.appendSliceAssumeCapacity(std.mem.asBytes(&unwrapped_field));
@@ -422,9 +429,9 @@ pub const Parser = struct {
     //   create_accounts flags=linked | debits_must_not_exceed_credits ;
     pub fn parse_statement(
         input: []const u8,
-        terminal: *const Terminal,
+        terminal: *Terminal,
         arguments: *ArgumentsList,
-    ) (error{OutOfMemory} || std.fs.File.WriteError || Error)!Statement {
+    ) (error{OutOfMemory} || TerminalPrintError || Error)!Statement {
         var parser = Parser{ .input = input, .terminal = terminal };
         parser.eat_whitespace();
         const after_whitespace = parser.offset;
@@ -471,10 +478,13 @@ pub const Parser = struct {
     }
 };
 
-const null_terminal = Terminal{
+var null_terminal = Terminal{
     .mode_start = null,
+    .stdin_buffer = undefined,
     .stdin = undefined,
+    .stdout_buffer = undefined,
     .stderr = null,
+    .stderr_buffer = undefined,
     .stdout = null,
 };
 

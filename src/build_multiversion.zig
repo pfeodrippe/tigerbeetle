@@ -68,7 +68,7 @@ pub fn main() !void {
 
     const tmp_dir_path = try shell.fmt("{s}/{d}", .{
         cli_args.tmp,
-        std.crypto.random.int(u64),
+        stdx.random_int(u64),
     });
     var tmp_dir = try std.fs.cwd().makeOpenPath(tmp_dir_path, .{});
     defer {
@@ -799,8 +799,8 @@ fn git_sha_to_binary(commit: []const u8) ![20]u8 {
     var commit_roundtrip: [40]u8 = undefined;
     assert(std.mem.eql(u8, try std.fmt.bufPrint(
         &commit_roundtrip,
-        "{s}",
-        .{std.fmt.fmtSliceHexLower(&commit_bytes)},
+        "{f}",
+        .{stdx.fmt_slice_hex_lower(&commit_bytes)},
     ), commit));
 
     return commit_bytes;

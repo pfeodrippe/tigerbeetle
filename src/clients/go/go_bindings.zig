@@ -30,7 +30,7 @@ fn go_type(comptime Type: type) []const u8 {
         .@"enum" => return comptime get_mapped_type_name(Type) orelse
             @compileError("Type " ++ @typeName(Type) ++ " not mapped."),
         .@"struct" => |info| switch (info.layout) {
-            .@"packed" => return comptime go_type(std.meta.Int(.unsigned, @bitSizeOf(Type))),
+            .@"packed" => return comptime go_type(@Int(.unsigned, @bitSizeOf(Type))),
             else => return comptime get_mapped_type_name(Type) orelse
                 @compileError("Type " ++ @typeName(Type) ++ " not mapped."),
         },
@@ -61,7 +61,7 @@ fn get_mapped_type_name(comptime Type: type) ?[]const u8 {
 fn to_pascal_case(comptime input: []const u8, comptime min_len: ?usize) []const u8 {
     return comptime blk: {
         var len: usize = 0;
-        var output = [_]u8{' '} ** (min_len orelse input.len);
+        var output = @as([min_len orelse input.len]u8, @splat(' '));
         var iterator = std.mem.tokenizeScalar(u8, input, '_');
         while (iterator.next()) |word| {
             assert(word.len > 0);
@@ -344,7 +344,7 @@ pub fn generate_bindings(buffer: *std.ArrayList(u8)) !void {
                     buffer,
                     info,
                     name,
-                    comptime go_type(std.meta.Int(.unsigned, @bitSizeOf(ZigType))),
+                    comptime go_type(@Int(.unsigned, @bitSizeOf(ZigType))),
                 ),
                 .@"extern" => try emit_struct(buffer, info, name),
             },
@@ -353,7 +353,7 @@ pub fn generate_bindings(buffer: *std.ArrayList(u8)) !void {
                 ZigType,
                 name,
                 type_mapping[2],
-                comptime go_type(std.meta.Int(.unsigned, @bitSizeOf(ZigType))),
+                comptime go_type(@Int(.unsigned, @bitSizeOf(ZigType))),
             ),
             else => @compileError("Type cannot be represented: " ++ @typeName(ZigType)),
         }

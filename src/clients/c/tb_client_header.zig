@@ -43,7 +43,7 @@ fn resolve_c_type(comptime Type: type) []const u8 {
     switch (@typeInfo(Type)) {
         .array => |info| return resolve_c_type(info.child),
         .@"enum" => |info| return resolve_c_type(info.tag_type),
-        .@"struct" => return resolve_c_type(std.meta.Int(.unsigned, @bitSizeOf(Type))),
+        .@"struct" => return resolve_c_type(@Int(.unsigned, @bitSizeOf(Type))),
         .bool => return "uint8_t",
         .int => |info| {
             assert(info.signedness == .unsigned);

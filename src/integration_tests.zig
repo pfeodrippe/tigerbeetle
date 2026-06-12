@@ -256,7 +256,7 @@ test "repl integration" {
 test "benchmark/inspect smoke" {
     const data_file = data_file: {
         var random_bytes: [4]u8 = undefined;
-        std.crypto.random.bytes(&random_bytes);
+        stdx.random_bytes(&random_bytes);
         const random_suffix: [8]u8 = std.fmt.bytesToHex(random_bytes, .lower);
         break :data_file "0_0-" ++ random_suffix ++ ".tigerbeetle.benchmark";
     };

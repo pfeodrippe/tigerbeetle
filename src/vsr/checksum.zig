@@ -40,7 +40,7 @@ const MiB = stdx.MiB;
 
 const Aegis128LMac_128 = stdx.aegis.Aegis128LMac_128;
 
-var seed_once = std.once(seed_init);
+var seed_once = stdx.once(seed_init);
 var seed_state: Aegis128LMac_128 = undefined;
 
 comptime {
@@ -112,7 +112,7 @@ test "checksum test vectors" {
 
     for (&[_]TestVector{
         .{
-            .source = &[_]u8{0x00} ** 16,
+            .source = &@as([16]u8, @splat(0x00)),
             .hash = @byteSwap(@as(u128, 0xf72ad48dd05dd1656133101cd4be3a26)),
         },
         .{
@@ -210,7 +210,11 @@ test "checksum stability" {
 test "checksum alignment and sizing" {
     var gpa = std.testing.allocator;
 
-    var input: []align(1) u8 = try gpa.alignedAlloc(u8, 1, 8 * stdx.KiB);
+    var input: []align(1) u8 = try gpa.alignedAlloc(
+        u8,
+        std.mem.Alignment.fromByteUnits(1),
+        8 * stdx.KiB,
+    );
     defer gpa.free(input);
 
     var prng = stdx.PRNG.from_seed(92);

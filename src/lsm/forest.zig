@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const assert = std.debug.assert;
 const maybe = stdx.maybe;
 const mem = std.mem;
@@ -29,11 +28,11 @@ const compaction_input_tables_max = @import("compaction.zig").compaction_tables_
 pub const table_count_max = @import("tree.zig").table_count_max;
 
 pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
-    const groove_count = std.meta.fields(@TypeOf(groove_cfg)).len;
-    var groove_fields: [groove_count]std.builtin.Type.StructField = undefined;
-    var groove_options_fields: [groove_count]std.builtin.Type.StructField = undefined;
+    const groove_count = stdx.meta.fields(@TypeOf(groove_cfg)).len;
+    var groove_fields: [groove_count]stdx.meta.StructField = undefined;
+    var groove_options_fields: [groove_count]stdx.meta.StructField = undefined;
 
-    for (std.meta.fields(@TypeOf(groove_cfg)), 0..) |field, i| {
+    for (stdx.meta.fields(@TypeOf(groove_cfg)), 0..) |field, i| {
         const Groove = @field(groove_cfg, field.name);
         groove_fields[i] = .{
             .name = field.name,
@@ -52,32 +51,18 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
         };
     }
 
-    const _Grooves = @Type(.{
-        .@"struct" = .{
-            .layout = .auto,
-            .fields = &groove_fields,
-            .decls = &.{},
-            .is_tuple = false,
-        },
-    });
+    const _Grooves = stdx.meta.StructType(.auto, &groove_fields);
 
-    const _GroovesOptions = @Type(.{
-        .@"struct" = .{
-            .layout = .auto,
-            .fields = &groove_options_fields,
-            .decls = &.{},
-            .is_tuple = false,
-        },
-    });
+    const _GroovesOptions = stdx.meta.StructType(.auto, &groove_options_fields);
 
     {
         // Verify that every tree id is unique.
         comptime var ids: []const u16 = &.{};
 
-        inline for (std.meta.fields(_Grooves)) |groove_field| {
+        inline for (stdx.meta.fields(_Grooves)) |groove_field| {
             const Groove = groove_field.type;
 
-            for (std.meta.fields(@TypeOf(Groove.config.ids))) |field| {
+            for (stdx.meta.fields(@TypeOf(Groove.config.ids))) |field| {
                 const id = @field(Groove.config.ids, field.name);
                 assert(id > 0);
                 assert(std.mem.indexOfScalar(u16, ids, id) == null);
@@ -102,7 +87,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
         @setEvalBranchQuota(32_000);
 
         var tree_infos: []const TreeInfo = &[_]TreeInfo{};
-        for (std.meta.fields(_Grooves)) |groove_field| {
+        for (stdx.meta.fields(_Grooves)) |groove_field| {
             const Groove = groove_field.type;
 
             tree_infos = tree_infos ++ &[_]TreeInfo{.{
@@ -113,7 +98,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 .groove_tree = .objects,
             }};
 
-            for (std.meta.fields(Groove.IndexTrees)) |tree_field| {
+            for (stdx.meta.fields(Groove.IndexTrees)) |tree_field| {
                 tree_infos = tree_infos ++ &[_]TreeInfo{.{
                     .Tree = tree_field.type,
                     .tree_name = groove_field.name ++ "." ++ tree_field.name,
@@ -144,19 +129,14 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
     };
 
     const _TreeID = comptime tree_id: {
-        var fields: [_tree_infos.len]std.builtin.Type.EnumField = undefined;
+        var fields: [_tree_infos.len]stdx.meta.EnumField = undefined;
         for (_tree_infos, 0..) |tree_info, i| {
             fields[i] = .{
                 .name = @ptrCast(tree_info.tree_name),
                 .value = tree_info.tree_id,
             };
         }
-        break :tree_id @Type(.{ .@"enum" = .{
-            .tag_type = u16,
-            .fields = &fields,
-            .decls = &.{},
-            .is_exhaustive = true,
-        } });
+        break :tree_id stdx.meta.EnumType(u16, .exhaustive, &fields);
     };
 
     comptime {
@@ -279,7 +259,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             errdefer forest.manifest_log.deinit(allocator);
 
             var grooves_initialized: usize = 0;
-            errdefer inline for (std.meta.fields(Grooves), 0..) |field, field_index| {
+            errdefer inline for (stdx.meta.fields(Grooves), 0..) |field, field_index| {
                 if (grooves_initialized >= field_index + 1) {
                     const Groove = field.type;
                     const groove: *Groove = &@field(forest.grooves, field.name);
@@ -305,7 +285,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 try ResourcePool.init(allocator, grid, options.compaction_block_count);
             errdefer forest.resource_pool.deinit(allocator, grid);
 
-            inline for (std.meta.fields(Grooves)) |field| {
+            inline for (stdx.meta.fields(Grooves)) |field| {
                 const Groove = field.type;
                 const groove: *Groove = &@field(forest.grooves, field.name);
                 const groove_options: Groove.Options = @field(grooves_options, field.name);
@@ -324,7 +304,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
         }
 
         pub fn deinit(forest: *Forest, allocator: mem.Allocator) void {
-            inline for (std.meta.fields(Grooves)) |field| {
+            inline for (stdx.meta.fields(Grooves)) |field| {
                 const Groove = field.type;
                 const groove: *Groove = &@field(forest.grooves, field.name);
                 groove.deinit(allocator);
@@ -341,7 +321,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             // Components using the node_pool must release all nodes they acquired upon reset.
             defer assert(forest.node_pool.free.count() == forest.node_pool.free.bit_length);
 
-            inline for (std.meta.fields(Grooves)) |field| {
+            inline for (stdx.meta.fields(Grooves)) |field| {
                 @field(forest.grooves, field.name).reset();
             }
 
@@ -371,7 +351,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
 
             forest.progress = .{ .open = .{ .callback = callback } };
 
-            inline for (std.meta.fields(Grooves)) |field| {
+            inline for (stdx.meta.fields(Grooves)) |field| {
                 @field(forest.grooves, field.name).open_commence(&forest.manifest_log);
             }
 
@@ -404,7 +384,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             assert(forest.progress.? == .open);
             forest.verify_tables_recovered();
 
-            inline for (std.meta.fields(Grooves)) |field| {
+            inline for (stdx.meta.fields(Grooves)) |field| {
                 @field(forest.grooves, field.name).open_complete();
             }
             forest.verify_table_extents();
@@ -737,7 +717,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             }
 
             // Groove sync compaction - must be done after all async work for the beat completes.
-            inline for (std.meta.fields(Grooves)) |field| {
+            inline for (stdx.meta.fields(Grooves)) |field| {
                 @field(forest.grooves, field.name).compact(op);
             }
 
@@ -779,7 +759,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
         }
 
         fn checkpoint_iop_release_callback(ctx: *anyopaque) void {
-            const forest: *Forest = @alignCast(@ptrCast(ctx));
+            const forest: *Forest = @ptrCast(@alignCast(ctx));
             assert(forest.progress.? == .checkpoint);
 
             if (!forest.resource_pool.idle()) return;
@@ -812,7 +792,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 };
             }
 
-            inline for (std.meta.fields(Grooves)) |field| {
+            inline for (stdx.meta.fields(Grooves)) |field| {
                 @field(forest.grooves, field.name).assert_between_bars();
             }
 

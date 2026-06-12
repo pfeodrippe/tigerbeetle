@@ -92,7 +92,7 @@ fn typescript_type(comptime Type: type) []const u8 {
         ),
         .@"struct" => |info| switch (info.layout) {
             .@"packed" => return comptime typescript_type(
-                std.meta.Int(.unsigned, @bitSizeOf(Type)),
+                @Int(.unsigned, @bitSizeOf(Type)),
             ),
             else => return comptime get_mapped_type_name(Type) orelse @compileError(
                 "Type " ++ @typeName(Type) ++ " not mapped.",
@@ -223,7 +223,7 @@ fn emit_docs(
             \\{[indent]s} */
             \\
         , .{
-            .indent = "  " ** indent,
+            .indent = vsr.stdx.repeat("  ", indent),
             .name = field orelse mapping.name,
             .docs_link = docs_link,
             .field = field orelse "",

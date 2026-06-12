@@ -259,12 +259,7 @@ pub fn ResourcePoolType(comptime Grid: type) type {
             pool.blocks.push(block);
         }
 
-        pub fn format(
-            self: @This(),
-            comptime _: []const u8,
-            _: std.fmt.FormatOptions,
-            writer: anytype,
-        ) !void {
+        pub fn format(self: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
             return writer.print("ResourcePool{{ " ++
                 ".reads = {}/{},  .writes = {}/{}, .cpus = {}/{}, .blocks = {}/{} }}", .{
                 self.reads.available(),  self.reads.total(),
@@ -315,12 +310,7 @@ pub fn CompactionType(comptime Tree: type, comptime Storage: type) type {
             value_block: u32 = 0,
             value: u32 = 0,
 
-            pub fn format(
-                self: @This(),
-                comptime _: []const u8,
-                _: std.fmt.FormatOptions,
-                writer: anytype,
-            ) !void {
+            pub fn format(self: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
                 return writer.print("Position{{ .index_block = {}, " ++
                     ".value_block = {}, .value = {} }}", .{
                     self.index_block,
@@ -928,7 +918,7 @@ pub fn CompactionType(comptime Tree: type, comptime Storage: type) type {
         }
 
         pub fn compaction_iop_release_callback(ctx: *anyopaque) void {
-            const compaction: *Compaction = @alignCast(@ptrCast(ctx));
+            const compaction: *Compaction = @ptrCast(@alignCast(ctx));
             compaction.compaction_dispatch();
         }
 

@@ -52,7 +52,11 @@ test "benchmark: binary search" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
-    const blob = try arena.allocator().alignedAlloc(u8, 64, blob_size);
+    const blob = try arena.allocator().alignedAlloc(
+        u8,
+        std.mem.Alignment.fromByteUnits(64),
+        blob_size,
+    );
     var checksum: u64 = 0;
 
     inline for (kv_types) |kv| {

@@ -40,19 +40,18 @@ pub fn command_inspect(
     tracer: *Tracer,
     cli_args: *const cli.Command.Inspect,
 ) !void {
-    var stdout_buffer = std.io.bufferedWriter(std.io.getStdOut().writer());
-    var stdout_writer = stdout_buffer.writer();
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(std.Options.debug_io, &stdout_buffer);
 
-    const inspect_result = run_inspect(allocator, io, tracer, cli_args, stdout_writer.any());
-    const flush_result = stdout_buffer.flush();
+    const inspect_result = run_inspect(allocator, io, tracer, cli_args, &stdout_writer.interface);
+    const flush_result = stdout_writer.flush();
 
-    inline for (.{ inspect_result, flush_result }) |result| {
-        result catch |err| switch (err) {
-            // Ignore BrokenPipe so that e.g. "tigerbeetle inspect ... | head -n12" succeeds.
-            error.BrokenPipe => {},
-            else => return err,
-        };
-    }
+    try inspect_result;
+    flush_result catch |err| switch (err) {
+        // Ignore BrokenPipe so that e.g. "tigerbeetle inspect ... | head -n12" succeeds.
+        error.BrokenPipe => {},
+        else => return err,
+    };
 }
 
 fn run_inspect(
@@ -60,7 +59,7 @@ fn run_inspect(
     io: *IO,
     tracer: *Tracer,
     cli_args: *const cli.Command.Inspect,
-    stdout: std.io.AnyWriter,
+    stdout: *std.Io.Writer,
 ) !void {
     const data_file = switch (cli_args.*) {
         .constants => return try inspect_constants(stdout),
@@ -151,7 +150,7 @@ fn run_inspect(
     }
 }
 
-fn inspect_constants(output: std.io.AnyWriter) !void {
+fn inspect_constants(output: *std.Io.Writer) !void {
     try output.print("VSR:\n", .{});
     try print_header(output, 0, "prepare_queue");
     try output.print("{}\n", .{constants.pipeline_prepare_queue_max});
@@ -245,7 +244,7 @@ fn inspect_constants(output: std.io.AnyWriter) !void {
     try output.print("Memory (approximate):\n", .{});
     const datafile_size = constants.storage_size_limit_max;
     try print_header(output, 0, "datafile (on disk)");
-    try output.print("{}\n", .{
+    try output.print("{f}\n", .{
         stdx.fmt_int_size_bin_exact(datafile_size),
     });
 
@@ -268,28 +267,28 @@ fn inspect_constants(output: std.io.AnyWriter) !void {
             std.hash_map.default_max_load_percentage,
         );
 
-        try output.print("{:.2}\n", .{std.fmt.fmtIntSizeBin(
+        try output.print("{Bi:.2}\n", .{
             // HashMap of block addresses plus two bitsets with bit per block.
             hashmap_entries * @sizeOf(u64) + 2 * stdx.div_ceil(blocks_count, 8),
-        )});
+        });
     }
 }
 
-fn inspect_metrics(output: std.io.AnyWriter) !void {
+fn inspect_metrics(output: *std.Io.Writer) !void {
     const EventMetricTag = std.meta.Tag(EventMetric);
     const EventTimingTag = std.meta.Tag(EventTiming);
 
-    const stats_per_gauge = std.meta.fields(EventMetricAggregate).len - 1; // -1 to ignore `event`.
-    const stats_per_timing = std.meta.fields(std.meta.FieldType(EventTimingAggregate, .values)).len;
+    const stats_per_gauge = stdx.meta.fields(EventMetricAggregate).len - 1; // -1 to ignore `event`.
+    const stats_per_timing = stdx.meta.fields(@FieldType(EventTimingAggregate, "values")).len;
     var stats_total: usize = 0;
 
     log.info("Format: [metric type]: [metric name]([metric tags])=[metric cardinality]", .{});
 
-    inline for (std.meta.fields(EventMetric)) |field| {
+    inline for (stdx.meta.fields(EventMetric)) |field| {
         const metric_tag = std.meta.stringToEnum(EventMetricTag, field.name).?;
         try output.print("gauge: {s}(", .{field.name});
         if (field.type != void) {
-            inline for (std.meta.fields(field.type), 0..) |data_field, i| {
+            inline for (stdx.meta.fields(field.type), 0..) |data_field, i| {
                 if (i != 0) try output.print(", ");
                 try output.print("{s}", .{data_field.name});
             }
@@ -298,11 +297,11 @@ fn inspect_metrics(output: std.io.AnyWriter) !void {
         try output.print(")={}\n", .{metric_stats});
         stats_total += metric_stats;
     }
-    inline for (std.meta.fields(EventTiming)) |field| {
+    inline for (stdx.meta.fields(EventTiming)) |field| {
         const timing_tag = std.meta.stringToEnum(EventTimingTag, field.name).?;
         try output.print("timing: {s}(", .{field.name});
         if (field.type != void) {
-            inline for (std.meta.fields(field.type), 0..) |data_field, i| {
+            inline for (stdx.meta.fields(field.type), 0..) |data_field, i| {
                 if (i != 0) try output.print(", ");
                 try output.print("{s}", .{data_field.name});
             }
@@ -321,7 +320,7 @@ fn inspect_metrics(output: std.io.AnyWriter) !void {
 // Example output:
 // checkpoint          op                  trigger             prepare_max         checkpoint_next
 // 624894719      +20  624894739      +12  624894751      +16  624894767      +912 624895679
-fn inspect_op(output: std.io.AnyWriter, op: u64) !void {
+fn inspect_op(output: *std.Io.Writer, op: u64) !void {
     const checkpoint = if (op < constants.vsr_checkpoint_ops - 1) 0 else checkpoint: {
         // op = q * checkpoints_ops - 1 + r
         const r = (op + 1) % constants.vsr_checkpoint_ops;
@@ -347,8 +346,8 @@ fn inspect_op(output: std.io.AnyWriter, op: u64) !void {
         }
     };
 
-    var entries: [std.meta.fields(Points).len]Entry = undefined;
-    inline for (std.meta.fields(Points), 0..) |field, index| {
+    var entries: [stdx.meta.fields(Points).len]Entry = undefined;
+    inline for (stdx.meta.fields(Points), 0..) |field, index| {
         entries[index] = .{
             .label = field.name,
             .op = @field(points, field.name),
@@ -367,28 +366,34 @@ fn inspect_op(output: std.io.AnyWriter, op: u64) !void {
     try output.print("\n", .{});
 }
 
-fn print_header(output: std.io.AnyWriter, comptime level: u8, comptime header: []const u8) !void {
-    const width_total = 32;
-    const pad_left = "  " ** level;
-    const pad_right = " " ** (width_total -| level * 2 -| header.len);
-    try output.print(pad_left ++ header ++ pad_right, .{});
+fn spaces(comptime count: usize) *const [count]u8 {
+    return &@as([count]u8, @splat(' '));
 }
 
-fn print_size_count(output: std.io.AnyWriter, comptime size: u64, comptime count: u64) !void {
+fn print_header(output: *std.Io.Writer, comptime level: u8, comptime header: []const u8) !void {
+    const width_total = 32;
+    const pad_left = spaces(level * 2);
+    const pad_right = spaces(width_total -| level * 2 -| header.len);
+    try output.writeAll(pad_left);
+    try output.writeAll(header);
+    try output.writeAll(pad_right);
+}
+
+fn print_size_count(output: *std.Io.Writer, comptime size: u64, comptime count: u64) !void {
     if (count == 1) {
-        try output.print("{}\n", .{stdx.fmt_int_size_bin_exact(size)});
+        try output.print("{f}\n", .{stdx.fmt_int_size_bin_exact(size)});
     } else {
         const size_formatted = comptime if (size < 1024)
             std.fmt.comptimePrint("{}B", .{size})
         else
-            std.fmt.comptimePrint("{}", .{stdx.fmt_int_size_bin_exact(size)});
-        try output.print("{s<8} x{}\n", .{ size_formatted, count });
+            std.fmt.comptimePrint("{f}", .{stdx.fmt_int_size_bin_exact(size)});
+        try output.print("{s:<8} x{}\n", .{ size_formatted, count });
     }
 }
 
-fn print_objects(output: std.io.AnyWriter) !void {
+fn print_objects(output: *std.Io.Writer) !void {
     const Grooves = StateMachine.Forest.Grooves;
-    inline for (std.meta.fields(Grooves)) |groove_field| {
+    inline for (stdx.meta.fields(Grooves)) |groove_field| {
         const Groove = groove_field.type;
         const ObjectTree = Groove.ObjectTree;
 
@@ -396,7 +401,7 @@ fn print_objects(output: std.io.AnyWriter) !void {
         comptime var size_total: usize = 0;
         size_total += object_size;
         comptime {
-            for (std.meta.fields(Groove.IndexTrees)) |index_field| {
+            for (stdx.meta.fields(Groove.IndexTrees)) |index_field| {
                 const IndexTree = index_field.type;
                 const index_size = @sizeOf(IndexTree.Table.Value);
                 size_total += index_size;
@@ -409,7 +414,7 @@ fn print_objects(output: std.io.AnyWriter) !void {
         try print_header(output, 1, "object");
         try print_size_count(output, object_size, ObjectTree.Table.value_count_max);
 
-        inline for (std.meta.fields(Groove.IndexTrees)) |index_field| {
+        inline for (stdx.meta.fields(Groove.IndexTrees)) |index_field| {
             const IndexTree = index_field.type;
             const index_size = @sizeOf(IndexTree.Table.Value);
 
@@ -459,7 +464,7 @@ const Inspector = struct {
 
         inspector.superblock_buffer = try allocator.alignedAlloc(
             u8,
-            constants.sector_size,
+            std.mem.Alignment.fromByteUnits(constants.sector_size),
             vsr.superblock.superblock_zone_size,
         );
         errdefer allocator.free(inspector.superblock_buffer);
@@ -511,7 +516,7 @@ const Inspector = struct {
         inspector.busy = false;
     }
 
-    fn inspect_superblock(inspector: *Inspector, output: std.io.AnyWriter) !void {
+    fn inspect_superblock(inspector: *Inspector, output: *std.Io.Writer) !void {
         log.info("In the left column of the output, \"|\" denotes which copies have a " ++
             "particular value.", .{});
         log.info("\"||||\" means that all four superblock copies are in agreement.", .{});
@@ -523,7 +528,7 @@ const Inspector = struct {
             header_valid[i] = header.valid_checksum();
         }
 
-        inline for (std.meta.fields(SuperBlockHeader)) |field| {
+        inline for (stdx.meta.fields(SuperBlockHeader)) |field| {
             var group_by = GroupByType(constants.superblock_copies){};
             for (inspector.superblock_headers) |header| {
                 group_by.compare(std.mem.asBytes(&@field(header, field.name)));
@@ -535,19 +540,19 @@ const Inspector = struct {
                 const header = &inspector.superblock_headers[header_index];
                 const header_mark: u8 = if (header_valid[header_index]) '|' else 'X';
 
-                var label_stream = std.io.fixedBufferStream(&label_buffer);
+                var label_stream = std.Io.Writer.fixed(&label_buffer);
                 for (0..constants.superblock_copies) |j| {
-                    try label_stream.writer().writeByte(if (group.is_set(j)) header_mark else '_');
+                    try label_stream.writeByte(if (group.is_set(j)) header_mark else '_');
                 }
-                try label_stream.writer().writeByte(' ');
-                try label_stream.writer().writeAll(field.name);
+                try label_stream.writeByte(' ');
+                try label_stream.writeAll(field.name);
 
-                try print_struct(output, label_stream.getWritten(), &@field(header.*, field.name));
+                try print_struct(output, label_stream.buffered(), &@field(header.*, field.name));
             }
         }
     }
 
-    fn inspect_wal(inspector: *Inspector, output: std.io.AnyWriter) !void {
+    fn inspect_wal(inspector: *Inspector, output: *std.Io.Writer) !void {
         log.info("In the left column of the output, \"|\" denotes which set of headers has " ++
             "each value.", .{});
         log.info("\"||\" denotes that the prepare and the redundant header match.", .{});
@@ -556,14 +561,14 @@ const Inspector = struct {
 
         const headers_buffer = try inspector.allocator.alignedAlloc(
             u8,
-            constants.sector_size,
+            std.mem.Alignment.fromByteUnits(constants.sector_size),
             constants.journal_size_headers,
         );
         defer inspector.allocator.free(headers_buffer);
 
         const prepare_buffer = try inspector.allocator.alignedAlloc(
             u8,
-            constants.sector_size,
+            std.mem.Alignment.fromByteUnits(constants.sector_size),
             constants.message_size_max,
         );
         defer inspector.allocator.free(prepare_buffer);
@@ -598,12 +603,12 @@ const Inspector = struct {
                     (!group.is_set(1) or wal_prepare_body_valid);
 
                 const mark: u8 = if (header_valid) '|' else 'X';
-                var label_stream = std.io.fixedBufferStream(&label_buffer);
-                try label_stream.writer().writeByte(if (group.is_set(0)) mark else '_');
-                try label_stream.writer().writeByte(if (group.is_set(1)) mark else '_');
-                try label_stream.writer().print("{:_>4}: ", .{slot});
+                var label_stream = std.Io.Writer.fixed(&label_buffer);
+                try label_stream.writeByte(if (group.is_set(0)) mark else '_');
+                try label_stream.writeByte(if (group.is_set(1)) mark else '_');
+                try label_stream.print("{:_>4}: ", .{slot});
 
-                try print_struct(output, label_stream.getWritten(), &.{
+                try print_struct(output, label_stream.buffered(), &.{
                     "checksum=",  header.checksum,
                     "release=",   header.release,
                     "view=",      header.view,
@@ -615,19 +620,19 @@ const Inspector = struct {
         }
     }
 
-    fn inspect_wal_slot(inspector: *Inspector, output: std.io.AnyWriter, slot: usize) !void {
+    fn inspect_wal_slot(inspector: *Inspector, output: *std.Io.Writer, slot: usize) !void {
         assert(slot <= constants.journal_slot_count);
 
         const headers_buffer = try inspector.allocator.alignedAlloc(
             u8,
-            constants.sector_size,
+            std.mem.Alignment.fromByteUnits(constants.sector_size),
             constants.journal_size_headers,
         );
         defer inspector.allocator.free(headers_buffer);
 
         const prepare_buffer = try inspector.allocator.alignedAlloc(
             u8,
-            constants.sector_size,
+            std.mem.Alignment.fromByteUnits(constants.sector_size),
             constants.message_size_max,
         );
         defer inspector.allocator.free(prepare_buffer);
@@ -668,14 +673,17 @@ const Inspector = struct {
 
     fn inspect_replies(
         inspector: *Inspector,
-        output: std.io.AnyWriter,
+        output: *std.Io.Writer,
         superblock_copy: ?u8,
     ) !void {
         const entries_block = try allocate_block(inspector.allocator);
-        defer inspector.allocator.free(entries_block);
+        defer free_block(inspector.allocator, entries_block);
 
-        const reply_sector =
-            try inspector.allocator.alignedAlloc(u8, constants.sector_size, constants.sector_size);
+        const reply_sector = try inspector.allocator.alignedAlloc(
+            u8,
+            std.mem.Alignment.fromByteUnits(constants.sector_size),
+            constants.sector_size,
+        );
         defer inspector.allocator.free(reply_sector);
 
         const entries =
@@ -704,30 +712,30 @@ const Inspector = struct {
                 const header = copies[header_index];
                 const header_mark: u8 = if (header.valid_checksum()) '|' else 'X';
 
-                var label_stream = std.io.fixedBufferStream(&label_buffer);
-                try label_stream.writer().print("{:_>2}: ", .{slot});
-                try label_stream.writer().writeByte(if (group.is_set(0)) header_mark else '_');
-                try label_stream.writer().writeByte(if (group.is_set(1)) header_mark else '_');
-                try label_stream.writer().writeAll(" header");
-                try print_struct(output, label_stream.getWritten(), header);
+                var label_stream = std.Io.Writer.fixed(&label_buffer);
+                try label_stream.print("{:_>2}: ", .{slot});
+                try label_stream.writeByte(if (group.is_set(0)) header_mark else '_');
+                try label_stream.writeByte(if (group.is_set(1)) header_mark else '_');
+                try label_stream.writeAll(" header");
+                try print_struct(output, label_stream.buffered(), header);
             }
         }
     }
 
     fn inspect_replies_slot(
         inspector: *Inspector,
-        output: std.io.AnyWriter,
+        output: *std.Io.Writer,
         superblock_copy: ?u8,
         slot: usize,
     ) !void {
         assert(slot < constants.clients_max);
 
         const block = try allocate_block(inspector.allocator);
-        defer inspector.allocator.free(block);
+        defer free_block(inspector.allocator, block);
 
         const reply = try inspector.allocator.alignedAlloc(
             u8,
-            constants.sector_size,
+            std.mem.Alignment.fromByteUnits(constants.sector_size),
             constants.message_size_max,
         );
         defer inspector.allocator.free(reply);
@@ -764,7 +772,7 @@ const Inspector = struct {
         try print_reply_body(output, reply);
     }
 
-    fn inspect_grid(inspector: *Inspector, output: std.io.AnyWriter, superblock_copy: ?u8) !void {
+    fn inspect_grid(inspector: *Inspector, output: *std.Io.Writer, superblock_copy: ?u8) !void {
         const superblock = try inspector.read_superblock(superblock_copy);
 
         const free_set_blocks_acquired_size =
@@ -775,7 +783,7 @@ const Inspector = struct {
         const free_set_blocks_acquired_buffer =
             try inspector.allocator.alignedAlloc(
                 u8,
-                @alignOf(vsr.FreeSet.Word),
+                std.mem.Alignment.fromByteUnits(@alignOf(vsr.FreeSet.Word)),
                 free_set_blocks_acquired_size,
             );
         defer inspector.allocator.free(free_set_blocks_acquired_buffer);
@@ -788,12 +796,12 @@ const Inspector = struct {
                     constants.block_size - @sizeOf(vsr.Header),
                 ),
             );
-        defer free_set_blocks_acquired_addresses.deinit();
+        defer free_set_blocks_acquired_addresses.deinit(inspector.allocator);
 
         const free_set_blocks_released_buffer =
             try inspector.allocator.alignedAlloc(
                 u8,
-                @alignOf(vsr.FreeSet.Word),
+                std.mem.Alignment.fromByteUnits(@alignOf(vsr.FreeSet.Word)),
                 free_set_blocks_released_size,
             );
         defer inspector.allocator.free(free_set_blocks_released_buffer);
@@ -806,7 +814,7 @@ const Inspector = struct {
                     constants.block_size - @sizeOf(vsr.Header),
                 ),
             );
-        defer free_set_blocks_released_addresses.deinit();
+        defer free_set_blocks_released_addresses.deinit(inspector.allocator);
 
         try inspector.read_free_set_bitset(
             output,
@@ -874,10 +882,10 @@ const Inspector = struct {
             \\free_set.blocks_acquired={}
             \\free_set.blocks_released={}
             \\free_set.highest_address_acquired={?}
-            \\free_set.acquired_size={}
+            \\free_set.acquired_size={Bi}
             \\free_set.acquired_compression_ratio={d:0.4}
             \\free_set.highest_address_released={?}
-            \\free_set.released_size={}
+            \\free_set.released_size={Bi}
             \\free_set.released_compression_ratio={d:0.4}
             \\
         ,
@@ -886,20 +894,18 @@ const Inspector = struct {
                 free_set.count_acquired(),
                 free_set.count_released(),
                 free_set.highest_address_acquired(),
-                std.fmt.fmtIntSizeBin(superblock.vsr_state.checkpoint
-                    .free_set_blocks_acquired_size),
+                superblock.vsr_state.checkpoint.free_set_blocks_acquired_size,
                 free_set_blocks_acquired_compression_ratio,
                 free_set.highest_address_released(),
-                std.fmt.fmtIntSizeBin(superblock.vsr_state.checkpoint
-                    .free_set_blocks_released_size),
+                superblock.vsr_state.checkpoint.free_set_blocks_released_size,
                 free_set_blocks_released_compression_ratio,
             },
         );
     }
 
-    fn inspect_grid_block(inspector: *Inspector, output: std.io.AnyWriter, address: u64) !void {
+    fn inspect_grid_block(inspector: *Inspector, output: *std.Io.Writer, address: u64) !void {
         const block = try allocate_block(inspector.allocator);
-        defer inspector.allocator.free(block);
+        defer free_block(inspector.allocator, block);
 
         try inspector.read_block(block, address, null);
 
@@ -912,13 +918,13 @@ const Inspector = struct {
 
     fn inspect_manifest(
         inspector: *Inspector,
-        output: std.io.AnyWriter,
+        output: *std.Io.Writer,
         superblock_copy: ?u8,
     ) !void {
         const superblock = try inspector.read_superblock(superblock_copy);
 
         const block = try allocate_block(inspector.allocator);
-        defer inspector.allocator.free(block);
+        defer free_block(inspector.allocator, block);
 
         var manifest_block_address = superblock.vsr_state.checkpoint.manifest_newest_address;
         var manifest_block_checksum = superblock.vsr_state.checkpoint.manifest_newest_checksum;
@@ -940,7 +946,7 @@ const Inspector = struct {
             var entry_counts = std.enums.EnumArray(
                 schema.ManifestNode.Event,
                 [constants.lsm_levels]usize,
-            ).initDefault([_]usize{0} ** constants.lsm_levels, .{});
+            ).initDefault(@as([constants.lsm_levels]usize, @splat(0)), .{});
 
             const manifest_node = schema.ManifestNode.from(block);
             for (manifest_node.tables_const(block)) |*table_info| {
@@ -970,7 +976,7 @@ const Inspector = struct {
 
     fn inspect_tables(
         inspector: *Inspector,
-        output: std.io.AnyWriter,
+        output: *std.Io.Writer,
         superblock_copy: ?u8,
         filter: struct { tree_id: u16, level: ?u6 },
     ) !void {
@@ -979,7 +985,7 @@ const Inspector = struct {
         defer tables_latest.deinit();
 
         const block = try allocate_block(inspector.allocator);
-        defer inspector.allocator.free(block);
+        defer free_block(inspector.allocator, block);
 
         // Construct a set of all active tables.
         const superblock = try inspector.read_superblock(superblock_copy);
@@ -1007,9 +1013,8 @@ const Inspector = struct {
             manifest_block_checksum = manifest_metadata.previous_manifest_block_checksum;
         }
 
-        var tables_filtered =
-            std.ArrayList(schema.ManifestNode.TableInfo).init(inspector.allocator);
-        defer tables_filtered.deinit();
+        var tables_filtered = std.ArrayList(schema.ManifestNode.TableInfo).empty;
+        defer tables_filtered.deinit(inspector.allocator);
 
         // Construct a list of only the tables matching the `filter`.
         var tables_latest_iterator = tables_latest.iterator();
@@ -1019,7 +1024,7 @@ const Inspector = struct {
             if (filter.level) |level| {
                 if (table.label.level != level) continue;
             }
-            try tables_filtered.append(table);
+            try tables_filtered.append(inspector.allocator, table);
         }
 
         // Order the tables in a predictable way, since the manifest log can shuffle them around.
@@ -1134,14 +1139,14 @@ const Inspector = struct {
 
     fn read_free_set_bitset(
         inspector: *Inspector,
-        output: std.io.AnyWriter,
+        output: *std.Io.Writer,
         superblock: *const SuperBlockHeader,
         bitset: vsr.FreeSet.BitsetKind,
         free_set_buffer: []align(@alignOf(vsr.FreeSet.Word)) u8,
         free_set_addresses: *std.ArrayList(u64),
     ) !void {
         const block = try allocate_block(inspector.allocator);
-        defer inspector.allocator.free(block);
+        defer free_block(inspector.allocator, block);
 
         const free_set_reference = superblock.free_set_reference(bitset);
         const free_set_size = free_set_reference.trailer_size;
@@ -1156,7 +1161,7 @@ const Inspector = struct {
             inspector.allocator,
             free_set_block_count,
         );
-        defer free_set_block_references.deinit();
+        defer free_set_block_references.deinit(inspector.allocator);
 
         if (free_set_size > 0) {
             // Read free set from the grid by manually following the linked list of blocks.
@@ -1245,7 +1250,7 @@ const Inspector = struct {
 };
 
 fn print_struct(
-    output: std.io.AnyWriter,
+    output: *std.Io.Writer,
     label: []const u8,
     value: anytype,
 ) !void {
@@ -1258,7 +1263,7 @@ fn print_struct(
         if (@typeInfo(Type).@"struct".is_tuple) {
             try output.writeAll(label);
             // Print tuples as a single line.
-            inline for (std.meta.fields(Type), 0..) |field, i| {
+            inline for (stdx.meta.fields(Type), 0..) |field, i| {
                 if (@typeInfo(field.type) == .pointer and
                     @typeInfo(@typeInfo(field.type).pointer.child) == .array)
                 {
@@ -1266,17 +1271,17 @@ fn print_struct(
                     try output.writeAll(@field(value, field.name));
                 } else {
                     try print_value(output, @field(value, field.name));
-                    if (i != std.meta.fields(Type).len) try output.writeAll(" ");
+                    if (i != stdx.meta.fields(Type).len) try output.writeAll(" ");
                 }
             }
             try output.writeAll("\n");
             return;
         } else {
             var label_buffer: [1024]u8 = undefined;
-            inline for (std.meta.fields(Type)) |field| {
-                var label_stream = std.io.fixedBufferStream(&label_buffer);
-                try label_stream.writer().print("{s}.{s}", .{ label, field.name });
-                try print_struct(output, label_stream.getWritten(), &@field(value, field.name));
+            inline for (stdx.meta.fields(Type)) |field| {
+                var label_stream = std.Io.Writer.fixed(&label_buffer);
+                try label_stream.print("{s}.{s}", .{ label, field.name });
+                try print_struct(output, label_stream.buffered(), &@field(value, field.name));
             }
             return;
         }
@@ -1298,9 +1303,9 @@ fn print_struct(
         } else {
             var label_buffer: [1024]u8 = undefined;
             for (value[0..], 0..) |*item, index| {
-                var label_stream = std.io.fixedBufferStream(&label_buffer);
-                try label_stream.writer().print("{s}[{}]", .{ label, index });
-                try print_struct(output, label_stream.getWritten(), item);
+                var label_stream = std.Io.Writer.fixed(&label_buffer);
+                try label_stream.print("{s}[{}]", .{ label, index });
+                try print_struct(output, label_stream.buffered(), item);
             }
             return;
         }
@@ -1311,7 +1316,7 @@ fn print_struct(
     try output.writeAll("\n");
 }
 
-fn print_value(output: std.io.AnyWriter, value: anytype) !void {
+fn print_value(output: *std.Io.Writer, value: anytype) !void {
     const Type = @TypeOf(value);
     if (@typeInfo(Type) == .@"struct") assert(std.meta.hasFn(Type, "format"));
     assert(@typeInfo(Type) != .array);
@@ -1336,7 +1341,7 @@ fn print_value(output: std.io.AnyWriter, value: anytype) !void {
     try output.print("{}", .{value});
 }
 
-fn print_block(writer: std.io.AnyWriter, block: BlockPtrConst) !void {
+fn print_block(writer: *std.Io.Writer, block: BlockPtrConst) !void {
     const header = schema.header_from_block(block);
     try print_struct(writer, "header", header);
 
@@ -1361,7 +1366,7 @@ fn print_block(writer: std.io.AnyWriter, block: BlockPtrConst) !void {
             for (manifest_node.tables_const(block), 0..) |*table_info, entry_index| {
                 try writer.print(
                     "entry[{:_>4}]: {s} level={} address={} checksum={x:0>32} " ++
-                        "tree_id={s} key={:0>64}..{:0>64} snapshot={}..{} values={}\n",
+                        "tree_id={s} key={f}..{f} snapshot={}..{} values={}\n",
                     .{
                         entry_index,
                         @tagName(table_info.label.event),
@@ -1369,8 +1374,8 @@ fn print_block(writer: std.io.AnyWriter, block: BlockPtrConst) !void {
                         table_info.address,
                         table_info.checksum,
                         format_tree_id(table_info.tree_id),
-                        std.fmt.fmtSliceHexLower(&table_info.key_min),
-                        std.fmt.fmtSliceHexLower(&table_info.key_max),
+                        stdx.fmt_slice_hex_lower(&table_info.key_min),
+                        stdx.fmt_slice_hex_lower(&table_info.key_max),
                         table_info.snapshot_min,
                         table_info.snapshot_max,
                         table_info.value_count,
@@ -1403,17 +1408,17 @@ fn print_block(writer: std.io.AnyWriter, block: BlockPtrConst) !void {
                         std.mem.bytesAsSlice(tree_info.Tree.Table.Value, value_bytes),
                         0..,
                     ) |*value, i| {
-                        var label_stream = std.io.fixedBufferStream(&label_buffer);
-                        try label_stream.writer().print("{s}[{}]", .{ tree_info.tree_name, i });
+                        var label_stream = std.Io.Writer.fixed(&label_buffer);
+                        try label_stream.print("{s}[{}]", .{ tree_info.tree_name, i });
                         if (comptime is_composite_key(tree_info.Tree.Table.Value)) {
-                            try label_stream.writer().writeAll(": ");
+                            try label_stream.writeAll(": ");
                             try print_struct(
                                 writer,
-                                label_stream.getWritten(),
+                                label_stream.buffered(),
                                 &.{ value.field, value.timestamp },
                             );
                         } else {
-                            try print_struct(writer, label_stream.getWritten(), value);
+                            try print_struct(writer, label_stream.buffered(), value);
                         }
                     }
                     break;
@@ -1493,7 +1498,7 @@ const operation_schemas = list: {
     break :list list;
 };
 
-fn print_prepare_body(output: std.io.AnyWriter, prepare: []const u8) !void {
+fn print_prepare_body(output: *std.Io.Writer, prepare: []const u8) !void {
     const header = std.mem.bytesAsValue(vsr.Header.Prepare, prepare[0..@sizeOf(vsr.Header)]);
     inline for (operation_schemas) |operation_schema| {
         if (operation_schema.operation == header.operation) {
@@ -1507,9 +1512,9 @@ fn print_prepare_body(output: std.io.AnyWriter, prepare: []const u8) !void {
                     operation_schema.Event,
                     prepare[@sizeOf(vsr.Header)..header.size],
                 ), 0..) |*event, i| {
-                    var label_stream = std.io.fixedBufferStream(&label_buffer);
-                    try label_stream.writer().print("events[{}]: ", .{i});
-                    try print_struct(output, label_stream.getWritten(), event);
+                    var label_stream = std.Io.Writer.fixed(&label_buffer);
+                    try label_stream.print("events[{}]: ", .{i});
+                    try print_struct(output, label_stream.buffered(), event);
                 }
             } else {
                 try output.print(
@@ -1524,7 +1529,7 @@ fn print_prepare_body(output: std.io.AnyWriter, prepare: []const u8) !void {
     }
 }
 
-fn print_reply_body(output: std.io.AnyWriter, reply: []const u8) !void {
+fn print_reply_body(output: *std.Io.Writer, reply: []const u8) !void {
     const header = std.mem.bytesAsValue(vsr.Header.Reply, reply[0..@sizeOf(vsr.Header)]);
     inline for (operation_schemas) |operation_schema| {
         if (operation_schema.operation == header.operation) {
@@ -1538,9 +1543,9 @@ fn print_reply_body(output: std.io.AnyWriter, reply: []const u8) !void {
                     operation_schema.Result,
                     reply[@sizeOf(vsr.Header)..header.size],
                 ), 0..) |*result, i| {
-                    var label_stream = std.io.fixedBufferStream(&label_buffer);
-                    try label_stream.writer().print("results[{}]: ", .{i});
-                    try print_struct(output, label_stream.getWritten(), result);
+                    var label_stream = std.Io.Writer.fixed(&label_buffer);
+                    try label_stream.print("results[{}]: ", .{i});
+                    try print_struct(output, label_stream.buffered(), result);
                 }
             } else {
                 try output.print(
@@ -1556,7 +1561,7 @@ fn print_reply_body(output: std.io.AnyWriter, reply: []const u8) !void {
 }
 
 fn print_table_info(
-    output: std.io.AnyWriter,
+    output: *std.Io.Writer,
     comptime tree_info: anytype,
     table: *const schema.ManifestNode.TableInfo,
 ) !void {
@@ -1651,7 +1656,20 @@ fn GroupByType(comptime count_max: usize) type {
 fn allocate_block(
     allocator: std.mem.Allocator,
 ) error{OutOfMemory}!*align(constants.sector_size) [constants.block_size]u8 {
-    const block = try allocator.alignedAlloc(u8, constants.sector_size, constants.block_size);
+    const block = try allocator.alignedAlloc(
+        u8,
+        std.mem.Alignment.fromByteUnits(constants.sector_size),
+        constants.block_size,
+    );
     @memset(block, 0);
     return block[0..constants.block_size];
+}
+
+fn free_block(
+    allocator: std.mem.Allocator,
+    block: *align(constants.sector_size) [constants.block_size]u8,
+) void {
+    const block_slice: []align(constants.sector_size) u8 =
+        @as([*]align(constants.sector_size) u8, @ptrCast(block))[0..constants.block_size];
+    allocator.free(block_slice);
 }

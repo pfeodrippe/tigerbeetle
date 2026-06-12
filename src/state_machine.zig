@@ -165,9 +165,9 @@ pub const AccountEvent = extern struct {
             assert(@alignOf(Former) == @alignOf(AccountEvent));
 
             // Asserting the fields are identical.
-            for (std.meta.fields(Former)) |field_former| {
+            for (stdx.meta.fields(Former)) |field_former| {
                 if (std.mem.eql(u8, field_former.name, "reserved")) continue;
-                const field = std.meta.fields(AccountEvent)[
+                const field = stdx.meta.fields(AccountEvent)[
                     std.meta.fieldIndex(
                         AccountEvent,
                         field_former.name,
@@ -287,12 +287,12 @@ pub fn StateMachineType(comptime Storage: type) type {
             // Indexes based on object fields are already validated by the struct size
             // and alignment requirements. Derived indexes, however, are not part of the
             // struct layout and need this extra sanity check.
-            assert(std.meta.fields(Forest.Grooves).len == 4);
+            assert(stdx.meta.fields(Forest.Grooves).len == 4);
 
             // Accounts:
             {
                 assert(@FieldType(Forest.Grooves, "accounts") == AccountsGroove);
-                assert(std.meta.fields(@TypeOf(AccountsGroove.config.derived)).len == 2);
+                assert(stdx.meta.fields(@TypeOf(AccountsGroove.config.derived)).len == 2);
 
                 const IndexHelperType = AccountsGroove.IndexHelperType;
                 assert(IndexHelperType("imported").Type == void);
@@ -302,7 +302,7 @@ pub fn StateMachineType(comptime Storage: type) type {
             // Transfers:
             {
                 assert(@FieldType(Forest.Grooves, "transfers") == TransfersGroove);
-                assert(std.meta.fields(@TypeOf(TransfersGroove.config.derived)).len == 3);
+                assert(stdx.meta.fields(@TypeOf(TransfersGroove.config.derived)).len == 3);
 
                 const IndexHelperType = TransfersGroove.IndexHelperType;
                 assert(IndexHelperType("expires_at").Type == u64);
@@ -313,13 +313,13 @@ pub fn StateMachineType(comptime Storage: type) type {
             // TransfersPending:
             {
                 assert(@FieldType(Forest.Grooves, "transfers_pending") == TransfersPendingGroove);
-                assert(std.meta.fields(@TypeOf(TransfersPendingGroove.config.derived)).len == 0);
+                assert(stdx.meta.fields(@TypeOf(TransfersPendingGroove.config.derived)).len == 0);
             }
 
             // AccountEvents:
             {
                 assert(@FieldType(Forest.Grooves, "account_events") == AccountEventsGroove);
-                assert(std.meta.fields(@TypeOf(AccountEventsGroove.config.derived)).len == 6);
+                assert(stdx.meta.fields(@TypeOf(AccountEventsGroove.config.derived)).len == 6);
 
                 const IndexHelperType = AccountEventsGroove.IndexHelperType;
                 assert(IndexHelperType("account_timestamp").Type == u64);
@@ -924,7 +924,7 @@ pub fn StateMachineType(comptime Storage: type) type {
                 };
             self.scan_lookup_buffer = try allocator.alignedAlloc(
                 u8,
-                constants.cache_line_size,
+                std.mem.Alignment.fromByteUnits(constants.cache_line_size),
                 scan_lookup_buffer_size,
             );
             errdefer allocator.free(self.scan_lookup_buffer);
@@ -2099,7 +2099,7 @@ pub fn StateMachineType(comptime Storage: type) type {
             inline for (indexes) |index| {
                 if (@field(filter, @tagName(index)) != 0) {
                     scan_conditions.push(groove.scan_builder.scan_prefix(
-                        std.enums.nameCast(std.meta.FieldEnum(Groove.IndexTrees), index),
+                        stdx.meta.name_cast(std.meta.FieldEnum(Groove.IndexTrees), index),
                         self.forest.scan_buffer_pool.acquire_assume_capacity(),
                         self.prefetch_snapshot.?,
                         @field(filter, @tagName(index)),

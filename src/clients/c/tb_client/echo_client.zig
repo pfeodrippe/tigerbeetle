@@ -223,9 +223,9 @@ pub const EchoOperation = enum(u8) {
         const operation_type_info = @typeInfo(Operation).@"enum";
         const echo_type_info = @typeInfo(EchoOperation).@"enum";
         assert(echo_type_info.tag_type == operation_type_info.tag_type);
-        assert(echo_type_info.is_exhaustive);
-        assert(echo_type_info.fields.len <= operation_type_info.fields.len);
-        for (echo_type_info.fields) |field| {
+        assert(echo_type_info.mode == .exhaustive);
+        assert(stdx.meta.fields(EchoOperation).len <= stdx.meta.fields(Operation).len);
+        for (stdx.meta.fields(EchoOperation)) |field| {
             assert(@hasField(Operation, field.name));
 
             const a = @field(Operation, field.name);

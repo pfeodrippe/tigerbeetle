@@ -239,14 +239,9 @@ pub const Header = extern struct {
         };
     }
 
-    pub fn format(
-        self: *const Header,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
+    pub fn format(self: *const Header, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (self.into_any()) {
-            inline else => |header| return try header.format(fmt, options, writer),
+            inline else => |header| return try header.format(writer),
         }
     }
 
@@ -290,10 +285,8 @@ pub const Header = extern struct {
 
             pub fn format(
                 self: *const CommandHeader,
-                comptime _: []const u8,
-                _: std.fmt.FormatOptions,
-                writer: anytype,
-            ) !void {
+                writer: *std.Io.Writer,
+            ) std.Io.Writer.Error!void {
                 return format_header(CommandHeader, self, writer);
             }
         };
@@ -1633,7 +1626,7 @@ fn format_header(T: type, header: *const T, writer: anytype) !void {
     };
 
     try writer.writeAll(simple_type_name ++ "{");
-    inline for (@typeInfo(T).@"struct".fields, 0..) |field, field_index| {
+    inline for (stdx.meta.fields(T), 0..) |field, field_index| {
         comptime assert((field_index == 0) == std.mem.eql(u8, field.name, "checksum"));
         try format_header_field(field.name, field.type, &@field(header, field.name), writer);
     }
@@ -1681,6 +1674,19 @@ fn format_header_field(
         @compileError("unhandled field: " ++ field_name);
     }
 
+    switch (@typeInfo(T)) {
+        .@"struct", .@"union", .@"enum", .@"opaque" => {
+            if (comptime @hasDecl(T, "format")) {
+                return try writer.print("{f}", .{field_value.*});
+            }
+        },
+        else => {},
+    }
+
+    if (comptime @typeInfo(T) == .@"enum") {
+        return try writer.print("{s}.{s}", .{ @typeName(T), @tagName(field_value.*) });
+    }
+
     try writer.print("{any}", .{field_value.*});
 }
 
@@ -1712,12 +1718,12 @@ comptime {
         assert(stdx.no_padding(CommandHeader));
 
         // Verify that the command's header's frame is identical to Header's.
-        for (std.meta.fields(Header)) |header_field| {
+        for (stdx.meta.fields(Header)) |header_field| {
             if (std.mem.eql(u8, header_field.name, "reserved_command")) {
                 assert(std.meta.fieldIndex(CommandHeader, header_field.name) == null);
             } else {
                 const command_field_index = std.meta.fieldIndex(CommandHeader, header_field.name).?;
-                const command_field = std.meta.fields(CommandHeader)[command_field_index];
+                const command_field = stdx.meta.fields(CommandHeader)[command_field_index];
                 assert(command_field.type == header_field.type);
                 assert(command_field.alignment == header_field.alignment);
                 assert(@offsetOf(CommandHeader, command_field.name) ==
@@ -1727,11 +1733,11 @@ comptime {
 
         // Verify that the command's header's re-exports all Header's functions.
         const HeaderFunctions = Header.HeaderFunctionsType(CommandHeader);
-        for (@typeInfo(HeaderFunctions).@"struct".decls) |decl| {
-            assert(@hasDecl(CommandHeader, decl.name));
+        for (std.meta.declarations(HeaderFunctions)) |decl_name| {
+            assert(@hasDecl(CommandHeader, decl_name));
 
-            const a = @field(CommandHeader, decl.name);
-            const b = @field(HeaderFunctions, decl.name);
+            const a = @field(CommandHeader, decl_name);
+            const b = @field(HeaderFunctions, decl_name);
             assert(a == b);
         }
     }
@@ -1764,7 +1770,7 @@ test format_header {
 
     try snap(@src(),
         \\Prepare{ .checksum=00000000000000000123456789abcdef, .checksum_body=0000000000000000fedcba9876543210, .cluster=1, .size=321, .epoch=0, .view=2, .release=0.0.0, .protocol=0, .command=vsr.Command.prepare, .replica=3, .parent=000000000abcdeffedcba00123456789, .request_checksum=00000000000000012345678987654321, .checkpoint_id=00000000000000000000000000000004, .client=5, .op=5, .commit=6, .timestamp=123456789, .request=7, .operation=vsr.Operation.pulse }
-    ).diff_fmt("{}", .{prepare});
+    ).diff_fmt("{f}", .{prepare});
 
     // Check that non-zero padding/reserved fields are printed.
     prepare.checksum_padding = 1;
@@ -1772,5 +1778,5 @@ test format_header {
     prepare.reserved[0] = 3;
     try snap(@src(),
         \\Prepare{ .checksum=00000000000000000123456789abcdef, .checksum_padding=00000000000000000000000000000001, .checksum_body=0000000000000000fedcba9876543210, .cluster=1, .size=321, .epoch=0, .view=2, .release=0.0.0, .protocol=0, .command=vsr.Command.prepare, .replica=3, .reserved_frame={ 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .parent=000000000abcdeffedcba00123456789, .request_checksum=00000000000000012345678987654321, .checkpoint_id=00000000000000000000000000000004, .client=5, .op=5, .commit=6, .timestamp=123456789, .request=7, .operation=vsr.Operation.pulse, .reserved={ 3, 0, 0 } }
-    ).diff_fmt("{}", .{prepare});
+    ).diff_fmt("{f}", .{prepare});
 }

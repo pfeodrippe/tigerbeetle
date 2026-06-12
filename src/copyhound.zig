@@ -199,5 +199,5 @@ test "extract_memcpy_size" {
 pub fn fatal(comptime fmt_string: []const u8, args: anytype) noreturn {
     const stderr = std.io.getStdErr().writer();
     stderr.print("error: " ++ fmt_string ++ "\n", args) catch {};
-    std.posix.exit(1);
+    std.process.exit(1);
 }

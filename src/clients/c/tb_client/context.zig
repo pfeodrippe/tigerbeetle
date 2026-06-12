@@ -160,7 +160,7 @@ pub fn ContextType(
 ) type {
     return struct {
         const Context = @This();
-        const GPA = std.heap.GeneralPurposeAllocator(.{
+        const GPA = std.heap.DebugAllocator(.{
             .thread_safe = true,
         });
 
@@ -211,7 +211,7 @@ pub fn ContextType(
         cluster_id: u128,
         addresses_owned: []const u8,
 
-        addresses: stdx.BoundedArrayType(std.net.Address, constants.replicas_max) = .{},
+        addresses: stdx.BoundedArrayType(stdx.net.Address, constants.replicas_max) = .{},
         io: IO,
         message_pool: MessagePool,
         client: Client,
@@ -1046,77 +1046,20 @@ pub fn ContextType(
     };
 }
 
-/// Implements the `Mutex` API as an `extern` struct, based on `std.Thread.Futex`.
-/// Vendored from `std.Thread.Mutex.FutexImpl`.
+/// Implements the `Mutex` API as an `extern` struct.
 const Locker = extern struct {
-    const Futex = std.Thread.Futex;
-    const unlocked: u32 = 0b00;
-    const locked: u32 = 0b01;
-    const contended: u32 = 0b11; // Must contain the `locked` bit for x86 optimization below.
-
-    state: std.atomic.Value(u32) = std.atomic.Value(u32).init(unlocked),
+    mutex: std.Io.Mutex = .init,
 
     fn lock(self: *Locker) void {
-        if (!self.try_lock()) {
-            self.lock_slow();
-        }
+        self.mutex.lockUncancelable(std.Options.debug_io);
     }
 
     fn try_lock(self: *Locker) bool {
-        // On x86, use `lock bts` instead of `lock cmpxchg` as:
-        // - they both seem to mark the cache-line as modified regardless: https://stackoverflow.com/a/63350048.
-        // - `lock bts` is smaller instruction-wise which makes it better for inlining.
-        if (comptime builtin.target.cpu.arch.isX86()) {
-            const locked_bit = @ctz(locked);
-            return self.state.bitSet(locked_bit, .acquire) == 0;
-        }
-
-        // Acquire barrier ensures grabbing the lock happens before the critical section
-        // and that the previous lock holder's critical section happens before we grab the lock.
-        return self.state.cmpxchgWeak(unlocked, locked, .acquire, .monotonic) == null;
-    }
-
-    fn lock_slow(self: *Locker) void {
-        @branchHint(.cold);
-
-        // Avoid doing an atomic swap below if we already know the state is contended.
-        // An atomic swap unconditionally stores which marks the cache-line as modified
-        // unnecessarily.
-        if (self.state.load(.monotonic) == contended) {
-            Futex.wait(&self.state, contended);
-        }
-
-        // Try to acquire the lock while also telling the existing lock holder that there are
-        // threads waiting.
-        //
-        // Once we sleep on the Futex, we must acquire the mutex using `contended` rather than
-        // `locked`.
-        // If not, threads sleeping on the Futex wouldn't see the state change in unlock and
-        // potentially deadlock.
-        // The downside is that the last mutex unlocker will see `contended` and do an unnecessary
-        // Futex wake but this is better than having to wake all waiting threads on mutex unlock.
-        //
-        // Acquire barrier ensures grabbing the lock happens before the critical section
-        // and that the previous lock holder's critical section happens before we grab the lock.
-        while (self.state.swap(contended, .acquire) != unlocked) {
-            Futex.wait(&self.state, contended);
-        }
+        return self.mutex.tryLock();
     }
 
     fn unlock(self: *Locker) void {
-        // Unlock the mutex and wake up a waiting thread if any.
-        //
-        // A waiting thread will acquire with `contended` instead of `locked`
-        // which ensures that it wakes up another thread on the next unlock().
-        //
-        // Release barrier ensures the critical section happens before we let go of the lock
-        // and that our critical section happens before the next lock holder grabs the lock.
-        const state = self.state.swap(unlocked, .release);
-        assert(state != unlocked);
-
-        if (state == contended) {
-            Futex.wake(&self.state, 1);
-        }
+        self.mutex.unlock(std.Options.debug_io);
     }
 };
 

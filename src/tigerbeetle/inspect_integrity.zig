@@ -145,7 +145,10 @@ fn init(
     });
     errdefer integrity.storage.deinit();
 
-    const data_file_stat = try (std.fs.File{ .handle = integrity.storage.fd }).stat();
+    const data_file_stat = try (std.Io.File{
+        .handle = integrity.storage.fd,
+        .flags = .{ .nonblocking = false },
+    }).stat(std.Options.debug_io);
 
     integrity.superblock = try SuperBlock.init(
         gpa,
@@ -241,14 +244,14 @@ fn init(
 
     integrity.buffer_headers = try gpa.alignedAlloc(
         u8,
-        constants.sector_size,
+        std.mem.Alignment.fromByteUnits(constants.sector_size),
         constants.journal_size_headers,
     );
     errdefer gpa.free(integrity.buffer_headers);
 
     integrity.buffer_prepare = try gpa.alignedAlloc(
         u8,
-        constants.sector_size,
+        std.mem.Alignment.fromByteUnits(constants.sector_size),
         constants.message_size_max,
     );
     errdefer gpa.free(integrity.buffer_prepare);
@@ -404,7 +407,7 @@ fn check_grid(integrity: *Integrity, seed: u64) !u64 {
     var prng = stdx.PRNG.from_seed(seed);
     integrity.grid_scrubber.open(&prng);
 
-    const parent_progress_node = std.Progress.start(.{
+    const parent_progress_node = std.Progress.start(std.Options.debug_io, .{
         .root_name = "checking grid blocks",
         .estimated_total_items = blocks_expected_count,
     });

@@ -62,7 +62,7 @@ fn rewrite_link(link: []const u8, page_path: []const u8, writer: anytype) !void 
     else
         try std.fs.path.resolvePosix(allocator, &.{ page_path, base });
     if (std.mem.eql(u8, path, ".")) path = "";
-    path = std.mem.trimRight(u8, path, "/");
+    path = std.mem.trimEnd(u8, path, "/");
 
     const slug = try path2slug(allocator, path);
     if (fragment) |frag| {

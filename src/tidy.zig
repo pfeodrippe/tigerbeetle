@@ -180,7 +180,7 @@ const Errors = struct {
         comptime assert(fmt[fmt.len - 1] == '\n');
         errors.count += 1;
         if (errors.captured) |*captured| {
-            captured.writer(std.testing.allocator).print(fmt, args) catch @panic("OOM");
+            captured.print(std.testing.allocator, fmt, args) catch @panic("OOM");
         } else {
             std.debug.print(fmt, args);
         }
@@ -193,7 +193,7 @@ const SourceFile = struct {
 
     // NB: The return value borrows both path and buffer.
     fn read(path: []const u8, buffer: []u8) !SourceFile {
-        const bytes_read = (try std.fs.cwd().readFile(path, buffer)).len;
+        const bytes_read = (try std.Io.Dir.cwd().readFile(std.testing.io, path, buffer)).len;
         if (bytes_read >= buffer.len - 1) return error.FileTooLong;
         buffer[bytes_read] = 0;
         return .{
@@ -245,7 +245,7 @@ fn check_tidy_file(file_path: []const u8, file_text: [:0]const u8, want: Snap) !
     var counter: IdentifierCounter = try .init(gpa);
     defer counter.deinit(gpa);
 
-    var errors: Errors = .{ .captured = .{} };
+    var errors: Errors = .{ .captured = .empty };
     defer errors.captured.?.deinit(std.testing.allocator);
 
     try tidy_file(gpa, &counter, .{ .path = file_path, .text = file_text }, &errors);
@@ -455,10 +455,10 @@ test tidy_lines {
     ,
         "" ++
             "pub const x = 92;\n" ++
-            "pub const x = " ++ ("9" ** 199) ++ ";\n" ++
-            "pub const url = \"https://example." ++ ("0" ** 199) ++ " \";\n" ++
-            "        \\\\" ++ ("9" ** 99) ++ "\n" ++
-            "        \"" ++ ("9" ** 99) ++ "\"\n",
+            "pub const x = " ++ stdx.repeat("9", 199) ++ ";\n" ++
+            "pub const url = \"https://example." ++ stdx.repeat("0", 199) ++ " \";\n" ++
+            "        \\\\" ++ stdx.repeat("9", 99) ++ "\n" ++
+            "        \"" ++ stdx.repeat("9", 99) ++ "\"\n",
         snap(@src(),
             \\lines.zig:2: error: line exceeds 100 columns
             \\lines.zig:5: error: line exceeds 100 columns
@@ -684,18 +684,20 @@ fn tidy_ast(
     const datas = tree.nodes.items(.data);
     // We can implement this in a streaming fashion, but its more convenient to materialize all
     // functions. 1k functions per file should be enough even for TigerBeetle!
-    var functions: [1024]struct {
+    const Function = struct {
         line_opening: usize,
         line_closing: usize,
-    } = undefined;
+    };
+    var functions: [1024]Function = undefined;
     var functions_count: u32 = 0;
 
     for (tags, datas, 0..) |tag, data, node| {
         if (tag == .fn_decl) { // Check function length.
-            const node_body = data.rhs;
+            const node_body = data.node_and_node[1];
 
-            const token_opening = tree.firstToken(@intCast(node));
-            const token_closing = tree.lastToken(@intCast(node_body));
+            const node_index: Ast.Node.Index = @enumFromInt(node);
+            const token_opening = tree.firstToken(node_index);
+            const token_closing = tree.lastToken(node_body);
 
             const line_opening = tree.tokenLocation(0, token_opening).line;
             const line_closing = tree.tokenLocation(0, token_closing).line;
@@ -707,12 +709,14 @@ fn tidy_ast(
             functions_count += 1;
         }
         if (is_bin_op(tag)) { // Forbid mixing bitops and arithmetics without parentheses.
-            inline for (.{ data.lhs, data.rhs }) |child| {
-                const tag_child = tags[child];
+            const lhs, const rhs = data.node_and_node;
+            inline for (.{ lhs, rhs }) |child| {
+                const tag_child = tags[@intFromEnum(child)];
                 if ((is_bin_op_bitwise(tag) and is_bin_op_arithmetic(tag_child)) or
                     (is_bin_op_arithmetic(tag) and is_bin_op_bitwise(tag_child)))
                 {
-                    const token_opening = tree.firstToken(@intCast(node));
+                    const node_index: Ast.Node.Index = @enumFromInt(node);
+                    const token_opening = tree.firstToken(node_index);
                     const line_opening = tree.tokenLocation(0, token_opening).line;
                     errors.add_ambiguous_precedence(file, line_opening);
                 }
@@ -729,6 +733,17 @@ fn tidy_ast(
         .min = 70, // NB: both are exclusive, so red zone is intentionally empty to start!
         .max = 73,
     };
+
+    std.mem.sort(
+        Function,
+        functions[0..functions_count],
+        {},
+        struct {
+            fn less_than(_: void, a: Function, b: Function) bool {
+                return a.line_opening < b.line_opening;
+            }
+        }.less_than,
+    );
 
     for (functions[0..functions_count], 0..) |f, index| {
         // Functions are sorted by the start line.
@@ -1161,16 +1176,17 @@ test tidy_markdown_title {
 const DeadFilesDetector = struct {
     const FileName = [64]u8;
     const FileState = struct { import_count: u32, definition_count: u32 };
-    const FileMap = std.AutoArrayHashMap(FileName, FileState);
+    const FileMap = std.AutoArrayHashMapUnmanaged(FileName, FileState);
 
     files: FileMap,
+    gpa: Allocator,
 
     fn init(gpa: Allocator) DeadFilesDetector {
-        return .{ .files = FileMap.init(gpa) };
+        return .{ .files = .empty, .gpa = gpa };
     }
 
-    fn deinit(detector: *DeadFilesDetector, _: Allocator) void {
-        detector.files.deinit();
+    fn deinit(detector: *DeadFilesDetector, gpa: Allocator) void {
+        detector.files.deinit(gpa);
     }
 
     fn visit(detector: *DeadFilesDetector, file: SourceFile) Allocator.Error!void {
@@ -1202,8 +1218,8 @@ const DeadFilesDetector = struct {
         }
     }
 
-    fn file_state(detector: *DeadFilesDetector, path: []const u8) !*FileState {
-        const gop = try detector.files.getOrPut(path_to_name(path));
+    fn file_state(detector: *DeadFilesDetector, path: []const u8) Allocator.Error!*FileState {
+        const gop = try detector.files.getOrPut(detector.gpa, path_to_name(path));
         if (!gop.found_existing) gop.value_ptr.* = .{ .import_count = 0, .definition_count = 0 };
         return gop.value_ptr;
     }
@@ -1442,7 +1458,8 @@ test "tidy extensions" {
 
 /// Lists all files in the repository.
 fn list_file_paths(shell: *Shell) ![]const []const u8 {
-    var result = std.ArrayList([]const u8).init(shell.arena.allocator());
+    const allocator = shell.arena.allocator();
+    var result: std.ArrayList([]const u8) = .empty;
 
     const files = try shell.exec_stdout("git ls-files -z", .{});
     assert(files.len > 0);
@@ -1450,7 +1467,7 @@ fn list_file_paths(shell: *Shell) ![]const []const u8 {
     var lines = std.mem.splitScalar(u8, files[0 .. files.len - 1], 0);
     while (lines.next()) |line| {
         assert(line.len > 0);
-        try result.append(line);
+        try result.append(allocator, line);
     }
 
     return result.items;

@@ -42,28 +42,30 @@ pub const ReplySequence = struct {
     /// The list of messages waiting to be verified (the reply for a lower op has not yet arrived).
     /// Includes `register` messages.
     stalled_queue: PendingReplyQueue,
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) !ReplySequence {
         // *2 for PendingReply.prepare and PendingReply.reply.
         var message_pool = try MessagePool.init_capacity(allocator, stalled_queue_capacity * 2);
         errdefer message_pool.deinit(allocator);
 
-        var stalled_queue = PendingReplyQueue.init(allocator, {});
-        errdefer stalled_queue.deinit();
-        try stalled_queue.ensureTotalCapacity(stalled_queue_capacity);
+        var stalled_queue = PendingReplyQueue.initContext({});
+        errdefer stalled_queue.deinit(allocator);
+        try stalled_queue.ensureTotalCapacity(allocator, stalled_queue_capacity);
 
         return ReplySequence{
             .message_pool = message_pool,
             .stalled_queue = stalled_queue,
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(sequence: *ReplySequence, allocator: std.mem.Allocator) void {
-        while (sequence.stalled_queue.removeOrNull()) |pending| {
+        while (sequence.stalled_queue.pop()) |pending| {
             sequence.message_pool.unref(pending.prepare);
             sequence.message_pool.unref(pending.reply);
         }
-        sequence.stalled_queue.deinit();
+        sequence.stalled_queue.deinit(allocator);
         sequence.message_pool.deinit(allocator);
     }
 
@@ -101,7 +103,7 @@ pub const ReplySequence = struct {
             assert(reply_message.header.op != pending.reply.header.op);
         }
 
-        sequence.stalled_queue.add(.{
+        sequence.stalled_queue.push(sequence.allocator, .{
             .client_index = client_index,
             .prepare = sequence.clone_message(prepare_message.base_const()).into(.prepare).?,
             .reply = sequence.clone_message(reply_message.base_const()).into(.reply).?,
@@ -135,7 +137,7 @@ pub const ReplySequence = struct {
     }
 
     pub fn next(sequence: *ReplySequence) void {
-        const commit = sequence.stalled_queue.remove();
+        const commit = sequence.stalled_queue.pop().?;
         sequence.message_pool.unref(commit.reply);
         sequence.message_pool.unref(commit.prepare);
     }

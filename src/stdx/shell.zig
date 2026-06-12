@@ -26,6 +26,11 @@ const MiB = stdx.MiB;
 
 const cwd_stack_max = 16;
 
+fn shell_io() std.Io {
+    if (comptime builtin.is_test) return std.testing.io;
+    return std.Options.debug_io;
+}
+
 /// For internal use by the `Shell` itself.
 gpa: std.mem.Allocator,
 
@@ -39,23 +44,17 @@ arena: std.heap.ArenaAllocator,
 /// This is initialized when a shell is created. It would be more flexible to lazily initialize this
 /// on the first access, but, given that we always use `Shell` in the context of our repository,
 /// eager initialization is more ergonomic.
-project_root: std.fs.Dir,
+project_root: std.Io.Dir,
 
 /// Shell's logical cwd which is used for all functions in this file. It might be different from
 /// `std.fs.cwd()` and is set to `project_root` on init.
-cwd: std.fs.Dir,
+cwd: std.Io.Dir,
 
 // Stack of working directories backing pushd/popd.
-cwd_stack: [cwd_stack_max]std.fs.Dir,
+cwd_stack: [cwd_stack_max]std.Io.Dir,
 cwd_stack_count: usize,
 
-// Zig uses file-descriptor oriented APIs in the standard library, with the one exception being
-// ChildProcess's cwd, which is required to be a path, rather than a file descriptor. This buffer
-// is used to materialize the path to cwd when spawning a new process.
-//   <https://github.com/ziglang/zig/issues/5190>
-cwd_path_buffer: [std.fs.max_path_bytes]u8 = undefined,
-
-env: std.process.EnvMap,
+env: std.process.Environ.Map,
 
 /// True if the process is run in CI (the CI env var is set)
 ci: bool,
@@ -68,12 +67,12 @@ pub fn create(gpa: std.mem.Allocator) !*Shell {
     errdefer arena.deinit();
 
     var project_root = try discover_project_root();
-    errdefer project_root.close();
+    errdefer project_root.close(shell_io());
 
-    var cwd = try project_root.openDir(".", .{});
-    errdefer cwd.close();
+    var cwd = try project_root.openDir(shell_io(), ".", .{});
+    errdefer cwd.close(shell_io());
 
-    var env = try std.process.getEnvMap(gpa);
+    var env = try process_env_map(gpa);
     errdefer env.deinit();
 
     const ci = env.get("CI") != null;
@@ -102,8 +101,8 @@ pub fn destroy(shell: *Shell) void {
     assert(shell.cwd_stack_count == 0); // pushd not paired by popd
 
     shell.env.deinit();
-    shell.cwd.close();
-    shell.project_root.close();
+    shell.cwd.close(shell_io());
+    shell.project_root.close(shell_io());
     shell.arena.deinit();
     gpa.destroy(shell);
 }
@@ -154,32 +153,39 @@ pub fn open_section(shell: *Shell, name: []const u8) !Section {
 const Section = struct {
     ci: bool,
     name: []const u8,
-    timer: std.time.Timer,
+    started: std.Io.Clock.Timestamp,
 
     fn open(ci: bool, name: []const u8) !Section {
         if (ci) {
             // See
             // https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#grouping-log-lines
             // https://github.com/actions/toolkit/issues/1001
-            try std.io.getStdOut().writer().print("::group::{s}\n", .{name});
+            try stdout_print("::group::{s}\n", .{name});
         }
 
         return .{
             .ci = ci,
             .name = name,
-            .timer = try std.time.Timer.start(),
+            .started = std.Io.Clock.awake.now(shell_io()),
         };
     }
 
     pub fn close(section: *Section) void {
-        const elapsed_ns = section.timer.lap();
-        std.debug.print("{s}: {}\n", .{ section.name, std.fmt.fmtDuration(elapsed_ns) });
+        const elapsed = section.started.durationTo(std.Io.Clock.awake.now(shell_io()));
+        std.debug.print("{s}: {f}\n", .{ section.name, elapsed.raw });
         if (section.ci) {
-            std.io.getStdOut().writer().print("::endgroup::\n", .{}) catch {};
+            stdout_print("::endgroup::\n", .{}) catch {};
         }
         section.* = undefined;
     }
 };
+
+fn stdout_print(comptime format: []const u8, args: anytype) !void {
+    var buffer: [1024]u8 = undefined;
+    var stdout = std.Io.File.stdout().writer(shell_io(), &buffer);
+    try stdout.interface.print(format, args);
+    try stdout.flush();
+}
 
 /// Convenience string formatting function which uses shell's arena and doesn't require
 /// freeing the resulting string.
@@ -209,18 +215,18 @@ pub fn pushd(shell: *Shell, path: []const u8) !void {
     // allow only explicitly relative paths or absolute paths
     assert(path[0] == '.' or path[0] == '/');
 
-    const cwd_new = try shell.cwd.openDir(path, .{});
+    const cwd_new = try shell.cwd.openDir(shell_io(), path, .{});
 
     shell.cwd_stack[shell.cwd_stack_count] = shell.cwd;
     shell.cwd_stack_count += 1;
     shell.cwd = cwd_new;
 }
 
-pub fn pushd_dir(shell: *Shell, dir: std.fs.Dir) !void {
+pub fn pushd_dir(shell: *Shell, dir: std.Io.Dir) !void {
     assert(shell.cwd_stack_count < cwd_stack_max);
 
     // Re-open the directory such that `popd` can close it.
-    const cwd_new = try dir.openDir(".", .{});
+    const cwd_new = try dir.openDir(shell_io(), ".", .{});
 
     shell.cwd_stack[shell.cwd_stack_count] = shell.cwd;
     shell.cwd_stack_count += 1;
@@ -228,7 +234,7 @@ pub fn pushd_dir(shell: *Shell, dir: std.fs.Dir) !void {
 }
 
 pub fn popd(shell: *Shell) void {
-    shell.cwd.close();
+    shell.cwd.close(shell_io());
     shell.cwd_stack_count -= 1;
     shell.cwd = shell.cwd_stack[shell.cwd_stack_count];
 }
@@ -244,21 +250,21 @@ pub fn dir_exists(shell: *Shell, path: []const u8) !bool {
 ///
 /// Note: this api is prone to TOCTOU and exists primarily for assertions.
 pub fn file_exists(shell: *Shell, path: []const u8) bool {
-    const stat = shell.cwd.statFile(path) catch return false;
+    const stat = shell.cwd.statFile(shell_io(), path, .{}) catch return false;
     return stat.kind == .file;
 }
 
 pub fn file_make_executable(shell: *Shell, path: []const u8) !void {
     if (builtin.os.tag != .windows) {
-        const fd = try shell.cwd.openFile(path, .{ .mode = .read_write });
-        defer fd.close();
+        const fd = try shell.cwd.openFile(shell_io(), path, .{ .mode = .read_write });
+        defer fd.close(shell_io());
 
-        try fd.chmod(0o755);
+        try fd.setPermissions(shell_io(), @enumFromInt(0o755));
     }
 }
 
-fn subdir_exists(dir: std.fs.Dir, path: []const u8) !bool {
-    const stat = dir.statFile(path) catch |err| switch (err) {
+fn subdir_exists(dir: std.Io.Dir, path: []const u8) !bool {
+    const stat = dir.statFile(shell_io(), path, .{}) catch |err| switch (err) {
         error.FileNotFound => return false,
         error.IsDir => return true,
         else => return err,
@@ -271,17 +277,26 @@ pub fn file_ensure_content(
     shell: *Shell,
     path: []const u8,
     content: []const u8,
-    create_flags: std.fs.File.CreateFlags,
+    create_flags: std.Io.Dir.CreateFileOptions,
 ) !enum { unchanged, updated } {
     const max_bytes = 1 * MiB;
-    const content_current = shell.cwd.readFileAlloc(shell.gpa, path, max_bytes) catch null;
+    const content_current = shell.cwd.readFileAlloc(
+        shell_io(),
+        path,
+        shell.gpa,
+        .limited(max_bytes),
+    ) catch null;
     defer if (content_current) |slice| shell.gpa.free(slice);
 
     if (content_current != null and std.mem.eql(u8, content_current.?, content)) {
         return .unchanged;
     }
 
-    try shell.cwd.writeFile(.{ .sub_path = path, .data = content, .flags = create_flags });
+    try shell.cwd.writeFile(shell_io(), .{
+        .sub_path = path,
+        .data = content,
+        .flags = create_flags,
+    });
     return .updated;
 }
 
@@ -293,13 +308,17 @@ pub fn file_ensure_content(
 pub fn create_tmp_dir(
     shell: *Shell,
 ) ![]const u8 {
-    const root = try shell.project_root.realpathAlloc(shell.arena.allocator(), ".");
+    const root = try shell.project_root.realPathFileAlloc(
+        shell_io(),
+        ".",
+        shell.arena.allocator(),
+    );
     const tmp_absolute = try shell.fmt("{s}/.zig-cache/tmp/{}", .{
         root,
-        std.crypto.random.int(u64),
+        stdx.random_int(u64),
     });
     assert(!try shell.dir_exists(tmp_absolute));
-    try shell.project_root.makePath(tmp_absolute);
+    try shell.project_root.createDirPath(shell_io(), tmp_absolute);
     return tmp_absolute;
 }
 
@@ -325,20 +344,23 @@ pub fn find(shell: *Shell, options: FindOptions) ![]const []const u8 {
         }
     }
 
-    var result = std.ArrayList([]const u8).init(shell.arena.allocator());
+    const allocator = shell.arena.allocator();
+    var result: std.ArrayList([]const u8) = .empty;
 
     for (options.where) |base_path| {
-        var base_dir = try shell.cwd.openDir(base_path, .{ .iterate = true });
-        defer base_dir.close();
+        var base_dir = try shell.cwd.openDir(shell_io(), base_path, .{
+            .iterate = true,
+        });
+        defer base_dir.close(shell_io());
 
         var walker = try base_dir.walk(shell.gpa);
         defer walker.deinit();
 
-        while (try walker.next()) |entry| {
+        while (try walker.next(shell_io())) |entry| {
             if (entry.kind == .file and find_filter_path(entry.path, options)) {
                 const full_path =
-                    try std.fs.path.join(shell.arena.allocator(), &.{ base_path, entry.path });
-                try result.append(full_path);
+                    try std.fs.path.join(allocator, &.{ base_path, entry.path });
+                try result.append(allocator, full_path);
             }
         }
     }
@@ -366,18 +388,18 @@ fn find_filter_path(path: []const u8, options: FindOptions) bool {
 
 /// Copy file, creating the destination directory as necessary.
 pub fn copy_path(
-    src_dir: std.fs.Dir,
+    src_dir: std.Io.Dir,
     src_path: []const u8,
-    dst_dir: std.fs.Dir,
+    dst_dir: std.Io.Dir,
     dst_path: []const u8,
 ) !void {
     errdefer {
         log.warn("failed to copy {s} to {s}", .{ src_path, dst_path });
     }
     if (std.fs.path.dirname(dst_path)) |dir| {
-        try dst_dir.makePath(dir);
+        try dst_dir.createDirPath(shell_io(), dir);
     }
-    try src_dir.copyFile(src_path, dst_dir, dst_path, .{});
+    try src_dir.copyFile(src_path, dst_dir, dst_path, shell_io(), .{});
 }
 
 /// Runs the given command for side effects.
@@ -509,79 +531,78 @@ fn exec_inner(
     const argv_formatted = try std.mem.join(shell.gpa, " ", argv);
     defer shell.gpa.free(argv_formatted);
 
+    var child = try std.process.spawn(shell_io(), .{
+        .argv = argv,
+        .cwd = .{ .dir = shell.cwd },
+        .environ_map = &shell.env,
+        .stdin = if (options.stdin_slice != null) .pipe else .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    defer child.kill(shell_io());
+
     var stdin_writer: ?std.Thread = null;
     defer if (stdin_writer) |thread| thread.join();
-
-    const Streams = enum { stdout, stderr };
-    var poller: ?std.io.Poller(Streams) = null;
-    defer if (poller) |*p| p.deinit();
-
-    errdefer |err| {
-        log.err("process failed with {s}: {s}", .{ @errorName(err), argv_formatted });
-        if (poller) |*p| {
-            inline for (comptime std.enums.values(Streams)) |stream| {
-                if (p.fifo(stream).count > 0) {
-                    log.err("{s}:\n++++\n{s}++++\n", .{
-                        @tagName(stream),
-                        p.fifo(stream).readableSlice(0),
-                    });
-                }
-            }
-        }
-    }
-
-    var child = std.process.Child.init(argv, shell.gpa);
-    child.cwd = try shell.cwd.realpath(".", &shell.cwd_path_buffer);
-    child.env_map = &shell.env;
-    child.stdin_behavior = if (options.stdin_slice != null) .Pipe else .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    try child.spawn();
-    errdefer {
-        _ = child.kill() catch {};
-    }
 
     if (options.stdin_slice) |stdin_slice| {
         stdin_writer = try write_stdin(&child, stdin_slice);
     }
 
-    poller = std.io.poll(shell.gpa, Streams, .{
-        .stdout = child.stdout.?,
-        .stderr = child.stderr.?,
-    });
+    var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var multi_reader: std.Io.File.MultiReader = undefined;
+    multi_reader.init(
+        shell.gpa,
+        shell_io(),
+        multi_reader_buffer.toStreams(),
+        &.{ child.stdout.?, child.stderr.? },
+    );
+    defer multi_reader.deinit();
 
-    {
-        defer inline for (comptime std.enums.values(Streams)) |stream| {
-            assert(poller.?.fifo(stream).head == 0);
-        };
-
-        var timer = try std.time.Timer.start();
-        for (0..1_000_000) |_| {
-            const timeout_remaining = options.timeout.ns -| timer.read();
-            if (timeout_remaining == 0) {
-                return error.ExecTimeout;
-            }
-            if (!try poller.?.pollTimeout(@intCast(timeout_remaining))) break;
-            inline for (comptime std.enums.values(Streams)) |stream| {
-                if (poller.?.fifo(stream).count > options.output_limit_bytes) {
-                    return error.StdoutStreamTooLong;
-                }
-            }
-        } else @panic("exec: safety counter exceeded");
+    const stdout_reader = multi_reader.reader(0);
+    const stderr_reader = multi_reader.reader(1);
+    const timeout: std.Io.Timeout = .{
+        .duration = .{
+            .raw = std.Io.Duration.fromNanoseconds(@intCast(options.timeout.ns)),
+            .clock = .awake,
+        },
+    };
+    while (multi_reader.fill(64, timeout)) |_| {
+        if (stdout_reader.buffered().len > options.output_limit_bytes or
+            stderr_reader.buffered().len > options.output_limit_bytes)
+        {
+            return error.StdoutStreamTooLong;
+        }
+    } else |err| switch (err) {
+        error.EndOfStream => {},
+        error.Timeout => return error.ExecTimeout,
+        else => |e| return e,
     }
 
-    const term = try child.wait();
+    try multi_reader.checkAnyError();
+
+    const term = try child.wait(shell_io());
+
+    const stdout_stream = try multi_reader.toOwnedSlice(0);
+    defer shell.gpa.free(stdout_stream);
+
+    const stderr_stream = try multi_reader.toOwnedSlice(1);
+    defer shell.gpa.free(stderr_stream);
+
     switch (term) {
-        .Exited => |code| if (code != 0) return error.ExecNonZeroExitStatus,
+        .exited => |code| if (code != 0) {
+            log.err("process failed: {s}", .{argv_formatted});
+            if (stdout_stream.len > 0) log.err("stdout:\n++++\n{s}++++\n", .{stdout_stream});
+            if (stderr_stream.len > 0) log.err("stderr:\n++++\n{s}++++\n", .{stderr_stream});
+            return error.ExecNonZeroExitStatus;
+        },
         else => return error.ExecFailed,
     }
 
     inline for (
         .{ options.capture_stdout, options.capture_stderr },
-        .{ .stdout, .stderr },
-    ) |capture_destination, capture_stream| {
+        .{ stdout_stream, stderr_stream },
+    ) |capture_destination, stream| {
         if (capture_destination) |destination| {
-            const stream = poller.?.fifo(capture_stream).readableSlice(0);
             const trailing_newline = if (std.mem.indexOfScalar(u8, stream, '\n')) |first_newline|
                 first_newline == stream.len - 1
             else
@@ -594,19 +615,20 @@ fn exec_inner(
 
 fn write_stdin(child: *std.process.Child, stdin: []const u8) !std.Thread {
     assert(child.stdin != null);
+    const destination = child.stdin.?;
     defer child.stdin = null;
 
     // Spawn a thread to avoid deadlock between us writing to stdin and reading from stdout.
     return try std.Thread.spawn(
         .{},
         struct {
-            fn write_stdin(destination: std.fs.File, source: []const u8) void {
-                defer destination.close();
+            fn write_stdin(file: std.Io.File, source: []const u8) void {
+                defer file.close(shell_io());
 
-                destination.writeAll(source) catch {};
+                file.writeStreamingAll(shell_io(), source) catch {};
             }
         }.write_stdin,
-        .{ child.stdin.?, stdin },
+        .{ destination, stdin },
     );
 }
 
@@ -616,22 +638,28 @@ pub fn exec_raw(
     shell: *Shell,
     comptime cmd: []const u8,
     cmd_args: anytype,
-) !std.process.Child.RunResult {
+) !std.process.RunResult {
     var argv = try Argv.expand(shell.gpa, cmd, cmd_args);
     defer argv.deinit();
 
-    return try std.process.Child.run(.{
-        .allocator = shell.arena.allocator(),
+    return try std.process.run(shell.arena.allocator(), shell_io(), .{
         .argv = argv.slice(),
-        .cwd = try shell.cwd.realpath(".", &shell.cwd_path_buffer),
-        .env_map = &shell.env,
+        .cwd = .{ .dir = shell.cwd },
+        .environ_map = &shell.env,
     });
 }
 
 pub const SpawnOptions = struct {
-    stdin_behavior: std.process.Child.StdIo = .Ignore,
-    stdout_behavior: std.process.Child.StdIo = .Ignore,
-    stderr_behavior: std.process.Child.StdIo = .Ignore,
+    stdin_behavior: StdIo = .Ignore,
+    stdout_behavior: StdIo = .Ignore,
+    stderr_behavior: StdIo = .Ignore,
+
+    pub const StdIo = enum {
+        Inherit,
+        Ignore,
+        Pipe,
+        Close,
+    };
 };
 
 pub fn spawn(
@@ -665,14 +693,36 @@ fn spawn_argv(
     options: SpawnOptions,
     argv: *const Argv,
 ) !std.process.Child {
-    var child = std.process.Child.init(argv.slice(), shell.gpa);
-    child.cwd = try shell.cwd.realpath(".", &shell.cwd_path_buffer);
-    child.env_map = &shell.env;
-    child.stdin_behavior = options.stdin_behavior;
-    child.stdout_behavior = options.stdout_behavior;
-    child.stderr_behavior = options.stderr_behavior;
-    try child.spawn();
-    return child;
+    return try std.process.spawn(shell_io(), .{
+        .argv = argv.slice(),
+        .cwd = .{ .dir = shell.cwd },
+        .environ_map = &shell.env,
+        .stdin = spawn_stdio(options.stdin_behavior),
+        .stdout = spawn_stdio(options.stdout_behavior),
+        .stderr = spawn_stdio(options.stderr_behavior),
+    });
+}
+
+fn spawn_stdio(stdio: SpawnOptions.StdIo) std.process.SpawnOptions.StdIo {
+    return switch (stdio) {
+        .Inherit => .inherit,
+        .Ignore => .ignore,
+        .Pipe => .pipe,
+        .Close => .close,
+    };
+}
+
+fn process_env_map(gpa: std.mem.Allocator) !std.process.Environ.Map {
+    if (stdx.process_environ) |environ| {
+        return try std.process.Environ.createMap(environ, gpa);
+    }
+
+    const envp = std.c.environ;
+    var env_count: usize = 0;
+    while (envp[env_count] != null) : (env_count += 1) {}
+    return try std.process.Environ.createMap(.{ .block = .{
+        .slice = envp[0..env_count :null],
+    } }, gpa);
 }
 
 /// On GitHub Actions runners, `git commit` fails with an "Author identity unknown" error.
@@ -707,10 +757,11 @@ pub fn git_commit_timestamp(shell: *Shell, sha: []const u8) !stdx.InstantUnix {
 }
 
 const Argv = struct {
+    gpa: std.mem.Allocator,
     args: std.ArrayList([]const u8),
 
     fn init(gpa: std.mem.Allocator) Argv {
-        return Argv{ .args = std.ArrayList([]const u8).init(gpa) };
+        return Argv{ .gpa = gpa, .args = .empty };
     }
 
     fn expand(gpa: std.mem.Allocator, comptime cmd: []const u8, cmd_args: anytype) !Argv {
@@ -721,8 +772,8 @@ const Argv = struct {
     }
 
     fn deinit(argv: *Argv) void {
-        for (argv.args.items) |arg| argv.args.allocator.free(arg);
-        argv.args.deinit();
+        for (argv.args.items) |arg| argv.gpa.free(arg);
+        argv.args.deinit(argv.gpa);
     }
 
     fn slice(argv: *const Argv) []const []const u8 {
@@ -731,23 +782,23 @@ const Argv = struct {
 
     fn append_new_arg(argv: *Argv, comptime arg_fmt: []const u8, arg: anytype) !void {
         const arg_owned = try std.fmt.allocPrint(
-            argv.args.allocator,
+            argv.gpa,
             arg_fmt,
             arg,
         );
-        errdefer argv.args.allocator.free(arg_owned);
+        errdefer argv.gpa.free(arg_owned);
 
-        try argv.args.append(arg_owned);
+        try argv.args.append(argv.gpa, arg_owned);
     }
 
     fn extend_last_arg(argv: *Argv, comptime arg_fmt: []const u8, arg: anytype) !void {
         assert(argv.args.items.len > 0);
         const arg_allocated = try std.fmt.allocPrint(
-            argv.args.allocator,
+            argv.gpa,
             "{s}" ++ arg_fmt,
             .{argv.args.items[argv.args.items.len - 1]} ++ arg,
         );
-        argv.args.allocator.free(argv.args.items[argv.args.items.len - 1]);
+        argv.gpa.free(argv.args.items[argv.args.items.len - 1]);
         argv.args.items[argv.args.items.len - 1] = arg_allocated;
     }
 };
@@ -768,7 +819,7 @@ fn expand_argv(argv: *Argv, comptime cmd: []const u8, cmd_args: anytype) !void {
     comptime var concat_left: bool = false;
     comptime var concat_right: bool = false;
 
-    const arg_count = std.meta.fields(@TypeOf(cmd_args)).len;
+    const arg_count = stdx.meta.fields(@TypeOf(cmd_args)).len;
     comptime var args_used: stdx.BitSetType(arg_count) = .{};
     comptime assert(std.mem.indexOfScalar(u8, cmd, '\'') == null); // Intentionally unsupported.
     comptime assert(std.mem.indexOfScalar(u8, cmd, '"') == null);
@@ -923,17 +974,17 @@ test "shell: expand_argv" {
 /// Finds the root of TigerBeetle repo.
 ///
 /// Caller is responsible for closing the dir.
-fn discover_project_root() !std.fs.Dir {
-    var current = try std.fs.cwd().openDir(".", .{});
-    errdefer current.close(); // Caller is responsible for closing on success.
+fn discover_project_root() !std.Io.Dir {
+    var current = try std.Io.Dir.cwd().openDir(shell_io(), ".", .{});
+    errdefer current.close(shell_io()); // Caller is responsible for closing on success.
 
     for (0..16) |_| {
         if (detect_project_root(current)) |_| {
             return current;
         } else |err| switch (err) {
             error.FileNotFound => {
-                const parent = try current.openDir("..", .{});
-                current.close();
+                const parent = try current.openDir(shell_io(), "..", .{});
+                current.close(shell_io());
                 current = parent;
             },
             else => return err,
@@ -943,9 +994,9 @@ fn discover_project_root() !std.fs.Dir {
     return error.DiscoverProjectRootDepthExceeded;
 }
 
-fn detect_project_root(dir: std.fs.Dir) !void {
-    try dir.access("build.zig", .{});
-    try dir.access("src", .{});
+fn detect_project_root(dir: std.Io.Dir) !void {
+    try dir.access(shell_io(), "build.zig", .{});
+    try dir.access(shell_io(), "src", .{});
 }
 
 pub const HttpOptions = struct {
@@ -988,9 +1039,9 @@ fn http_request(
     url: []const u8,
     options: HttpOptions,
 ) ![]const u8 {
-    errdefer |err| log.err(
-        "failed to HTTP {s} to \"{s}\": {s}",
-        .{ @tagName(method), url, @errorName(err) },
+    errdefer log.err(
+        "failed to HTTP {s} to \"{s}\"",
+        .{ @tagName(method), url },
     );
 
     var client = std.http.Client{ .allocator = shell.gpa };

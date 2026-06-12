@@ -232,11 +232,11 @@ pub const IO = struct {
                 overlapped: Overlapped,
                 listen_socket: socket_t,
                 client_socket: ?socket_t,
-                addr_buffer: [(@sizeOf(std.net.Address) + 16) * 2]u8 align(4),
+                addr_buffer: [(@sizeOf(stdx.net.Address) + 16) * 2]u8 align(4),
             },
             connect: struct {
                 socket: socket_t,
-                address: std.net.Address,
+                address: stdx.net.Address,
                 overlapped: Overlapped,
                 pending: bool,
             },
@@ -280,7 +280,7 @@ pub const IO = struct {
         comptime callback: anytype,
         completion: *Completion,
         comptime op_tag: std.meta.Tag(Completion.Operation),
-        op_data: std.meta.TagPayload(Completion.Operation, op_tag),
+        op_data: @FieldType(Completion.Operation, @tagName(op_tag)),
         comptime OperationImpl: type,
     ) void {
         const Callback = struct {
@@ -385,8 +385,8 @@ pub const IO = struct {
                             op.client_socket.?,
                             &op.addr_buffer,
                             0,
-                            @sizeOf(std.net.Address) + 16,
-                            @sizeOf(std.net.Address) + 16,
+                            @sizeOf(stdx.net.Address) + 16,
+                            @sizeOf(stdx.net.Address) + 16,
                             &sync_bytes_read,
                             &op.overlapped.raw,
                         );
@@ -415,16 +415,7 @@ pub const IO = struct {
                         return op.client_socket.?;
                     }
 
-                    // Destroy the client_socket we created if we get a non WouldBlock error.
-                    errdefer |err| switch (err) {
-                        error.WouldBlock => {},
-                        else => {
-                            ctx.io.close_socket(op.client_socket.?);
-                            op.client_socket = null;
-                        },
-                    };
-
-                    return switch (os.windows.ws2_32.WSAGetLastError()) {
+                    const accept_error = switch (os.windows.ws2_32.WSAGetLastError()) {
                         .WSA_IO_PENDING, .WSAEWOULDBLOCK, .WSA_IO_INCOMPLETE => error.WouldBlock,
                         .WSANOTINITIALISED => unreachable, // WSAStartup() was called.
                         .WSAENETDOWN => unreachable, // WinSock error.
@@ -438,6 +429,14 @@ pub const IO = struct {
                         .WSAEINTR, .WSAEINPROGRESS => unreachable, // No blocking calls.
                         else => |err| os.windows.unexpectedWSAError(err),
                     };
+                    switch (accept_error) {
+                        error.WouldBlock => {},
+                        else => {
+                            ctx.io.close_socket(op.client_socket.?);
+                            op.client_socket = null;
+                        },
+                    }
+                    return accept_error;
                 }
             },
         );
@@ -463,7 +462,7 @@ pub const IO = struct {
         ) void,
         completion: *Completion,
         socket: socket_t,
-        address: std.net.Address,
+        address: stdx.net.Address,
     ) void {
         self.submit(
             context,
@@ -495,7 +494,7 @@ pub const IO = struct {
 
                         // ConnectEx requires the socket to be initially bound (INADDR_ANY).
                         const inaddr_any: [4]u8 = @splat(0);
-                        const bind_addr = std.net.Address.initIp4(inaddr_any, 0);
+                        const bind_addr = stdx.net.Address.initIp4(inaddr_any, 0);
                         posix.bind(
                             op.socket,
                             &bind_addr.any,
@@ -1210,9 +1209,9 @@ pub const IO = struct {
     pub fn listen(
         _: *IO,
         fd: socket_t,
-        address: std.net.Address,
+        address: stdx.net.Address,
         options: ListenOptions,
-    ) !std.net.Address {
+    ) !stdx.net.Address {
         return common.listen(fd, address, options);
     }
 
@@ -1455,9 +1454,9 @@ pub const IO = struct {
         }
     }
 
-    pub const PReadError = posix.PReadError;
+    pub const PReadError = common.AOFPReadError;
 
-    pub fn aof_blocking_write_all(_: *IO, fd: fd_t, buffer: []const u8) posix.WriteError!void {
+    pub fn aof_blocking_write_all(_: *IO, fd: fd_t, buffer: []const u8) common.AOFWriteError!void {
         return common.aof_blocking_write_all(fd, buffer);
     }
 
@@ -1469,11 +1468,11 @@ pub const IO = struct {
         return common.aof_blocking_close(fd);
     }
 
-    pub fn aof_blocking_stat(_: *IO, path: []const u8) std.fs.Dir.StatFileError!std.fs.File.Stat {
+    pub fn aof_blocking_stat(_: *IO, path: []const u8) common.AOFStatError!common.AOFStat {
         return common.aof_blocking_stat(path);
     }
 
-    pub fn aof_blocking_fstat(_: *IO, fd: fd_t) std.fs.Dir.StatError!std.fs.File.Stat {
+    pub fn aof_blocking_fstat(_: *IO, fd: fd_t) common.AOFFStatError!common.AOFStat {
         return common.aof_blocking_fstat(fd);
     }
 
