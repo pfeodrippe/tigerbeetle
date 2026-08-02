@@ -241,12 +241,10 @@ pub const Header = extern struct {
 
     pub fn format(
         self: *const Header,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
         switch (self.into_any()) {
-            inline else => |header| return try header.format(fmt, options, writer),
+            inline else => |header| return header.format(writer),
         }
     }
 
@@ -290,10 +288,8 @@ pub const Header = extern struct {
 
             pub fn format(
                 self: *const CommandHeader,
-                comptime _: []const u8,
-                _: std.fmt.FormatOptions,
-                writer: anytype,
-            ) !void {
+                writer: *std.Io.Writer,
+            ) std.Io.Writer.Error!void {
                 return format_header(CommandHeader, self, writer);
             }
         };
@@ -1681,7 +1677,24 @@ fn format_header_field(
         @compileError("unhandled field: " ++ field_name);
     }
 
-    try writer.print("{any}", .{field_value.*});
+    const has_format = comptime switch (@typeInfo(T)) {
+        .@"struct", .@"union", .@"enum", .@"opaque" => @hasDecl(T, "format"),
+        else => false,
+    };
+    if (has_format) {
+        try writer.print("{f}", .{field_value.*});
+    } else if (comptime @typeInfo(T) == .@"enum") {
+        if (std.enums.tagName(T, field_value.*)) |tag_name| {
+            try writer.print("{s}.{s}", .{ @typeName(T), tag_name });
+        } else {
+            // Protocol enums are deliberately non-exhaustive so state machines can use the
+            // remaining numeric values. Zig 0.16 makes `@tagName` panic for those valid unnamed
+            // values, so preserve them numerically in diagnostic output.
+            try writer.print("{s}({d})", .{ @typeName(T), @intFromEnum(field_value.*) });
+        }
+    } else {
+        try writer.print("{any}", .{field_value.*});
+    }
 }
 
 fn format_header_field_skip(
@@ -1764,7 +1777,7 @@ test format_header {
 
     try snap(@src(),
         \\Prepare{ .checksum=00000000000000000123456789abcdef, .checksum_body=0000000000000000fedcba9876543210, .cluster=1, .size=321, .epoch=0, .view=2, .release=0.0.0, .protocol=0, .command=vsr.Command.prepare, .replica=3, .parent=000000000abcdeffedcba00123456789, .request_checksum=00000000000000012345678987654321, .checkpoint_id=00000000000000000000000000000004, .client=5, .op=5, .commit=6, .timestamp=123456789, .request=7, .operation=vsr.Operation.pulse }
-    ).diff_fmt("{}", .{prepare});
+    ).diff_fmt("{f}", .{prepare});
 
     // Check that non-zero padding/reserved fields are printed.
     prepare.checksum_padding = 1;
@@ -1772,5 +1785,17 @@ test format_header {
     prepare.reserved[0] = 3;
     try snap(@src(),
         \\Prepare{ .checksum=00000000000000000123456789abcdef, .checksum_padding=00000000000000000000000000000001, .checksum_body=0000000000000000fedcba9876543210, .cluster=1, .size=321, .epoch=0, .view=2, .release=0.0.0, .protocol=0, .command=vsr.Command.prepare, .replica=3, .reserved_frame={ 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .parent=000000000abcdeffedcba00123456789, .request_checksum=00000000000000012345678987654321, .checkpoint_id=00000000000000000000000000000004, .client=5, .op=5, .commit=6, .timestamp=123456789, .request=7, .operation=vsr.Operation.pulse, .reserved={ 3, 0, 0 } }
-    ).diff_fmt("{}", .{prepare});
+    ).diff_fmt("{f}", .{prepare});
+}
+
+test "format non-exhaustive enum header field" {
+    const operation: Operation = @enumFromInt(140);
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+
+    try format_header_field("operation", Operation, &operation, &output.writer);
+    try std.testing.expectEqualStrings(
+        ", .operation=vsr.Operation(140)",
+        output.written(),
+    );
 }

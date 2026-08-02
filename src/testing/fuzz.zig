@@ -123,7 +123,7 @@ pub fn DeclEnumExcludingType(T: type, exclude: []const std.meta.DeclEnum(T)) typ
     }
     assert(i == fields_filtered.len);
 
-    return @Type(.{ .@"enum" = .{
+    return stdx.type_from_info(.{ .@"enum" = .{
         .tag_type = base.tag_type,
         .fields = &fields_filtered,
         .decls = &.{},

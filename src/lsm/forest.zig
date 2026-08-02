@@ -52,7 +52,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
         };
     }
 
-    const _Grooves = @Type(.{
+    const _Grooves = stdx.type_from_info(.{
         .@"struct" = .{
             .layout = .auto,
             .fields = &groove_fields,
@@ -61,7 +61,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
         },
     });
 
-    const _GroovesOptions = @Type(.{
+    const _GroovesOptions = stdx.type_from_info(.{
         .@"struct" = .{
             .layout = .auto,
             .fields = &groove_options_fields,
@@ -151,7 +151,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 .value = tree_info.tree_id,
             };
         }
-        break :tree_id @Type(.{ .@"enum" = .{
+        break :tree_id stdx.type_from_info(.{ .@"enum" = .{
             .tag_type = u16,
             .fields = &fields,
             .decls = &.{},
@@ -779,7 +779,7 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
         }
 
         fn checkpoint_iop_release_callback(ctx: *anyopaque) void {
-            const forest: *Forest = @alignCast(@ptrCast(ctx));
+            const forest: *Forest = @ptrCast(@alignCast(ctx));
             assert(forest.progress.? == .checkpoint);
 
             if (!forest.resource_pool.idle()) return;

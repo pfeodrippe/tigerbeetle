@@ -56,26 +56,33 @@ pub fn make(
     const arena = shell.arena.allocator();
     const dos_timestamp = stdx.Shell.unix_to_dos_timestamp(commit_timestamp);
 
-    if (std.fs.path.dirname(output_path)) |path| try shell.cwd.makePath(path);
-    const output_file = try shell.cwd.createFile(output_path, .{});
-    defer output_file.close();
+    if (std.fs.path.dirname(output_path)) |path| {
+        try shell.cwd.createDirPath(stdx.process_io, path);
+    }
+    const output_file = try shell.cwd.createFile(stdx.process_io, output_path, .{});
+    defer output_file.close(stdx.process_io);
 
-    var buffered_writer = std.io.bufferedWriter(output_file.writer());
-    const writer = buffered_writer.writer();
+    var output_buffer: [4096]u8 = undefined;
+    var file_writer = output_file.writer(stdx.process_io, &output_buffer);
+    const writer = &file_writer.interface;
 
-    var metadata_buffer = std.ArrayList(u8).init(arena);
-    try metadata_buffer.writer().print(metadata_header, .{tag});
+    var metadata_buffer = std.array_list.Managed(u8).init(arena);
+    try metadata_buffer.print(metadata_header, .{tag});
     try metadata_buffer.appendSlice(readme);
     const metadata = metadata_buffer.items;
 
-    var package_dir = try shell.cwd.openDir("src/tigerbeetle", .{ .iterate = true });
-    defer package_dir.close();
+    var package_dir = try shell.cwd.openDir(
+        stdx.process_io,
+        "src/tigerbeetle",
+        .{ .iterate = true },
+    );
+    defer package_dir.close(stdx.process_io);
 
     var walker = try package_dir.walk(arena);
     defer walker.deinit();
 
-    var file_paths = std.ArrayList([]const u8).init(arena);
-    while (try walker.next()) |entry| {
+    var file_paths = std.array_list.Managed([]const u8).init(arena);
+    while (try walker.next(stdx.process_io)) |entry| {
         if (entry.kind != .file) continue;
         try file_paths.append(try arena.dupe(u8, entry.path));
     }
@@ -83,11 +90,16 @@ pub fn make(
     std.mem.sort([]const u8, file_paths.items, {}, string_less_than);
 
     var offset: u32 = 0;
-    var entries = std.ArrayList(Entry).init(arena);
+    var entries = std.array_list.Managed(Entry).init(arena);
 
     for (file_paths.items) |relative_path| {
         const archive_name = try shell.fmt("tigerbeetle/{s}", .{relative_path});
-        const data = try package_dir.readFileAlloc(arena, relative_path, file_size_max);
+        const data = try package_dir.readFileAlloc(
+            stdx.process_io,
+            relative_path,
+            arena,
+            .limited(file_size_max),
+        );
         try add_entry(arena, &entries, writer, &offset, archive_name, data, dos_timestamp);
     }
 
@@ -101,13 +113,13 @@ pub fn make(
 
     // Build RECORD: all prior entries with sha256 hashes, then RECORD itself with empty fields.
     const record_name = try shell.fmt("{s}/RECORD", .{dist_info});
-    var record_buffer = std.ArrayList(u8).init(arena);
+    var record_buffer = std.array_list.Managed(u8).init(arena);
     for (entries.items) |entry| {
-        try record_buffer.writer().print("{s},sha256={s},{d}\n", .{
+        try record_buffer.print("{s},sha256={s},{d}\n", .{
             entry.archive_name, entry.sha256_base64, entry.uncompressed_size,
         });
     }
-    try record_buffer.writer().print("{s},,\n", .{record_name});
+    try record_buffer.print("{s},,\n", .{record_name});
     try add_entry(
         arena,
         &entries,
@@ -140,7 +152,7 @@ pub fn make(
             .external_file_attributes = 0,
             .local_file_header_offset = entry.local_header_offset,
         };
-        try writer.writeStructEndian(central_directory_header, .little);
+        try writer.writeStruct(central_directory_header, .little);
         try writer.writeAll(entry.archive_name);
         offset += @intCast(@sizeOf(std.zip.CentralDirectoryFileHeader) + entry.archive_name.len);
     }
@@ -155,15 +167,15 @@ pub fn make(
         .central_directory_offset = central_directory_offset,
         .comment_len = 0,
     };
-    try writer.writeStructEndian(end_record, .little);
+    try writer.writeStruct(end_record, .little);
 
-    try buffered_writer.flush();
+    try writer.flush();
 }
 
 fn add_entry(
     arena: std.mem.Allocator,
-    entries: *std.ArrayList(Entry),
-    writer: anytype,
+    entries: *std.array_list.Managed(Entry),
+    writer: *std.Io.Writer,
     offset: *u32,
     archive_name: []const u8,
     data: []const u8,
@@ -171,11 +183,20 @@ fn add_entry(
 ) !void {
     const crc32 = std.hash.Crc32.hash(data);
 
-    var compressed_buffer = std.ArrayList(u8).init(arena);
-    var compressor = try std.compress.flate.compressor(compressed_buffer.writer(), .{});
-    try compressor.writer().writeAll(data);
+    var compressed_buffer: std.Io.Writer.Allocating = .init(arena);
+    defer compressed_buffer.deinit();
+
+    try compressed_buffer.ensureTotalCapacity(4096);
+    const compression_buffer = try arena.alloc(u8, std.compress.flate.max_window_len);
+    var compressor = try std.compress.flate.Compress.init(
+        &compressed_buffer.writer,
+        compression_buffer,
+        .raw,
+        .default,
+    );
+    try compressor.writer.writeAll(data);
     try compressor.finish();
-    const compressed = compressed_buffer.items;
+    const compressed = compressed_buffer.written();
 
     var sha256_digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(data, &sha256_digest, .{});
@@ -197,7 +218,7 @@ fn add_entry(
         .filename_len = @intCast(archive_name.len),
         .extra_len = 0,
     };
-    try writer.writeStructEndian(local_header, .little);
+    try writer.writeStruct(local_header, .little);
     try writer.writeAll(archive_name);
     try writer.writeAll(compressed);
 

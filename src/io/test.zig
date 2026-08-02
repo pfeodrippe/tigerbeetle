@@ -13,6 +13,7 @@ const Duration = stdx.Duration;
 const TimeOS = @import("../time.zig").TimeOS;
 const Time = @import("../time.zig").Time;
 const IO = @import("../io.zig").IO;
+const io_common = @import("common.zig");
 
 pub const tcp_options: IO.TCPOptions = .{
     .rcvbuf = 0,
@@ -47,7 +48,7 @@ test "open/write/read/close/statx" {
             defer self.io.deinit();
 
             // The file gets created below, either by createFile or openat.
-            defer std.fs.cwd().deleteFile(self.path) catch {};
+            defer std.Io.Dir.cwd().deleteFile(stdx.process_io, self.path) catch {};
 
             var completion: IO.Completion = undefined;
 
@@ -60,10 +61,10 @@ test "open/write/read/close/statx" {
                     posix.AT.FDCWD,
                     self.path,
                     .{ .ACCMODE = .RDWR, .TRUNC = true, .CREAT = true },
-                    std.fs.File.default_mode,
+                    0o666,
                 );
             } else {
-                const file = try std.fs.cwd().createFile(self.path, .{
+                const file = try std.Io.Dir.cwd().createFile(stdx.process_io, self.path, .{
                     .read = true,
                     .truncate = true,
                 });
@@ -184,20 +185,11 @@ test "accept/connect/send/receive" {
             const client = try io.open_socket_tcp(address.ip.family(), tcp_options);
             defer io.close_socket(client);
 
-            try posix.setsockopt(
+            const client_address = try io_common.listen(
                 server,
-                posix.SOL.SOCKET,
-                posix.SO.REUSEADDR,
-                &std.mem.toBytes(@as(c_int, 1)),
+                address,
+                .{ .backlog = kernel_backlog },
             );
-            const address_std = address.to_std();
-            try posix.bind(server, &address_std.any, address_std.getOsSockLen());
-            try posix.listen(server, kernel_backlog);
-
-            var client_address_std = std.net.Address.initIp4(undefined, undefined);
-            var client_address_std_len = client_address_std.getOsSockLen();
-            try posix.getsockname(server, &client_address_std.any, &client_address_std_len);
-            const client_address = try stdx.SocketAddress.from_std(client_address_std);
 
             var self: Context = .{
                 .io = &io,
@@ -390,7 +382,11 @@ test "event" {
         fn trigger_event(self: *Context) void {
             assert(std.Thread.getCurrentId() != self.main_thread_id);
             while (self.count < events_count) {
-                std.time.sleep(delay + 1);
+                std.Io.sleep(
+                    stdx.process_io,
+                    .fromNanoseconds(delay + 1),
+                    .awake,
+                ) catch unreachable;
 
                 // Triggering the event:
                 self.io.event_trigger(self.event, &self.event_completion);
@@ -482,20 +478,11 @@ test "tick to wait" {
             const server = try self.io.open_socket_tcp(address.ip.family(), tcp_options);
             defer self.io.close_socket(server);
 
-            try posix.setsockopt(
+            const client_address = try io_common.listen(
                 server,
-                posix.SOL.SOCKET,
-                posix.SO.REUSEADDR,
-                &std.mem.toBytes(@as(c_int, 1)),
+                address,
+                .{ .backlog = kernel_backlog },
             );
-            const address_std = address.to_std();
-            try posix.bind(server, &address_std.any, address_std.getOsSockLen());
-            try posix.listen(server, kernel_backlog);
-
-            var client_address_std = std.net.Address.initIp4(undefined, undefined);
-            var client_address_std_len = client_address_std.getOsSockLen();
-            try posix.getsockname(server, &client_address_std.any, &client_address_std_len);
-            const client_address = try stdx.SocketAddress.from_std(client_address_std);
 
             const client = try self.io.open_socket_tcp(client_address.ip.family(), tcp_options);
             defer self.io.close_socket(client);
@@ -599,7 +586,14 @@ test "tick to wait" {
         }
 
         fn os_send(sock: posix.socket_t, buf: []const u8, flags: u32) !usize {
-            return posix.sendto(sock, buf, flags, null, 0);
+            while (true) {
+                const rc = posix.system.sendto(sock, buf.ptr, buf.len, flags, null, 0);
+                switch (posix.errno(rc)) {
+                    .SUCCESS => return @intCast(rc),
+                    .INTR => continue,
+                    else => |err| return stdx.unexpected_errno("sendto", err),
+                }
+            }
         }
     }.run_test();
 }
@@ -644,25 +638,11 @@ test "pipe data over socket" {
             defer self.io.close_socket(self.server.fd.?);
 
             const address: stdx.SocketAddress = .{ .ip = .@"127.0.0.1", .port = 0 };
-            try posix.setsockopt(
+            const client_address = try io_common.listen(
                 self.server.fd.?,
-                posix.SOL.SOCKET,
-                posix.SO.REUSEADDR,
-                &std.mem.toBytes(@as(c_int, 1)),
+                address,
+                .{ .backlog = 1 },
             );
-
-            const address_std = address.to_std();
-            try posix.bind(self.server.fd.?, &address_std.any, address_std.getOsSockLen());
-            try posix.listen(self.server.fd.?, 1);
-
-            var client_address_std = std.net.Address.initIp4(undefined, undefined);
-            var client_address_std_len = client_address_std.getOsSockLen();
-            try posix.getsockname(
-                self.server.fd.?,
-                &client_address_std.any,
-                &client_address_std_len,
-            );
-            const client_address = try stdx.SocketAddress.from_std(client_address_std);
 
             self.io.accept(
                 *Context,

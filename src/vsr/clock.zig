@@ -81,7 +81,6 @@
 //! [Detecting Clock Sync Failure in Highly Available Systems](https://youtu.be/7R-Iz6sJG6Q?si=9sD2TpfD29AxUjOY)
 const std = @import("std");
 const assert = std.debug.assert;
-const fmt = std.fmt;
 
 const stdx = @import("stdx");
 const log = stdx.log.scoped(.clock);
@@ -502,7 +501,7 @@ fn synchronize(self: *Clock) void {
         const new_interval = self.window.synchronized.?;
         log.info("{}: synchronized: accuracy={}", .{
             self.replica,
-            fmt.fmtDurationSigned(new_interval.upper_bound - new_interval.lower_bound),
+            stdx.fmt_duration_signed(new_interval.upper_bound - new_interval.lower_bound),
         });
     }
 
@@ -521,9 +520,9 @@ fn after_synchronization(self: *Clock) void {
         self.replica,
         new_interval.sources_true,
         self.epoch.sources.len,
-        fmt.fmtDurationSigned(new_interval.lower_bound),
-        fmt.fmtDurationSigned(new_interval.upper_bound),
-        fmt.fmtDurationSigned(new_interval.upper_bound - new_interval.lower_bound),
+        stdx.fmt_duration_signed(new_interval.lower_bound),
+        stdx.fmt_duration_signed(new_interval.upper_bound),
+        stdx.fmt_duration_signed(new_interval.upper_bound - new_interval.lower_bound),
     });
 
     const elapsed: i64 = @intCast(self.epoch.elapsed(self));
@@ -547,14 +546,14 @@ fn after_synchronization(self: *Clock) void {
         if (delta < delta_warning) {
             log.debug("{}: system time is {} behind", .{
                 self.replica,
-                fmt.fmtDurationSigned(delta),
+                stdx.fmt_duration_signed(delta),
             });
         } else {
             log.warn(
                 "{}: system time is {} behind, clamping system time to cluster time",
                 .{
                     self.replica,
-                    fmt.fmtDurationSigned(delta),
+                    stdx.fmt_duration_signed(delta),
                 },
             );
         }
@@ -565,12 +564,12 @@ fn after_synchronization(self: *Clock) void {
         if (delta < delta_warning) {
             log.debug("{}: system time is {} ahead", .{
                 self.replica,
-                fmt.fmtDurationSigned(delta),
+                stdx.fmt_duration_signed(delta),
             });
         } else {
             log.warn("{}: system time is {} ahead, clamping system time to cluster time", .{
                 self.replica,
-                fmt.fmtDurationSigned(delta),
+                stdx.fmt_duration_signed(delta),
             });
         }
     }
@@ -1015,12 +1014,12 @@ test "clock: fuzz test" {
         clock_count,
     });
     log.info("absolute clock offsets with respect to test time:\n", .{});
-    log.info("maximum={}\n", .{fmt.fmtDurationSigned(@as(i64, @intCast(max_clock_offset)))});
-    log.info("minimum={}\n", .{fmt.fmtDurationSigned(@as(i64, @intCast(min_clock_offset)))});
+    log.info("maximum={}\n", .{stdx.fmt_duration_signed(@as(i64, @intCast(max_clock_offset)))});
+    log.info("minimum={}\n", .{stdx.fmt_duration_signed(@as(i64, @intCast(min_clock_offset)))});
     log.info("\nabsolute synchronization errors between clocks:\n", .{});
-    log.info("maximum={}\n", .{fmt.fmtDurationSigned(@as(i64, @intCast(max_sync_error)))});
-    log.info("minimum={}\n", .{fmt.fmtDurationSigned(@as(i64, @intCast(min_sync_error)))});
-    log.info("clock ticks without synchronization={d}\n", .{
+    log.info("maximum={}\n", .{stdx.fmt_duration_signed(@as(i64, @intCast(max_sync_error)))});
+    log.info("minimum={}\n", .{stdx.fmt_duration_signed(@as(i64, @intCast(min_sync_error)))});
+    log.info("clock ticks without synchronization={any}\n", .{
         clock_ticks_without_synchronization,
     });
 }

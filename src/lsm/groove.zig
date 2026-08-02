@@ -420,7 +420,7 @@ pub fn GrooveType(
         break :T TreeType(Table, Storage);
     };
 
-    const _IndexTrees = @Type(.{
+    const _IndexTrees = stdx.type_from_info(.{
         .@"struct" = .{
             .layout = .auto,
             .fields = index_fields,
@@ -428,7 +428,7 @@ pub fn GrooveType(
             .is_tuple = false,
         },
     });
-    const _IndexTreeOptions = @Type(.{
+    const _IndexTreeOptions = stdx.type_from_info(.{
         .@"struct" = .{
             .layout = .auto,
             .fields = &index_options_fields,
@@ -1522,7 +1522,7 @@ pub fn GrooveType(
             ) *PrefetchWorker {
                 const lookup: *LookupContext = @fieldParentPtr(@tagName(field), completion);
                 assert(lookup.* ==
-                    comptime std.enums.nameCast(std.meta.Tag(LookupContext), field));
+                    comptime @field(std.meta.Tag(LookupContext), @tagName(field)));
 
                 return @fieldParentPtr("lookup", lookup);
             }
@@ -1597,7 +1597,7 @@ pub fn GrooveType(
                         );
                         tree.lookup_from_levels_storage(.{
                             .callback = callback,
-                            .context = worker.lookup_context(comptime std.enums.nameCast(
+                            .context = worker.lookup_context(comptime @field(
                                 Field,
                                 @tagName(field),
                             )),
@@ -1619,12 +1619,12 @@ pub fn GrooveType(
                         result: ?*const Tree.Value,
                     ) void {
                         const worker: *PrefetchWorker = worker_from_completion(
-                            comptime std.enums.nameCast(Field, @tagName(field)),
+                            comptime @field(Field, @tagName(field)),
                             completion,
                         );
                         assert(worker.current != null);
                         assert(worker.lookup ==
-                            comptime std.enums.nameCast(std.meta.Tag(LookupContext), field));
+                            comptime @field(std.meta.Tag(LookupContext), @tagName(field)));
 
                         worker.lookup = .null;
 

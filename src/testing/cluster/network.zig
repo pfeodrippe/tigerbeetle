@@ -373,13 +373,8 @@ pub const MessageSummary = struct {
 
     pub fn format(
         summary: MessageSummary,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
-
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
         const slice = comptime std.enums.values(vsr.Command);
         var commands = slice[0..slice.len].*;
         std.mem.sort(vsr.Command, &commands, summary.map, greater_than);
@@ -395,14 +390,14 @@ pub const MessageSummary = struct {
                 try writer.print("{s:<24} {d:>7} {:>10.2}\n", .{
                     @tagName(command),
                     message_summary.count,
-                    std.fmt.fmtIntSizeBin(message_summary.size),
+                    stdx.fmt_int_size_bin(message_summary.size),
                 });
             }
         }
         try writer.print("{s:<24} {d:>7} {:>10.2}\n", .{
             "total",
             total_count,
-            std.fmt.fmtIntSizeBin(total_size),
+            stdx.fmt_int_size_bin(total_size),
         });
     }
 

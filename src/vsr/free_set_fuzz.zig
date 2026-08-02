@@ -39,10 +39,10 @@ fn run_fuzz(
     var free_set_model = try FreeSetModel.init(gpa, blocks_count);
     defer free_set_model.deinit(gpa);
 
-    var active_reservations = std.ArrayList(Reservation).init(gpa);
+    var active_reservations = std.array_list.Managed(Reservation).init(gpa);
     defer active_reservations.deinit();
 
-    var active_addresses = std.ArrayList(u64).init(gpa);
+    var active_addresses = std.array_list.Managed(u64).init(gpa);
     defer active_addresses.deinit();
 
     for (events) |event| {

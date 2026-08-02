@@ -447,7 +447,7 @@ pub const CreateTransferStatus = enum(u32) {
         var type_info = @typeInfo(enum {});
         type_info.@"enum".tag_type = std.meta.Tag(CreateTransferStatus);
         type_info.@"enum".fields = &fields;
-        break :type @Type(type_info);
+        break :type stdx.type_from_info(type_info);
     };
 
     pub fn to_ordered(value: CreateTransferStatus) Ordered {

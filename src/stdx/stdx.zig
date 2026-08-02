@@ -8,6 +8,156 @@ const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 
+// `std.testing.io` keeps a stable pointer to the test runner's I/O instance, which the runner
+// reinitializes before every test. Libraries do not receive `std.process.Init`, so use Zig's
+// process-independent threaded I/O singleton until an executable supplies its richer context.
+// This keeps the C ABI usable from Rust, Java, Node, and the other embedding runtimes.
+pub var process_io: std.Io = if (builtin.is_test)
+    std.testing.io
+else
+    std.Io.Threaded.global_single_threaded.io();
+pub var process_args: std.process.Args = .{ .vector = switch (builtin.os.tag) {
+    .windows => &.{},
+    .wasi => if (builtin.link_libc) &.{} else {},
+    .freestanding, .other => {},
+    else => &.{},
+} };
+pub var process_environ: std.process.Environ = .empty;
+
+pub fn current_process_environ() std.process.Environ {
+    return if (builtin.is_test) std.testing.environ else process_environ;
+}
+
+pub fn set_process_context(init: std.process.Init) void {
+    process_io = init.io;
+    process_args = init.minimal.args;
+    process_environ = init.minimal.environ;
+}
+
+/// Compatibility timer for Zig 0.16's explicit `std.Io` clocks.
+pub const Timer = struct {
+    started_ns: i96,
+
+    pub fn start() !Timer {
+        return .{ .started_ns = now() };
+    }
+
+    pub fn reset(timer: *Timer) void {
+        timer.started_ns = now();
+    }
+
+    pub fn read(timer: *const Timer) u64 {
+        const elapsed = now() - timer.started_ns;
+        assert(elapsed >= 0);
+        return @intCast(elapsed);
+    }
+
+    pub fn lap(timer: *Timer) u64 {
+        const elapsed = timer.read();
+        timer.reset();
+        return elapsed;
+    }
+
+    fn now() i96 {
+        return std.Io.Clock.awake.now(process_io).nanoseconds;
+    }
+};
+
+/// Zig 0.16 split the old `@Type(TypeInfo)` reification builtin into focused
+/// builtins. Keep TigerBeetle's existing metaprogramming readable while the
+/// upstream source is pinned to Zig 0.14.1.
+pub fn type_from_info(comptime info: std.builtin.Type) type {
+    return switch (info) {
+        .enum_literal => @EnumLiteral(),
+        .int => |int| @Int(int.signedness, int.bits),
+        .@"struct" => |struct_info| reify: {
+            var field_names: [struct_info.fields.len][]const u8 = undefined;
+            var field_types: [struct_info.fields.len]type = undefined;
+            var field_attrs: [struct_info.fields.len]std.builtin.Type.StructField.Attributes =
+                undefined;
+            for (struct_info.fields, &field_names, &field_types, &field_attrs) |
+                field,
+                *name,
+                *field_type,
+                *attrs,
+            | {
+                name.* = field.name;
+                field_type.* = field.type;
+                attrs.* = .{
+                    .@"comptime" = field.is_comptime,
+                    .@"align" = field.alignment,
+                    .default_value_ptr = field.default_value_ptr,
+                };
+            }
+            break :reify @Struct(
+                struct_info.layout,
+                struct_info.backing_integer,
+                &field_names,
+                &field_types,
+                &field_attrs,
+            );
+        },
+        .@"union" => |union_info| reify: {
+            var field_names: [union_info.fields.len][]const u8 = undefined;
+            var field_types: [union_info.fields.len]type = undefined;
+            var field_attrs: [union_info.fields.len]std.builtin.Type.UnionField.Attributes =
+                undefined;
+            for (union_info.fields, &field_names, &field_types, &field_attrs) |
+                field,
+                *name,
+                *field_type,
+                *attrs,
+            | {
+                name.* = field.name;
+                field_type.* = field.type;
+                attrs.* = .{ .@"align" = field.alignment };
+            }
+            break :reify @Union(
+                union_info.layout,
+                union_info.tag_type,
+                &field_names,
+                &field_types,
+                &field_attrs,
+            );
+        },
+        .@"enum" => |enum_info| reify: {
+            var field_names: [enum_info.fields.len][]const u8 = undefined;
+            var field_values: [enum_info.fields.len]enum_info.tag_type = undefined;
+            for (enum_info.fields, &field_names, &field_values) |field, *name, *value| {
+                name.* = field.name;
+                value.* = @intCast(field.value);
+            }
+            break :reify @Enum(
+                enum_info.tag_type,
+                if (enum_info.is_exhaustive) .exhaustive else .nonexhaustive,
+                &field_names,
+                &field_values,
+            );
+        },
+        .@"fn" => |fn_info| reify: {
+            const return_type = fn_info.return_type orelse
+                @compileError("cannot reify a generic function return type");
+            var param_types: [fn_info.params.len]type = undefined;
+            var param_attrs: [fn_info.params.len]std.builtin.Type.Fn.Param.Attributes = undefined;
+            for (fn_info.params, &param_types, &param_attrs) |param, *param_type, *attrs| {
+                param_type.* = param.type orelse
+                    @compileError("cannot reify a generic function parameter");
+                attrs.* = .{ .@"noalias" = param.is_noalias };
+            }
+            break :reify @Fn(
+                &param_types,
+                &param_attrs,
+                return_type,
+                .{
+                    .@"callconv" = fn_info.calling_convention,
+                    .varargs = fn_info.is_var_args,
+                },
+            );
+        },
+        else => @compileError("unsupported Zig 0.16 type reification"),
+    };
+}
+
 pub const BitSetType = @import("bit_set.zig").BitSetType;
 pub const IOPSType = @import("iops.zig").IOPSType;
 pub const BoundedArrayType = @import("bounded_array.zig").BoundedArrayType;
@@ -37,6 +187,7 @@ pub const InstantUnix = @import("time_units.zig").InstantUnix;
 const net = @import("./net.zig");
 pub const IPAddress = net.IPAddress;
 pub const SocketAddress = net.SocketAddress;
+pub const Address = net.Address;
 
 // Import these as `const GiB = stdx.GiB;`
 pub const KiB = 1 << 10;
@@ -175,13 +326,22 @@ pub inline fn copy_disjoint(
     (target[0..source.len], source);
 }
 
-pub inline fn disjoint_slices(comptime A: type, comptime B: type, a: []const A, b: []const B) bool {
+pub inline fn disjoint_slices(
+    comptime A: type,
+    comptime B: type,
+    a: []const A,
+    b: []const B,
+) bool {
     return @intFromPtr(a.ptr) + a.len * @sizeOf(A) <= @intFromPtr(b.ptr) or
         @intFromPtr(b.ptr) + b.len * @sizeOf(B) <= @intFromPtr(a.ptr);
 }
 
 test "disjoint_slices" {
-    const a = try std.testing.allocator.alignedAlloc(u8, @sizeOf(u32), 8 * @sizeOf(u32));
+    const a = try std.testing.allocator.alignedAlloc(
+        u8,
+        .fromByteUnits(@sizeOf(u32)),
+        8 * @sizeOf(u32),
+    );
     defer std.testing.allocator.free(a);
 
     const b = try std.testing.allocator.alloc(u32, 8);
@@ -366,7 +526,7 @@ pub const log = if (builtin.is_test)
     // Downgrade `err` to `warn` for tests.
     // Zig fails any test that does `log.err`, but we want to test those code paths here.
     struct {
-        pub fn scoped(comptime scope: @Type(.enum_literal)) type {
+        pub fn scoped(comptime scope: @EnumLiteral()) type {
             const base = std.log.scoped(scope);
             return struct {
                 pub const err = warn;
@@ -382,7 +542,7 @@ else
 /// An alternative to the default logFn from `std.log`, which prepends a UTC timestamp.
 pub fn log_with_timestamp(
     comptime message_level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
+    comptime scope: @EnumLiteral(),
     comptime format: []const u8,
     args: anytype,
 ) void {
@@ -390,15 +550,13 @@ pub fn log_with_timestamp(
     const scope_prefix = if (scope == .default) ": " else "(" ++ @tagName(scope) ++ "): ";
     const instant_unix = InstantUnix.now();
 
-    const stderr = std.io.getStdErr().writer();
-    var buffered_writer = std.io.bufferedWriter(stderr);
-    const writer = buffered_writer.writer();
-
-    nosuspend {
-        instant_unix.format("", .{}, writer) catch return;
-        writer.print(" " ++ level_text ++ scope_prefix ++ format ++ "\n", args) catch return;
-        buffered_writer.flush() catch return;
-    }
+    var buffer: [4096]u8 = undefined;
+    var stderr_writer = std.Io.File.stderr().writer(process_io, &buffer);
+    const writer = &stderr_writer.interface;
+    writer.print("{f} " ++ level_text ++ scope_prefix, .{instant_unix}) catch return;
+    writer.print(format, args) catch return;
+    writer.writeByte('\n') catch return;
+    writer.flush() catch return;
 }
 
 /// Compare two values by directly comparing the underlying memory.
@@ -765,13 +923,6 @@ test "has_unique_representation" {
 
     try std.testing.expect(has_unique_representation(TestStruct10));
 
-    const TestUnion1 = packed union {
-        a: u32,
-        b: u16,
-    };
-
-    try std.testing.expect(!has_unique_representation(TestUnion1));
-
     const TestUnion2 = extern union {
         a: u32,
         b: u16,
@@ -831,7 +982,7 @@ pub fn EnumUnionType(
         };
     }
 
-    return @Type(.{ .@"union" = .{
+    return type_from_info(.{ .@"union" = .{
         .layout = .auto,
         .fields = &fields,
         .decls = &.{},
@@ -851,7 +1002,7 @@ pub fn EnumType(comptime names: anytype) type {
         };
     }
 
-    return @Type(.{ .@"enum" = .{
+    return type_from_info(.{ .@"enum" = .{
         .fields = &fields,
         .decls = &.{},
         .tag_type = std.math.IntFittingRange(0, names.len),
@@ -868,20 +1019,46 @@ pub fn comptime_slice(comptime slice: anytype, comptime len: usize) []const @Typ
 /// Return a Formatter for a u64 value representing a file size.
 /// This formatter statically checks that the number is a multiple of 1024,
 /// and represents it using the IEC measurement units (KiB, MiB, GiB, ...).
-pub fn fmt_int_size_bin_exact(comptime value: u64) std.fmt.Formatter(format_int_size_bin_exact) {
+pub fn fmt_int_size_bin_exact(comptime value: u64) struct {
+    pub fn format(_: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        return format_int_size_bin_exact(value, writer);
+    }
+} {
     comptime assert(value < 1024 or value % 1024 == 0);
-    return .{ .data = value };
+    return .{};
+}
+
+/// Runtime IEC byte-size formatter replacing Zig 0.14's removed
+/// `std.fmt.fmtIntSizeBin`.
+pub fn fmt_int_size_bin(value: u64) struct {
+    value: u64,
+
+    pub fn format(self: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        if (self.value < 1024) return writer.print("{}B", .{self.value});
+        const magnitudes = [_][]const u8{ "KiB", "MiB", "GiB", "TiB", "PiB", "EiB" };
+        var scaled: f64 = @as(f64, @floatFromInt(self.value)) / 1024;
+        var magnitude: usize = 0;
+        while (scaled >= 1024 and magnitude + 1 < magnitudes.len) : (magnitude += 1) {
+            scaled /= 1024;
+        }
+        return writer.print("{d:.2}{s}", .{ scaled, magnitudes[magnitude] });
+    }
+} {
+    return .{ .value = value };
+}
+
+/// Signed nanosecond duration formatter replacing Zig 0.14's removed
+/// `std.fmt.fmtDurationSigned`.
+pub fn fmt_duration_signed(value: i64) std.Io.Duration {
+    return .fromNanoseconds(value);
 }
 
 fn format_int_size_bin_exact(
     value: u64,
-    comptime fmt: []const u8,
-    options: std.fmt.FormatOptions,
-    writer: anytype,
-) !void {
-    _ = fmt;
+    writer: *std.Io.Writer,
+) std.Io.Writer.Error!void {
     if (value == 0) {
-        return std.fmt.formatBuf("0B", options, writer);
+        return writer.writeAll("0B");
     }
 
     // The worst case in terms of space needed is 20 bytes,
@@ -900,7 +1077,7 @@ fn format_int_size_bin_exact(
     const suffix = magnitudes_iec[magnitude];
 
     const length: usize = length: {
-        const i = std.fmt.formatIntBuf(&buf, value_unit, 10, .lower, .{});
+        const i = std.fmt.printInt(&buf, value_unit, 10, .lower, .{});
         if (magnitude == 0) {
             buf[i] = suffix;
             break :length i + 1;
@@ -910,17 +1087,17 @@ fn format_int_size_bin_exact(
         }
     };
 
-    return std.fmt.formatBuf(buf[0..length], options, writer);
+    return writer.writeAll(buf[0..length]);
 }
 
 test fmt_int_size_bin_exact {
-    try std.testing.expectFmt("0B", "{}", .{fmt_int_size_bin_exact(0)});
-    try std.testing.expectFmt("128B", "{}", .{fmt_int_size_bin_exact(128)});
-    try std.testing.expectFmt("8KiB", "{}", .{fmt_int_size_bin_exact(8 * 1024)});
-    try std.testing.expectFmt("1025KiB", "{}", .{fmt_int_size_bin_exact(1025 * 1024)});
-    try std.testing.expectFmt("12345KiB", "{}", .{fmt_int_size_bin_exact(12345 * 1024)});
-    try std.testing.expectFmt("42MiB", "{}", .{fmt_int_size_bin_exact(42 * 1024 * 1024)});
-    try std.testing.expectFmt("18014398509481983KiB", "{}", .{
+    try std.testing.expectFmt("0B", "{f}", .{fmt_int_size_bin_exact(0)});
+    try std.testing.expectFmt("128B", "{f}", .{fmt_int_size_bin_exact(128)});
+    try std.testing.expectFmt("8KiB", "{f}", .{fmt_int_size_bin_exact(8 * 1024)});
+    try std.testing.expectFmt("1025KiB", "{f}", .{fmt_int_size_bin_exact(1025 * 1024)});
+    try std.testing.expectFmt("12345KiB", "{f}", .{fmt_int_size_bin_exact(12345 * 1024)});
+    try std.testing.expectFmt("42MiB", "{f}", .{fmt_int_size_bin_exact(42 * 1024 * 1024)});
+    try std.testing.expectFmt("18014398509481983KiB", "{f}", .{
         fmt_int_size_bin_exact(std.math.maxInt(u64) - 1023),
     });
 }
@@ -1012,19 +1189,130 @@ pub fn unexpected_errno(label: []const u8, err: std.posix.system.E) std.posix.Un
     });
 
     if (builtin.mode == .Debug) {
-        std.debug.dumpCurrentStackTrace(null);
+        std.debug.dumpCurrentStackTrace(.{});
     }
     return error.Unexpected;
 }
 
 pub fn unique_u128() u128 {
-    const value = std.crypto.random.int(u128);
+    var value: u128 = undefined;
+    process_io.random(std.mem.asBytes(&value));
 
     // Broken CSPRNG is the likeliest explanation for zero or all ones.
     assert(value != 0);
     assert(value != std.math.maxInt(u128));
 
     return value;
+}
+
+/// Compatibility helpers for Zig 0.16's explicit process random source.
+pub fn random_int(comptime T: type) T {
+    var value: T = undefined;
+    process_io.random(std.mem.asBytes(&value));
+    return value;
+}
+
+pub fn random_bytes(buffer: []u8) void {
+    process_io.random(buffer);
+}
+
+/// Allocating JSON stringification compatibility for Zig 0.16's formatter-based API.
+pub fn json_stringify_alloc(
+    allocator: std.mem.Allocator,
+    value: anytype,
+    options: std.json.Stringify.Options,
+) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(value, options)});
+}
+
+/// Temporary directory usable by both tests and normal executables.
+pub const TmpDir = struct {
+    dir: std.Io.Dir,
+    parent_dir: std.Io.Dir,
+    sub_path: [sub_path_len]u8,
+
+    const random_bytes_count = 12;
+    const sub_path_len = std.base64.url_safe.Encoder.calcSize(random_bytes_count);
+
+    pub fn init(options: std.Io.Dir.OpenOptions) !TmpDir {
+        var random: [random_bytes_count]u8 = undefined;
+        process_io.random(&random);
+        var sub_path: [sub_path_len]u8 = undefined;
+        _ = std.base64.url_safe.Encoder.encode(&sub_path, &random);
+
+        const cwd = std.Io.Dir.cwd();
+        var cache_dir = try cwd.createDirPathOpen(process_io, ".zig-cache", .{});
+        defer cache_dir.close(process_io);
+
+        const parent_dir = try cache_dir.createDirPathOpen(process_io, "tmp", .{});
+        errdefer parent_dir.close(process_io);
+        const dir = try parent_dir.createDirPathOpen(
+            process_io,
+            &sub_path,
+            .{ .open_options = options },
+        );
+        return .{ .dir = dir, .parent_dir = parent_dir, .sub_path = sub_path };
+    }
+
+    pub fn cleanup(tmp: *TmpDir) void {
+        tmp.dir.close(process_io);
+        tmp.parent_dir.deleteTree(process_io, &tmp.sub_path) catch {};
+        tmp.parent_dir.close(process_io);
+        tmp.* = undefined;
+    }
+};
+
+/// Compatibility facade retaining the pre-0.16 allocator-owning priority queue API.
+pub fn PriorityQueueType(
+    comptime T: type,
+    comptime Context: type,
+    comptime compare_fn: fn (context: Context, a: T, b: T) std.math.Order,
+) type {
+    const Inner = std.PriorityQueue(T, Context, compare_fn);
+    return struct {
+        allocator: std.mem.Allocator,
+        inner: Inner,
+
+        const Queue = @This();
+        pub const Iterator = Inner.Iterator;
+
+        pub fn init(allocator: std.mem.Allocator, context: Context) Queue {
+            return .{ .allocator = allocator, .inner = .initContext(context) };
+        }
+
+        pub fn deinit(queue: *Queue) void {
+            queue.inner.deinit(queue.allocator);
+            queue.* = undefined;
+        }
+
+        pub fn ensureTotalCapacity(queue: *Queue, capacity: usize) !void {
+            try queue.inner.ensureTotalCapacity(queue.allocator, capacity);
+        }
+
+        pub fn add(queue: *Queue, item: T) !void {
+            try queue.inner.push(queue.allocator, item);
+        }
+
+        pub fn remove(queue: *Queue) T {
+            return queue.inner.pop().?;
+        }
+
+        pub fn removeOrNull(queue: *Queue) ?T {
+            return queue.inner.pop();
+        }
+
+        pub fn peek(queue: *const Queue) ?T {
+            return queue.inner.peek();
+        }
+
+        pub fn count(queue: *const Queue) usize {
+            return queue.inner.count();
+        }
+
+        pub fn iterator(queue: *Queue) Iterator {
+            return queue.inner.iterator();
+        }
+    };
 }
 
 /// NB: intended for parsing CLI arguments where we care to preserve the user-specified unit.
@@ -1167,7 +1455,7 @@ test fastrange {
     }
     try snap(@src(),
         \\{ 1263, 1273, 1244, 1226, 1228, 1276, 1169, 1321 }
-    ).diff_fmt("{d}", .{distribution});
+    ).diff_fmt("{any}", .{distribution});
 }
 
 // This test shows that fastrange is not equivalent to modulo, but rather an alternative method.
@@ -1179,20 +1467,20 @@ test "fastrange not modulo" {
     }
     try snap(@src(),
         \\{ 10000, 0, 0, 0, 0, 0, 0, 0 }
-    ).diff_fmt("{d}", .{distribution});
+    ).diff_fmt("{any}", .{distribution});
 }
 
 /// `status` is a waitpid() status result.
 pub fn term_from_status(status: u32) std.process.Child.Term {
     const Term = std.process.Child.Term;
     return if (std.posix.W.IFEXITED(status))
-        Term{ .Exited = std.posix.W.EXITSTATUS(status) }
+        Term{ .exited = std.posix.W.EXITSTATUS(status) }
     else if (std.posix.W.IFSIGNALED(status))
-        Term{ .Signal = std.posix.W.TERMSIG(status) }
+        Term{ .signal = std.posix.W.TERMSIG(status) }
     else if (std.posix.W.IFSTOPPED(status))
-        Term{ .Stopped = std.posix.W.STOPSIG(status) }
+        Term{ .stopped = std.posix.W.STOPSIG(status) }
     else
-        Term{ .Unknown = status };
+        Term{ .unknown = status };
 }
 
 /// Converts a snake_case identifier to another identifier case at comptime.

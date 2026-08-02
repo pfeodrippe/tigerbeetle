@@ -3204,12 +3204,34 @@ pub const JavaVM = opaque {
 fn JNIInterfaceType(comptime T: type) type {
     return struct {
         fn JniFnType(comptime function: T.FunctionTable) type {
+            @setEvalBranchQuota(100_000);
             const Fn = @TypeOf(@field(T, @tagName(function)));
-            var fn_info = @typeInfo(Fn);
+            const fn_info = @typeInfo(Fn);
             switch (fn_info) {
-                .@"fn" => {
-                    fn_info.@"fn".calling_convention = .c;
-                    return @Type(fn_info);
+                .@"fn" => |info| {
+                    const parameter_types = comptime types: {
+                        var types: [info.params.len]type = undefined;
+                        for (info.params, 0..) |parameter, index| {
+                            types[index] = parameter.type orelse
+                                @compileError("JNI functions cannot have generic parameters");
+                        }
+                        break :types types;
+                    };
+                    const parameter_attributes = comptime attributes: {
+                        var attributes: [info.params.len]@import("std").builtin.Type.Fn.Param.Attributes =
+                            undefined;
+                        for (info.params, 0..) |parameter, index| {
+                            attributes[index] = .{ .@"noalias" = parameter.is_noalias };
+                        }
+                        break :attributes attributes;
+                    };
+                    return @Fn(
+                        &parameter_types,
+                        &parameter_attributes,
+                        info.return_type orelse
+                            @compileError("JNI functions must have a return type"),
+                        .{ .@"callconv" = .c, .varargs = info.is_var_args },
+                    );
                 },
                 else => @compileError("Expected " ++ @tagName(function) ++ " to be a function"),
             }

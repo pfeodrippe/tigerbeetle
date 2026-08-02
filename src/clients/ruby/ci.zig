@@ -3,7 +3,8 @@ const builtin = @import("builtin");
 const log = std.log;
 const assert = std.debug.assert;
 
-const Shell = @import("stdx").Shell;
+const stdx = @import("stdx");
+const Shell = stdx.Shell;
 const TmpTigerBeetle = @import("../../testing/tmp_tigerbeetle.zig");
 
 pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
@@ -25,9 +26,10 @@ pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
         errdefer tmp_beetle.log_stderr();
 
         const tigerbeetle_exe = comptime "tigerbeetle" ++ builtin.target.exeFileExt();
-        const tigerbeetle_path = try shell.project_root.realpathAlloc(
-            shell.arena.allocator(),
+        const tigerbeetle_path = try shell.project_root.realPathFileAlloc(
+            stdx.process_io,
             tigerbeetle_exe,
+            shell.arena.allocator(),
         );
         try shell.env.put("TIGERBEETLE_BINARY", tigerbeetle_path);
 
@@ -66,7 +68,7 @@ pub fn validate_release_sample(shell: *Shell, gpa: std.mem.Allocator, options: s
     tigerbeetle: []const u8,
 }) !void {
     const tmp_dir = try shell.create_tmp_dir();
-    defer shell.cwd.deleteTree(tmp_dir) catch {};
+    defer shell.cwd.deleteTree(stdx.process_io, tmp_dir) catch {};
 
     try shell.env.put("GEM_HOME", tmp_dir);
     try shell.env.put("GEM_PATH", tmp_dir);
@@ -80,7 +82,11 @@ pub fn validate_release_sample(shell: *Shell, gpa: std.mem.Allocator, options: s
             log.warn("waiting for 5 minutes for the {s} version to appear in RubyGems", .{
                 options.release,
             });
-            std.time.sleep(5 * std.time.ns_per_min);
+            std.Io.sleep(
+                stdx.process_io,
+                .fromNanoseconds(5 * std.time.ns_per_min),
+                .awake,
+            ) catch unreachable;
         }
     } else {
         shell.exec("gem install tigerbeetle -v {release}", .{

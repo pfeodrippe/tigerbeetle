@@ -50,7 +50,7 @@ pub fn main() !void {
     }
     assert(builtin.os.tag == .linux);
 
-    var gpa_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa_allocator: std.heap.DebugAllocator(.{}) = .init;
     defer switch (gpa_allocator.deinit()) {
         .ok => {},
         .leak => @panic("memory leak"),
@@ -122,7 +122,7 @@ pub fn main() !void {
         .{ .transfer_count = std.math.maxInt(u32) },
     );
 
-    var timer = try std.time.Timer.start();
+    var timer = try stdx.Timer.start();
     while (timer.read() < args.test_duration.ns) {
         try supervisor.tick();
     }

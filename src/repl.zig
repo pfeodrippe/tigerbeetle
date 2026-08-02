@@ -581,7 +581,7 @@ pub fn ReplType(comptime MessageBus: type) type {
 
             const statement = Parser.parse_statement(
                 input,
-                repl.terminal.stderr.any(),
+                &repl.terminal.stderr.interface,
                 arguments,
             ) catch |err| {
                 switch (err) {
@@ -723,7 +723,7 @@ pub fn ReplType(comptime MessageBus: type) type {
 
                         const statement = Parser.parse_statement(
                             statement_string,
-                            repl.terminal.stderr.any(),
+                            &repl.terminal.stderr.interface,
                             &repl.arguments,
                         ) catch |err| {
                             switch (err) {
@@ -731,7 +731,7 @@ pub fn ReplType(comptime MessageBus: type) type {
                                 // is not an interactive command, we should
                                 // exit immediately. Parsing error info
                                 // has already been emitted to stderr.
-                                error.ParseError => std.posix.exit(1),
+                                error.ParseError => std.process.exit(1),
 
                                 // An unexpected error for which we do
                                 // want the stacktrace.
@@ -849,6 +849,12 @@ pub fn ReplType(comptime MessageBus: type) type {
                     }
 
                     try repl.terminal.print("]", .{});
+                } else if (comptime @typeInfo(object_field.type) == .@"enum") {
+                    const value = @field(object, object_field.name);
+                    try repl.terminal.print(
+                        "  \"{s}\": \"{s}.{s}\"",
+                        .{ object_field.name, @typeName(object_field.type), @tagName(value) },
+                    );
                 } else {
                     try repl.terminal.print(
                         "  \"{s}\": \"{}\"",

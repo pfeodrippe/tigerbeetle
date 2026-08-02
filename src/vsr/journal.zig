@@ -303,7 +303,7 @@ pub fn JournalType(comptime Replica: type, comptime Storage: type) type {
 
             const headers = try allocator.alignedAlloc(
                 Header.Prepare,
-                constants.sector_size,
+                .fromByteUnits(constants.sector_size),
                 slot_count,
             );
             errdefer allocator.free(headers);
@@ -311,7 +311,7 @@ pub fn JournalType(comptime Replica: type, comptime Storage: type) type {
 
             const headers_redundant = try allocator.alignedAlloc(
                 Header.Prepare,
-                constants.sector_size,
+                .fromByteUnits(constants.sector_size),
                 slot_count,
             );
             errdefer allocator.free(headers_redundant);
@@ -331,19 +331,22 @@ pub fn JournalType(comptime Replica: type, comptime Storage: type) type {
             errdefer allocator.free(prepare_inhabited);
             @memset(prepare_inhabited, false);
 
+            const WriteHeaderSector = [constants.sector_size]u8;
             const write_headers_sectors = (try allocator.alignedAlloc(
-                [constants.sector_size]u8,
-                constants.sector_size,
+                WriteHeaderSector,
+                .fromByteUnits(constants.sector_size),
                 constants.journal_iops_write_max,
             ))[0..constants.journal_iops_write_max];
-            errdefer allocator.free(write_headers_sectors);
+            const write_headers_sectors_slice: []align(constants.sector_size) WriteHeaderSector =
+                write_headers_sectors;
+            errdefer allocator.free(write_headers_sectors_slice);
 
             log.info("{}: slot_count={} size={} headers_size={} prepares_size={}", .{
                 replica,
                 slot_count,
-                std.fmt.fmtIntSizeBin(write_ahead_log_zone_size),
-                std.fmt.fmtIntSizeBin(headers_size),
-                std.fmt.fmtIntSizeBin(prepares_size),
+                stdx.fmt_int_size_bin(write_ahead_log_zone_size),
+                stdx.fmt_int_size_bin(headers_size),
+                stdx.fmt_int_size_bin(prepares_size),
             });
 
             var journal = Journal{
@@ -379,7 +382,9 @@ pub fn JournalType(comptime Replica: type, comptime Storage: type) type {
             journal.faulty.deinit(allocator);
             allocator.free(journal.headers);
             allocator.free(journal.headers_redundant);
-            allocator.free(journal.write_headers_sectors);
+            const write_headers_sectors: []align(constants.sector_size) [constants.sector_size]u8 =
+                journal.write_headers_sectors;
+            allocator.free(write_headers_sectors);
             allocator.free(journal.prepare_checksums);
             allocator.free(journal.prepare_inhabited);
 

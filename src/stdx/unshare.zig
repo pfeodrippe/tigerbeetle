@@ -280,10 +280,10 @@ fn fork_and_exit(gpa: std.mem.Allocator) !void {
 
     const result = try child.wait();
     switch (result) {
-        .Exited => |code| {
+        .exited => |code| {
             std.process.exit(code);
         },
-        .Signal => |signal| {
+        .signal => |signal| {
             log.info("sandboxed subprocesses exited with signal {}", .{signal});
             std.process.exit(1);
         },

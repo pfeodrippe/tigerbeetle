@@ -440,8 +440,8 @@ fn run_cdc_test(
     );
     defer {
         const term = benchmark.wait() catch unreachable;
-        assert(term == .Exited);
-        assert(term.Exited == 0);
+        assert(term == .exited);
+        assert(term.exited == 0);
     }
 
     // TODO: Improvements:
@@ -600,7 +600,7 @@ fn run_timeout_test(
 
     const elapsed = timer.elapsed(time.monotonic());
 
-    try testing.expectEqual(@as(u8, 1), result.Exited);
+    try testing.expectEqual(@as(u8, 1), result.exited);
     try testing.expect(elapsed.to_ms() > 1000);
 }
 
@@ -977,7 +977,7 @@ const TmpRabbitMQ = struct {
             .{ .id = self.id },
         );
         const term = self.process.wait() catch unreachable;
-        assert(term == .Exited);
+        assert(term == .exited);
     }
 };
 
@@ -1027,7 +1027,7 @@ fn try_execute(
         if (attempt > 0) std.time.sleep(1 * std.time.ns_per_s);
         exec_result = try shell.exec_raw(cmd, cmd_args);
         switch (exec_result.?.term) {
-            .Exited => |code| if (code == 0) return exec_result.?.stdout,
+            .exited => |code| if (code == 0) return exec_result.?.stdout,
             else => {},
         }
     }

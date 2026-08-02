@@ -643,12 +643,18 @@ fn check_version(
     var linked_events_failed: std.AutoHashMap(u128, u64) = .init(allocator);
     defer linked_events_failed.deinit();
 
-    var request: std.ArrayListAligned(u8, constants.cache_line_size) = .init(allocator);
+    var request: std.array_list.AlignedManaged(
+        u8,
+        .fromByteUnits(constants.cache_line_size),
+    ) = .init(allocator);
     defer request.deinit();
 
     try request.ensureTotalCapacity(constants.message_body_size_max);
 
-    var reply: std.ArrayListAligned(u8, constants.cache_line_size) = .init(allocator);
+    var reply: std.array_list.AlignedManaged(
+        u8,
+        .fromByteUnits(constants.cache_line_size),
+    ) = .init(allocator);
     defer reply.deinit();
 
     var operation: ?TestContext.Operation = null;
@@ -1029,7 +1035,7 @@ fn check_version(
 
                 const reply_actual_buffer = try allocator.alignedAlloc(
                     u8,
-                    constants.cache_line_size,
+                    .fromByteUnits(constants.cache_line_size),
                     constants.message_body_size_max,
                 );
                 defer allocator.free(reply_actual_buffer);
@@ -2953,7 +2959,7 @@ test "StateMachine: input_valid" {
     const allocator = std.testing.allocator;
     const input = try allocator.alignedAlloc(
         u8,
-        constants.cache_line_size,
+        .fromByteUnits(constants.cache_line_size),
         2 * constants.message_body_size_max,
     );
     defer allocator.free(input);
@@ -3054,7 +3060,7 @@ test "StateMachine: query multi-batch input_valid" {
     const allocator = std.testing.allocator;
     const input = try allocator.alignedAlloc(
         u8,
-        constants.cache_line_size,
+        .fromByteUnits(constants.cache_line_size),
         2 * constants.message_body_size_max,
     );
     defer allocator.free(input);

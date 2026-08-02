@@ -2,7 +2,8 @@ const std = @import("std");
 const log = std.log;
 const assert = std.debug.assert;
 
-const Shell = @import("stdx").Shell;
+const stdx = @import("stdx");
+const Shell = stdx.Shell;
 const TmpTigerBeetle = @import("../../testing/tmp_tigerbeetle.zig");
 
 pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
@@ -42,14 +43,14 @@ fn file_contains(
         line_length_max: u32 = 100,
     },
 ) !bool {
-    const file = try shell.cwd.openFile(path, .{});
-    defer file.close();
+    const file = try shell.cwd.openFile(stdx.process_io, path, .{});
+    defer file.close(stdx.process_io);
 
     const line_buffer = try gpa.alloc(u8, options.line_length_max + 1);
     defer gpa.free(line_buffer);
 
-    const reader = file.reader();
-    while (try reader.readUntilDelimiterOrEof(line_buffer, '\n')) |line| {
+    var reader = file.reader(stdx.process_io, line_buffer);
+    while (try reader.interface.takeDelimiter('\n')) |line| {
         if (std.mem.indexOf(u8, line, options.needle) != null) return true;
     }
 

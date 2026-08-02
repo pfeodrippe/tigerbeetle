@@ -66,9 +66,7 @@ pub const BlockType = enum(u8) {
     value = 5,
 
     pub fn valid(block_type: BlockType) bool {
-        _ = std.meta.intToEnum(BlockType, @intFromEnum(block_type)) catch return false;
-
-        return true;
+        return std.enums.fromInt(BlockType, @intFromEnum(block_type)) != null;
     }
 };
 

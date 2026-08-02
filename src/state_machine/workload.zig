@@ -35,7 +35,7 @@ const IdPermutation = @import("../testing/id.zig").IdPermutation;
 const TimestampRange = @import("../lsm/timestamp_range.zig").TimestampRange;
 const fuzz = @import("../testing/fuzz.zig");
 
-const PriorityQueue = std.PriorityQueue;
+const PriorityQueue = stdx.PriorityQueueType;
 
 const TransferOutcome = enum {
     /// The transfer is guaranteed to commit.
@@ -337,7 +337,7 @@ pub fn WorkloadType(comptime AccountingStateMachine: type) type {
         }
 
         pub fn done(self: *const Workload) bool {
-            if (self.transfers_delivered_recently.len != 0) return false;
+            if (self.transfers_delivered_recently.count() != 0) return false;
             return self.auditor.done();
         }
 
@@ -978,7 +978,7 @@ pub fn WorkloadType(comptime AccountingStateMachine: type) type {
 
             account_filter.flags.reversed = self.prng.boolean();
 
-            const operation = comptime std.enums.nameCast(Operation, action);
+            const operation = comptime @field(Operation, @tagName(action));
             const batch_result_max = operation.result_max(self.options.batch_size_limit);
 
             // The timestamp range is restrictive to the number of transfers inserted at the
@@ -1041,7 +1041,7 @@ pub fn WorkloadType(comptime AccountingStateMachine: type) type {
             assert(body.len == 1);
             const query_filter = &body[0];
 
-            const operation = comptime std.enums.nameCast(Operation, action);
+            const operation = comptime @field(Operation, @tagName(action));
             const batch_result_max = operation.result_max(self.options.batch_size_limit);
             const limit: u32 = switch (self.prng.enum_uniform(enum {
                 zero,

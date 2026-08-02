@@ -3,7 +3,8 @@ const builtin = @import("builtin");
 const log = std.log;
 const assert = std.debug.assert;
 
-const Shell = @import("stdx").Shell;
+const stdx = @import("stdx");
+const Shell = stdx.Shell;
 const TmpTigerBeetle = @import("../../testing/tmp_tigerbeetle.zig");
 
 pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
@@ -130,7 +131,7 @@ pub fn validate_release_sample(shell: *Shell, gpa: std.mem.Allocator, options: s
 
     try shell.env.put("TB_ADDRESS", tmp_beetle.port_str);
 
-    var tmp_dir = std.testing.tmpDir(.{});
+    var tmp_dir = try stdx.TmpDir.init(.{});
     defer tmp_dir.cleanup();
 
     const base_dir = shell.cwd;
@@ -174,7 +175,7 @@ fn nuget_install(shell: *Shell, options: struct {
     } else |err| {
         const exec_result = try shell.exec_raw(command, options);
         switch (exec_result.term) {
-            .Exited => |code| if (code == 0) return .ok,
+            .exited => |code| if (code == 0) return .ok,
             else => {},
         }
 

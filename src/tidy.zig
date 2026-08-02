@@ -53,7 +53,7 @@ test "tidy" {
 
 const Errors = struct {
     count: u32 = 0,
-    captured: ?std.ArrayListUnmanaged(u8) = null, // For tests.
+    captured: ?std.Io.Writer.Allocating = null, // For tests.
 
     pub fn add_control_character(
         errors: *Errors,
@@ -180,7 +180,7 @@ const Errors = struct {
         comptime assert(fmt[fmt.len - 1] == '\n');
         errors.count += 1;
         if (errors.captured) |*captured| {
-            captured.writer(std.testing.allocator).print(fmt, args) catch @panic("OOM");
+            captured.writer.print(fmt, args) catch @panic("OOM");
         } else {
             std.debug.print(fmt, args);
         }
@@ -193,7 +193,11 @@ const SourceFile = struct {
 
     // NB: The return value borrows both path and buffer.
     fn read(path: []const u8, buffer: []u8) !SourceFile {
-        const bytes_read = (try std.fs.cwd().readFile(path, buffer)).len;
+        const bytes_read = (try std.Io.Dir.cwd().readFile(
+            stdx.process_io,
+            path,
+            buffer,
+        )).len;
         if (bytes_read >= buffer.len - 1) return error.FileTooLong;
         buffer[bytes_read] = 0;
         return .{
@@ -245,11 +249,11 @@ fn check_tidy_file(file_path: []const u8, file_text: [:0]const u8, want: Snap) !
     var counter: IdentifierCounter = try .init(gpa);
     defer counter.deinit(gpa);
 
-    var errors: Errors = .{ .captured = .{} };
-    defer errors.captured.?.deinit(std.testing.allocator);
+    var errors: Errors = .{ .captured = .init(std.testing.allocator) };
+    defer errors.captured.?.deinit();
 
     try tidy_file(gpa, &counter, .{ .path = file_path, .text = file_text }, &errors);
-    const got = errors.captured.?.items;
+    const got = errors.captured.?.written();
 
     try want.diff(got);
     assert(errors.count == std.mem.count(u8, got, "\n"));
@@ -491,8 +495,13 @@ fn tidy_type_functions(file: SourceFile, errors: *Errors) void {
 
         // Skipping naming convention that requires upper-case functions.
         if (std.mem.startsWith(u8, function_name, "JNI_")) continue;
-        // Windows use CamelCase functions.
-        if (std.mem.indexOf(u8, line, "extern \"kernel32\"") != null) continue;
+        // Windows APIs use CamelCase functions.
+        if (std.mem.indexOf(u8, line, "extern \"kernel32\"") != null or
+            std.mem.indexOf(u8, line, "extern \"ws2_32\"") != null or
+            std.mem.indexOf(u8, line, "extern \"mswsock\"") != null)
+        {
+            continue;
+        }
 
         if (std.ascii.isUpper(function_name[0])) {
             if (!std.mem.endsWith(u8, function_name, "Type")) {
@@ -698,10 +707,10 @@ fn tidy_ast(
 
     for (tags, datas, 0..) |tag, data, node| {
         if (tag == .fn_decl) { // Check function length.
-            const node_body = data.rhs;
+            const node_body = data.node_and_node[1];
 
-            const token_opening = tree.firstToken(@intCast(node));
-            const token_closing = tree.lastToken(@intCast(node_body));
+            const token_opening = tree.firstToken(@enumFromInt(node));
+            const token_closing = tree.lastToken(node_body);
 
             const line_opening = tree.tokenLocation(0, token_opening).line;
             const line_closing = tree.tokenLocation(0, token_closing).line;
@@ -713,12 +722,12 @@ fn tidy_ast(
             functions_count += 1;
         }
         if (is_bin_op(tag)) { // Forbid mixing bitops and arithmetics without parentheses.
-            inline for (.{ data.lhs, data.rhs }) |child| {
-                const tag_child = tags[child];
+            inline for (data.node_and_node) |child| {
+                const tag_child = tags[@intFromEnum(child)];
                 if ((is_bin_op_bitwise(tag) and is_bin_op_arithmetic(tag_child)) or
                     (is_bin_op_arithmetic(tag) and is_bin_op_bitwise(tag_child)))
                 {
-                    const token_opening = tree.firstToken(@intCast(node));
+                    const token_opening = tree.firstToken(@enumFromInt(node));
                     const line_opening = tree.tokenLocation(0, token_opening).line;
                     errors.add_ambiguous_precedence(file, line_opening);
                 }
@@ -727,6 +736,23 @@ fn tidy_ast(
     }
 
     tidy_defer_newlines(file, tree, errors);
+
+    // Zig 0.16 no longer guarantees source order for function declaration AST nodes. Restore the
+    // ordering this check relies on; for declarations beginning on the same line, keep the outer
+    // function first so nested functions still suppress the outer length check.
+    std.mem.sort(
+        @TypeOf(functions[0]),
+        functions[0..functions_count],
+        {},
+        struct {
+            fn less_than(_: void, lhs: @TypeOf(functions[0]), rhs: @TypeOf(functions[0])) bool {
+                if (lhs.line_opening != rhs.line_opening) {
+                    return lhs.line_opening < rhs.line_opening;
+                }
+                return lhs.line_closing > rhs.line_closing;
+            }
+        }.less_than,
+    );
 
     // We ratchet 70-lines-per-function TigerStyle rule from the bottom up. Some functions want
     // to be really long, and that is big. The most values is in preventing originally small
@@ -738,7 +764,7 @@ fn tidy_ast(
 
     for (functions[0..functions_count], 0..) |f, index| {
         // Functions are sorted by the start line.
-        if (index > 0) assert(functions[index - 1].line_opening < f.line_opening);
+        if (index > 0) assert(functions[index - 1].line_opening <= f.line_opening);
 
         if (index == functions_count - 1 or
             functions[index + 1].line_opening > f.line_closing)
@@ -1167,16 +1193,17 @@ test tidy_markdown_title {
 const DeadFilesDetector = struct {
     const FileName = [64]u8;
     const FileState = struct { import_count: u32, definition_count: u32 };
-    const FileMap = std.AutoArrayHashMap(FileName, FileState);
+    const FileMap = std.AutoArrayHashMapUnmanaged(FileName, FileState);
 
+    gpa: Allocator,
     files: FileMap,
 
     fn init(gpa: Allocator) DeadFilesDetector {
-        return .{ .files = FileMap.init(gpa) };
+        return .{ .gpa = gpa, .files = .empty };
     }
 
     fn deinit(detector: *DeadFilesDetector, _: Allocator) void {
-        detector.files.deinit();
+        detector.files.deinit(detector.gpa);
     }
 
     fn visit(detector: *DeadFilesDetector, file: SourceFile) Allocator.Error!void {
@@ -1209,7 +1236,7 @@ const DeadFilesDetector = struct {
     }
 
     fn file_state(detector: *DeadFilesDetector, path: []const u8) !*FileState {
-        const gop = try detector.files.getOrPut(path_to_name(path));
+        const gop = try detector.files.getOrPut(detector.gpa, path_to_name(path));
         if (!gop.found_existing) gop.value_ptr.* = .{ .import_count = 0, .definition_count = 0 };
         return gop.value_ptr;
     }
@@ -1448,7 +1475,7 @@ test "tidy extensions" {
 
 /// Lists all files in the repository.
 fn list_file_paths(shell: *Shell) ![]const []const u8 {
-    var result = std.ArrayList([]const u8).init(shell.arena.allocator());
+    var result = std.array_list.Managed([]const u8).init(shell.arena.allocator());
 
     const files = try shell.exec_stdout("git ls-files -z", .{});
     assert(files.len > 0);

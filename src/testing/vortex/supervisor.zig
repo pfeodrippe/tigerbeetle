@@ -266,17 +266,17 @@ pub const Supervisor = struct {
             if (replica.state != .terminated) {
                 if (replica.wait_nonblocking()) |term| {
                     // Replicas shouldn't exit on their own, even with code=0.
-                    maybe(std.meta.eql(term, .{ .Exited = 0 }));
+                    maybe(std.meta.eql(term, .{ .exited = 0 }));
 
                     log.err(
                         "{}: replica terminated unexpectedly with {}",
                         .{ replica_index, term },
                     );
-                    if (std.meta.eql(term, .{ .Signal = std.posix.SIG.KILL })) {
+                    if (std.meta.eql(term, .{ .signal = std.posix.SIG.KILL })) {
                         // If one of the replica dies to SIGKILL, it is likely an OOM.
                         // Bubble that up to CFO so that this Vortex run is counted as neither a
                         // success or failure.
-                        std.posix.exit(@intCast(128 + term.Signal));
+                        std.posix.exit(@intCast(128 + term.signal));
                     } else {
                         fatal(.replica_exit_result, "replica exited with: {}", .{term});
                     }
@@ -532,7 +532,7 @@ pub const Supervisor = struct {
                 assert(result.pid == child.id);
 
                 const status = stdx.term_from_status(result.status);
-                if (std.meta.eql(status, .{ .Exited = 0 })) {
+                if (std.meta.eql(status, .{ .exited = 0 })) {
                     break;
                 } else {
                     log.err("{}: reformat failed: {}", .{ replica_index, status });
@@ -586,7 +586,7 @@ pub const Supervisor = struct {
         try std.posix.kill(replica.process.?.id, std.posix.SIG.KILL);
 
         const term = try replica.process.?.wait();
-        assert(std.meta.eql(term, .{ .Signal = std.posix.SIG.KILL }));
+        assert(std.meta.eql(term, .{ .signal = std.posix.SIG.KILL }));
 
         replica.process = null;
         replica.state = .terminated;
@@ -667,12 +667,12 @@ pub const Supervisor = struct {
         };
         const workload_driver_release = supervisor.releases[
             switch (driver) {
-                .command => |_| supervisor.driver_executables.len - 1,
+                .command => supervisor.driver_executables.len - 1,
                 .release => |release_index| release_index,
             }
         ];
         log.info(
-            "launching workload with driver: {s} (release={})",
+            "launching workload with driver: {s} (release={f})",
             .{ workload_driver, workload_driver_release },
         );
 
@@ -718,12 +718,11 @@ fn replicas_in_state(
 fn comma_separate_ports(allocator: std.mem.Allocator, ports: []const u16) ![]const u8 {
     assert(ports.len > 0);
 
-    var out = std.ArrayList(u8).init(allocator);
+    var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
 
-    const writer = out.writer();
-    try writer.print("{d}", .{ports[0]});
-    for (ports[1..]) |port| try writer.print(",{d}", .{port});
+    try out.writer.print("{d}", .{ports[0]});
+    for (ports[1..]) |port| try out.writer.print(",{d}", .{port});
 
     return out.toOwnedSlice();
 }
@@ -850,7 +849,7 @@ const Workload = struct {
         const arg_addresses = try comma_separate_ports(allocator, proxy_ports);
         defer allocator.free(arg_addresses);
 
-        var driver_argv = std.ArrayList([]const u8).init(allocator);
+        var driver_argv = std.array_list.Managed([]const u8).init(allocator);
         defer driver_argv.deinit();
 
         var driver_command_parts = std.mem.splitScalar(u8, driver_command, ' ');
@@ -897,8 +896,8 @@ const Workload = struct {
         const workload_result = workload.driver.kill() catch |err| {
             fatal(.workload_exit_result, "workload: error killing driver: {any}", .{err});
         };
-        if (!std.meta.eql(workload_result, .{ .Signal = std.posix.SIG.TERM }) and
-            !std.meta.eql(workload_result, .{ .Exited = 128 + std.posix.SIG.TERM }))
+        if (!std.meta.eql(workload_result, .{ .signal = std.posix.SIG.TERM }) and
+            !std.meta.eql(workload_result, .{ .exited = 128 + std.posix.SIG.TERM }))
         {
             fatal(.workload_exit_result, "workload: unexpected term: {any}", .{workload_result});
         }

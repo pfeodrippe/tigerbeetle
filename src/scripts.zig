@@ -23,7 +23,7 @@ const amqp = @import("./scripts/amqp.zig");
 
 pub fn log_fn(
     comptime message_level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
+    comptime scope: @EnumLiteral(),
     comptime format: []const u8,
     args: anytype,
 ) void {
@@ -77,8 +77,10 @@ const CLIArgs = union(enum) {
     ;
 };
 
-pub fn main() !void {
-    var gpa_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(process_init: std.process.Init) !void {
+    stdx.set_process_context(process_init);
+
+    var gpa_allocator = std.heap.DebugAllocator(.{}).init;
     defer switch (gpa_allocator.deinit()) {
         .ok => {},
         .leak => @panic("memory leak"),

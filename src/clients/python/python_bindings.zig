@@ -39,16 +39,16 @@ const mappings_state_machine = .{
 const mappings_all = mappings_vsr ++ mappings_state_machine;
 
 const Buffer = struct {
-    inner: std.ArrayList(u8),
+    inner: std.Io.Writer.Allocating,
 
     pub fn init(allocator: std.mem.Allocator) Buffer {
         return .{
-            .inner = std.ArrayList(u8).init(allocator),
+            .inner = std.Io.Writer.Allocating.init(allocator),
         };
     }
 
     pub fn print(self: *Buffer, comptime format: []const u8, args: anytype) void {
-        self.inner.writer().print(format, args) catch unreachable;
+        self.inner.writer.print(format, args) catch unreachable;
     }
 };
 
@@ -386,7 +386,7 @@ fn emit_method(
     );
 }
 
-pub fn main() !void {
+pub fn main(process_init: std.process.Init) !void {
     @setEvalBranchQuota(100_000);
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -587,7 +587,7 @@ pub fn main() !void {
         buffer.print("\n\n", .{});
     }
 
-    try std.io.getStdOut().writeAll(buffer.inner.items);
+    try std.Io.File.stdout().writeStreamingAll(process_init.io, buffer.inner.written());
 }
 
 /// Used by client code generation to make clearer APIs: the name of the Event parameter,

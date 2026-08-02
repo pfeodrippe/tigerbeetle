@@ -52,8 +52,8 @@ fn resolve_target(b: *std.Build, target_requested: ?[]const u8) !std.Build.Resol
 
 const zig_version = std.SemanticVersion{
     .major = 0,
-    .minor = 14,
-    .patch = 1,
+    .minor = 16,
+    .patch = 0,
 };
 
 comptime {
@@ -137,7 +137,7 @@ pub fn build(b: *std.Build) !void {
             []const u8,
             "git-commit",
             "The git commit revision of the source code.",
-        ) orelse std.mem.trimRight(u8, b.run(&.{ "git", "rev-parse", "--verify", "HEAD" }), "\n"),
+        ) orelse std.mem.trimEnd(u8, b.run(&.{ "git", "rev-parse", "--verify", "HEAD" }), "\n"),
         .vopr_state_machine = b.option(
             VoprStateMachine,
             "vopr-state-machine",
@@ -567,7 +567,10 @@ fn build_ci(
         if (default or mode == .clients or mode == language) {
             // Client tests expect vortex to exist.
             build_ci_step(b, step_ci, .{"vortex:build"}, .{});
-            build_ci_step(b, step_ci, .{"clients:" ++ @tagName(language)}, .{});
+            // Client CI scripts package release artifacts into shared per-language directories.
+            // Build the prerequisite in the same mode so parallel steps cannot race by replacing
+            // release libraries with much larger debug libraries (or vice versa).
+            build_ci_step(b, step_ci, .{ "clients:" ++ @tagName(language), "-Drelease" }, .{});
         }
         if (all or mode == .clients or mode == language) {
             build_ci_script(b, step_ci, options.scripts, &.{
@@ -601,7 +604,6 @@ fn build_ci_step(
     const argv = .{ b.graph.zig_exe, "build" } ++ command;
     const system_command = b.addSystemCommand(&argv);
     const name = std.mem.join(b.allocator, " ", &command) catch @panic("OOM");
-    system_command.max_stdio_size = 128 * MiB; // Prevent error.StreamTooLong.
     system_command.setName(name);
     system_command.step.max_rss = options.max_rss;
     hide_stderr(system_command);
@@ -617,7 +619,6 @@ fn build_ci_script(
     const run_artifact = b.addRunArtifact(scripts);
     run_artifact.addArgs(argv);
     run_artifact.setEnvironmentVariable("ZIG_EXE", b.graph.zig_exe);
-    run_artifact.max_stdio_size = 128 * MiB; // Prevent error.StreamTooLong.
     hide_stderr(run_artifact);
     step_ci.dependOn(&run_artifact.step);
 }
@@ -627,7 +628,7 @@ fn build_ci_script(
 fn hide_stderr(run: *std.Build.Step.Run) void {
     const b = run.step.owner;
 
-    run.addCheck(.{ .expect_term = .{ .Exited = 0 } });
+    run.addCheck(.{ .expect_term = .{ .exited = 0 } });
     run.has_side_effects = true;
 
     const override = struct {
@@ -1001,7 +1002,7 @@ fn build_test_integration(
     integration_tests.root_module.addOptions("vsr_options", options.vsr_options_test);
     integration_tests.root_module.addOptions("test_options", integration_tests_options);
     integration_tests.root_module.addOptions("vortex_options", options.vortex_options);
-    integration_tests.addIncludePath(options.tb_client_header.dirname());
+    integration_tests.root_module.addIncludePath(options.tb_client_header.dirname());
     steps.test_integration_build.dependOn(&b.addInstallArtifact(integration_tests, .{}).step);
 
     const run_integration_tests = b.addRunArtifact(integration_tests);
@@ -1020,7 +1021,7 @@ fn build_test_jni(
         mode: std.builtin.OptimizeMode,
     },
 ) !void {
-    const java_home = b.graph.env_map.get("JAVA_HOME") orelse {
+    const java_home = b.graph.environ_map.get("JAVA_HOME") orelse {
         step_test_jni.dependOn(&b.addFail(
             "can't build jni tests tests, JAVA_HOME is not set",
         ).step);
@@ -1047,10 +1048,10 @@ fn build_test_jni(
             .optimize = if (builtin.os.tag == .windows) .ReleaseFast else options.mode,
         }),
     });
-    tests.linkLibC();
+    tests.root_module.link_libc = true;
 
-    tests.linkSystemLibrary("jvm");
-    tests.addLibraryPath(.{ .cwd_relative = libjvm_path });
+    tests.root_module.linkSystemLibrary("jvm", .{});
+    tests.root_module.addLibraryPath(.{ .cwd_relative = libjvm_path });
     if (builtin.os.tag == .linux) {
         // On Linux, detects the abi by calling `ldd` to check if
         // the libjvm.so is linked against libc or musl.
@@ -1077,8 +1078,8 @@ fn build_test_jni(
 
     switch (builtin.os.tag) {
         .windows => set_windows_dll(b.allocator, java_home),
-        .macos => try b.graph.env_map.put("DYLD_LIBRARY_PATH", libjvm_path),
-        .linux => try b.graph.env_map.put("LD_LIBRARY_PATH", libjvm_path),
+        .macos => try b.graph.environ_map.put("DYLD_LIBRARY_PATH", libjvm_path),
+        .linux => try b.graph.environ_map.put("LD_LIBRARY_PATH", libjvm_path),
         else => unreachable,
     }
 
@@ -1360,14 +1361,14 @@ fn build_vortex_driver_zig(
             .optimize = options.mode,
         }),
     });
-    tb_client.linkLibC();
+    tb_client.root_module.link_libc = true;
     tb_client.pie = true;
     tb_client.bundle_compiler_rt = true;
     tb_client.root_module.addImport("vsr", options.vsr_module);
     tb_client.root_module.addOptions("vsr_options", options.vsr_options);
     if (options.target.result.os.tag == .windows) {
-        tb_client.linkSystemLibrary("ws2_32");
-        tb_client.linkSystemLibrary("advapi32");
+        tb_client.root_module.linkSystemLibrary("ws2_32", .{});
+        tb_client.root_module.linkSystemLibrary("advapi32", .{});
     }
 
     const vortex_driver = b.addExecutable(.{
@@ -1379,9 +1380,9 @@ fn build_vortex_driver_zig(
             .optimize = options.mode,
         }),
     });
-    vortex_driver.linkLibC();
-    vortex_driver.linkLibrary(tb_client);
-    vortex_driver.addIncludePath(options.tb_client_header.dirname());
+    vortex_driver.root_module.link_libc = true;
+    vortex_driver.root_module.linkLibrary(tb_client);
+    vortex_driver.root_module.addIncludePath(options.tb_client_header.dirname());
     vortex_driver.root_module.addImport("stdx", options.stdx_module);
     vortex_driver.root_module.addImport("vsr", options.vsr_module);
 
@@ -1507,10 +1508,10 @@ fn build_tb_client(
             .linkage = .dynamic,
             .root_module = root_module,
         });
-        shared_lib.linkLibC();
+        shared_lib.root_module.link_libc = true;
         if (resolved_target.result.os.tag == .windows) {
-            shared_lib.linkSystemLibrary("ws2_32");
-            shared_lib.linkSystemLibrary("advapi32");
+            shared_lib.root_module.linkSystemLibrary("ws2_32", .{});
+            shared_lib.root_module.linkSystemLibrary("advapi32", .{});
         }
 
         per_platform.append(b.allocator, .{
@@ -1583,7 +1584,7 @@ fn build_rust_client(
         });
         static_lib.bundle_compiler_rt = true;
         static_lib.pie = true;
-        static_lib.linkLibC();
+        static_lib.root_module.link_libc = true;
 
         step_clients_rust.dependOn(&b.addInstallFile(static_lib.getEmittedBin(), b.pathJoin(&.{
             "../src/clients/rust/assets/lib/",
@@ -1663,7 +1664,7 @@ fn build_go_client(
             .linkage = .static,
             .root_module = root_module,
         });
-        lib.linkLibC();
+        lib.root_module.link_libc = true;
         lib.pie = true;
         lib.bundle_compiler_rt = true;
         lib.step.dependOn(&bindings.step);
@@ -1727,10 +1728,10 @@ fn build_java_client(
             .linkage = .dynamic,
             .root_module = root_module,
         });
-        lib.linkLibC();
+        lib.root_module.link_libc = true;
         if (resolved_target.result.os.tag == .windows) {
-            lib.linkSystemLibrary("ws2_32");
-            lib.linkSystemLibrary("advapi32");
+            lib.root_module.linkSystemLibrary("ws2_32", .{});
+            lib.root_module.linkSystemLibrary("advapi32", .{});
         }
         lib.step.dependOn(&bindings.step);
 
@@ -1839,7 +1840,7 @@ fn build_node_client(
         "-l",            "node.lib",
         "-d",
     });
-    run_dll_tool.addFileArg(write_def_file.captureStdOut());
+    run_dll_tool.addFileArg(write_def_file.captureStdOut(.{}));
     run_dll_tool.cwd = b.path("./src/clients/node");
 
     for (Platform.all) |platform| {
@@ -1859,19 +1860,21 @@ fn build_node_client(
             .linkage = .dynamic,
             .root_module = root_module,
         });
-        lib.linkLibC();
+        lib.root_module.link_libc = true;
 
         lib.step.dependOn(&npm_install.step);
-        lib.addSystemIncludePath(b.path("src/clients/node/node_modules/node-api-headers/include"));
+        lib.root_module.addSystemIncludePath(b.path(
+            "src/clients/node/node_modules/node-api-headers/include",
+        ));
         lib.linker_allow_shlib_undefined = true;
 
         if (resolved_target.result.os.tag == .windows) {
-            lib.linkSystemLibrary("ws2_32");
-            lib.linkSystemLibrary("advapi32");
+            lib.root_module.linkSystemLibrary("ws2_32", .{});
+            lib.root_module.linkSystemLibrary("advapi32", .{});
 
             lib.step.dependOn(&run_dll_tool.step);
-            lib.addLibraryPath(b.path("src/clients/node"));
-            lib.linkSystemLibrary("node");
+            lib.root_module.addLibraryPath(b.path("src/clients/node"));
+            lib.root_module.linkSystemLibrary("node", .{});
         }
 
         lib.step.dependOn(&bindings.step);
@@ -2026,10 +2029,10 @@ fn build_c_client(
         static_lib.pie = true;
 
         for ([_]*std.Build.Step.Compile{ shared_lib, static_lib }) |lib| {
-            lib.linkLibC();
+            lib.root_module.link_libc = true;
             if (resolved_target.result.os.tag == .windows) {
-                lib.linkSystemLibrary("ws2_32");
-                lib.linkSystemLibrary("advapi32");
+                lib.root_module.linkSystemLibrary("ws2_32", .{});
+                lib.root_module.linkSystemLibrary("advapi32", .{});
             }
 
             step_clients_c.dependOn(&b.addInstallFile(lib.getEmittedBin(), b.pathJoin(&.{
@@ -2060,7 +2063,7 @@ fn build_clients_c_sample(
             .optimize = options.mode,
         }),
     });
-    static_lib.linkLibC();
+    static_lib.root_module.link_libc = true;
     static_lib.pie = true;
     static_lib.bundle_compiler_rt = true;
     static_lib.root_module.addImport("vsr", options.vsr_module);
@@ -2077,15 +2080,15 @@ fn build_clients_c_sample(
     sample.root_module.addCSourceFile(.{
         .file = b.path("src/clients/c/samples/main.c"),
     });
-    sample.linkLibrary(static_lib);
-    sample.linkLibC();
+    sample.root_module.linkLibrary(static_lib);
+    sample.root_module.link_libc = true;
 
     if (options.target.result.os.tag == .windows) {
-        static_lib.linkSystemLibrary("ws2_32");
-        static_lib.linkSystemLibrary("advapi32");
+        static_lib.root_module.linkSystemLibrary("ws2_32", .{});
+        static_lib.root_module.linkSystemLibrary("advapi32", .{});
 
         // TODO: Illegal instruction on Windows:
-        sample.root_module.sanitize_c = false;
+        sample.root_module.sanitize_c = .off;
     }
 
     const install_step = b.addInstallArtifact(sample, .{});
@@ -2126,7 +2129,10 @@ fn print_or_install(b: *std.Build, compile: *std.Build.Step.Compile, print: bool
         fn make(step: *std.Build.Step, _: std.Build.Step.MakeOptions) !void {
             const print_step: *@This() = @fieldParentPtr("step", step);
             const path = print_step.compile.getEmittedBin().getPath2(step.owner, step);
-            try std.io.getStdOut().writer().print("{s}\n", .{path});
+            var buffer: [4096]u8 = undefined;
+            var writer = std.Io.File.stdout().writer(step.owner.graph.io, &buffer);
+            try writer.interface.print("{s}\n", .{path});
+            try writer.interface.flush();
         }
     };
 
@@ -2215,7 +2221,7 @@ const Generated = struct {
             .destination = destination,
             .generated_file = .{ .step = &result.step },
             .source = switch (generator) {
-                .file => |compile| b.addRunArtifact(compile).captureStdOut(),
+                .file => |compile| b.addRunArtifact(compile).captureStdOut(.{}),
                 .directory => |compile| b.addRunArtifact(compile).addOutputDirectoryArg("out"),
                 .copy => |lazy_path| lazy_path,
             },
@@ -2232,7 +2238,7 @@ const Generated = struct {
     fn make(step: *std.Build.Step, _: std.Build.Step.MakeOptions) !void {
         const b = step.owner;
         const generated: *Generated = @fieldParentPtr("step", step);
-        const ci = try std.process.hasEnvVar(b.allocator, "CI");
+        const ci = b.graph.environ_map.get("CI") != null;
         const source_path = generated.source.getPath2(b, step);
 
         if (ci) {
@@ -2272,16 +2278,18 @@ const Generated = struct {
         target_path: []const u8,
     ) !bool {
         const want = try b.build_root.handle.readFileAlloc(
-            b.allocator,
+            b.graph.io,
             source_path,
-            std.math.maxInt(usize),
+            b.allocator,
+            .unlimited,
         );
         defer b.allocator.free(want);
 
         const got = b.build_root.handle.readFileAlloc(
-            b.allocator,
+            b.graph.io,
             target_path,
-            std.math.maxInt(usize),
+            b.allocator,
+            .unlimited,
         ) catch return false;
         defer b.allocator.free(got);
 
@@ -2292,9 +2300,10 @@ const Generated = struct {
         b: *std.Build,
         source_path: []const u8,
         target_path: []const u8,
-    ) !std.fs.Dir.PrevStatus {
-        return std.fs.Dir.updateFile(
+    ) !std.Io.Dir.PrevStatus {
+        return std.Io.Dir.updateFile(
             b.build_root.handle,
+            b.graph.io,
             source_path,
             b.build_root.handle,
             target_path,
@@ -2307,26 +2316,36 @@ const Generated = struct {
         source_path: []const u8,
         target_path: []const u8,
     ) !bool {
-        var source_dir = try b.build_root.handle.openDir(source_path, .{ .iterate = true });
-        defer source_dir.close();
+        var source_dir = try b.build_root.handle.openDir(
+            b.graph.io,
+            source_path,
+            .{ .iterate = true },
+        );
+        defer source_dir.close(b.graph.io);
 
-        var target_dir = b.build_root.handle.openDir(target_path, .{}) catch return false;
-        defer target_dir.close();
+        var target_dir = b.build_root.handle.openDir(
+            b.graph.io,
+            target_path,
+            .{},
+        ) catch return false;
+        defer target_dir.close(b.graph.io);
 
         var source_iter = source_dir.iterate();
-        while (try source_iter.next()) |entry| {
+        while (try source_iter.next(b.graph.io)) |entry| {
             assert(entry.kind == .file);
             const want = try source_dir.readFileAlloc(
-                b.allocator,
+                b.graph.io,
                 entry.name,
-                std.math.maxInt(usize),
+                b.allocator,
+                .unlimited,
             );
             defer b.allocator.free(want);
 
             const got = target_dir.readFileAlloc(
-                b.allocator,
+                b.graph.io,
                 entry.name,
-                std.math.maxInt(usize),
+                b.allocator,
+                .unlimited,
             ) catch return false;
             defer b.allocator.free(got);
 
@@ -2340,19 +2359,24 @@ const Generated = struct {
         b: *std.Build,
         source_path: []const u8,
         target_path: []const u8,
-    ) !std.fs.Dir.PrevStatus {
-        var result: std.fs.Dir.PrevStatus = .fresh;
-        var source_dir = try b.build_root.handle.openDir(source_path, .{ .iterate = true });
-        defer source_dir.close();
+    ) !std.Io.Dir.PrevStatus {
+        var result: std.Io.Dir.PrevStatus = .fresh;
+        var source_dir = try b.build_root.handle.openDir(
+            b.graph.io,
+            source_path,
+            .{ .iterate = true },
+        );
+        defer source_dir.close(b.graph.io);
 
-        var target_dir = try b.build_root.handle.makeOpenPath(target_path, .{});
-        defer target_dir.close();
+        var target_dir = try b.build_root.handle.createDirPathOpen(b.graph.io, target_path, .{});
+        defer target_dir.close(b.graph.io);
 
         var source_iter = source_dir.iterate();
-        while (try source_iter.next()) |entry| {
+        while (try source_iter.next(b.graph.io)) |entry| {
             assert(entry.kind == .file);
-            const status = try std.fs.Dir.updateFile(
+            const status = try std.Io.Dir.updateFile(
                 source_dir,
+                b.graph.io,
                 entry.name,
                 target_dir,
                 entry.name,

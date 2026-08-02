@@ -153,8 +153,8 @@ fn SegmentedArrayBaseType(
             for (array.nodes[0..array.node_count]) |node| {
                 node_pool.release(@ptrCast(@alignCast(node.?)));
             }
-            allocator.free(array.nodes);
-            allocator.free(array.indexes);
+            allocator.destroy(array.nodes);
+            allocator.destroy(array.indexes);
         }
 
         pub fn reset(array: *SegmentedArray, node_pool: *NodePool) void {
@@ -1084,7 +1084,7 @@ fn FuzzContextType(
         pool: TestPool,
         array: TestArray,
 
-        reference: std.ArrayList(T),
+        reference: std.array_list.Managed(T),
 
         inserts: u64 = 0,
         removes: u64 = 0,
@@ -1108,7 +1108,7 @@ fn FuzzContextType(
             context.array = try TestArray.init(allocator);
             errdefer context.array.deinit(allocator, &context.pool);
 
-            context.reference = std.ArrayList(T).init(allocator);
+            context.reference = std.array_list.Managed(T).init(allocator);
             errdefer context.reference.deinit();
             try context.reference.ensureTotalCapacity(element_count_max);
         }

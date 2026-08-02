@@ -218,18 +218,20 @@ const Model = struct {
 
     map: Map,
     undo_log: UndoLog,
+    gpa: std.mem.Allocator,
     scope_active: bool = false,
     compacts: u32 = 0,
 
     fn init(gpa: std.mem.Allocator) Model {
         return .{
             .map = Map.init(gpa),
-            .undo_log = UndoLog.init(gpa),
+            .undo_log = .empty,
+            .gpa = gpa,
         };
     }
 
     fn deinit(model: *Model) void {
-        model.undo_log.deinit();
+        model.undo_log.deinit(model.gpa);
         model.map.deinit();
         model.* = undefined;
     }
@@ -249,7 +251,7 @@ const Model = struct {
             .{ .op = model.compacts, .value = value.* },
         );
         if (model.scope_active) {
-            try model.undo_log.append(.{
+            try model.undo_log.append(model.gpa, .{
                 .key = key,
                 .value = if (kv_old) |kv| kv.value else null,
             });
@@ -259,7 +261,7 @@ const Model = struct {
     fn remove(model: *Model, key: Key) !void {
         const kv_old = model.map.fetchRemove(key);
         if (model.scope_active) {
-            try model.undo_log.append(.{
+            try model.undo_log.append(model.gpa, .{
                 .key = key,
                 .value = if (kv_old) |kv| kv.value else null,
             });

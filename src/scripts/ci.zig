@@ -90,10 +90,10 @@ fn run_tests(shell: *Shell, gpa: std.mem.Allocator, language_requested: ?Languag
 }
 
 fn validate_release(shell: *Shell, gpa: std.mem.Allocator, language_requested: ?Language) !void {
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+    const tmp_dir = try shell.create_tmp_dir();
+    defer shell.project_root.deleteTree(stdx.process_io, tmp_dir) catch {};
 
-    try shell.pushd_dir(tmp_dir.dir);
+    try shell.pushd(tmp_dir);
     defer shell.popd();
 
     const release_info = try shell.exec_stdout(

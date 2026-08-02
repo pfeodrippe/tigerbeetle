@@ -472,7 +472,7 @@ const Environment = struct {
         const ObjectsMap = std.hash_map.AutoHashMap(u128, tb.Transfer);
         const UniqueKeysMap = std.hash_map.AutoHashMap(UniqueKey, u128);
         const LogEntry = struct { op: u64, transfer: tb.Transfer };
-        const Log = std.fifo.LinearFifo(LogEntry, .Dynamic);
+        const Log = std.ArrayListUnmanaged(LogEntry);
 
         // Represents persistent state:
         checkpointed: struct {
@@ -482,6 +482,7 @@ const Environment = struct {
 
         // Represents in-memory state:
         log: Log,
+        gpa: std.mem.Allocator,
 
         pub fn init(gpa: std.mem.Allocator) Model {
             return .{
@@ -489,25 +490,26 @@ const Environment = struct {
                     .objects = ObjectsMap.init(gpa),
                     .unique_keys = UniqueKeysMap.init(gpa),
                 },
-                .log = Log.init(gpa),
+                .log = .empty,
+                .gpa = gpa,
             };
         }
 
         pub fn deinit(model: *Model) void {
             model.checkpointed.objects.deinit();
             model.checkpointed.unique_keys.deinit();
-            model.log.deinit();
+            model.log.deinit(model.gpa);
         }
 
         pub fn put(model: *Model, transfer: *const tb.Transfer, op: u64) !void {
-            try model.log.writeItem(.{ .op = op, .transfer = transfer.* });
+            try model.log.append(model.gpa, .{ .op = op, .transfer = transfer.* });
         }
 
         pub fn remove(model: *Model, transfer: *const tb.Transfer, op: u64) !void {
             var tombstone_object: tb.Transfer = ObjectTable.tombstone_from_key(transfer.timestamp);
             tombstone_object.id = transfer.id;
             tombstone_object.pending_id = transfer.pending_id;
-            try model.log.writeItem(.{
+            try model.log.append(model.gpa, .{
                 .op = op,
                 .transfer = tombstone_object,
             });
@@ -538,10 +540,10 @@ const Environment = struct {
             tombstone,
         } {
             var latest_op: ?u64 = null;
-            const log_size = model.log.readableLength();
+            const log_size = model.log.items.len;
             var log_left = log_size;
             while (log_left > 0) : (log_left -= 1) {
-                const entry = model.log.peekItem(log_left - 1); // most recent first
+                const entry = model.log.items[log_left - 1]; // most recent first
                 if (latest_op == null) {
                     latest_op = entry.op;
                 }
@@ -563,10 +565,10 @@ const Environment = struct {
 
         pub fn checkpoint(model: *Model, op: u64) !void {
             const checkpointable = op - (op % constants.lsm_compaction_ops) -| 1;
-            const log_size = model.log.readableLength();
+            const log_size = model.log.items.len;
             var log_index: usize = 0;
             while (log_index < log_size) : (log_index += 1) {
-                const entry = model.log.peekItem(log_index);
+                const entry = model.log.items[log_index];
                 if (entry.op > checkpointable) {
                     break;
                 }
@@ -586,11 +588,11 @@ const Environment = struct {
                     entry.transfer.id,
                 );
             }
-            model.log.discard(log_index);
+            model.log.replaceRangeAssumeCapacity(0, log_index, &.{});
         }
 
         pub fn storage_reset(model: *Model) void {
-            model.log.discard(model.log.readableLength());
+            model.log.clearRetainingCapacity();
         }
     };
 
@@ -610,7 +612,7 @@ const Environment = struct {
             log.debug("storage.size_used = {}/{}", .{ storage_size_used, env.storage.size });
 
             const model_size = brk: {
-                const object_count = model.log.readableLength() +
+                const object_count = model.log.items.len +
                     model.checkpointed.objects.count();
                 break :brk object_count * @sizeOf(tb.Transfer);
             };
@@ -670,10 +672,10 @@ const Environment = struct {
                         break :blk 0;
                     }
                 };
-                const log_size = model.log.readableLength();
+                const log_size = model.log.items.len;
                 var log_index: usize = 0;
                 while (log_index < log_size) : (log_index += 1) {
-                    const entry = model.log.peekItem(log_index);
+                    const entry = model.log.items[log_index];
                     const id = entry.transfer.id;
                     if (model.checkpointed.objects.get(id)) |*checkpointed_object| {
                         try env.prefetch(.{ .id = id }, snapshot);

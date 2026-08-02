@@ -1,15 +1,16 @@
 const std = @import("std");
+const stdx = @import("stdx");
 
 /// Utility function for ad-hoc profiling.
 ///
-/// A thin wrapper around `std.time.Timer` which handles the boilerplate of
+/// A thin wrapper around `stdx.Timer` which handles the boilerplate of
 /// printing to stderr and formatting times in some (unspecified) readable way.
 pub fn timeit() TimeIt {
-    return TimeIt{ .inner = std.time.Timer.start() catch unreachable };
+    return TimeIt{ .inner = stdx.Timer.start() catch unreachable };
 }
 
 const TimeIt = struct {
-    inner: std.time.Timer,
+    inner: stdx.Timer,
 
     /// Prints elapsed time to stderr and resets the internal timer.
     pub fn print(self: *TimeIt, comptime label: []const u8) void {

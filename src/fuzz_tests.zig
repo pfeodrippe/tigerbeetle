@@ -65,38 +65,16 @@ const CLIArgs = struct {
     seed: ?u64 = null,
 };
 
-pub fn main() !void {
+pub fn main(process_init: std.process.Init) !void {
     comptime assert(constants.verify);
+    stdx.set_process_context(process_init);
 
     fuzz.limit_ram();
 
-    var gpa_allocator: std.heap.GeneralPurposeAllocator(.{}) = .{};
-    // Disable "hint" argument for mmap call, which was observed to cause stack overflow.
-    // See https://ziggit.dev/t/stack-probe-puzzle/10291/3 for the full story.
-    gpa_allocator.backing_allocator = .{
-        .ptr = std.heap.page_allocator.ptr,
-        .vtable = &comptime .{
-            .alloc = struct {
-                fn alloc(
-                    ctx: *anyopaque,
-                    len: usize,
-                    ptr_align: std.mem.Alignment,
-                    ret_addr: usize,
-                ) ?[*]u8 {
-                    @atomicStore(
-                        @TypeOf(std.heap.next_mmap_addr_hint),
-                        &std.heap.next_mmap_addr_hint,
-                        null,
-                        .monotonic,
-                    );
-                    return std.heap.page_allocator.vtable.alloc(ctx, len, ptr_align, ret_addr);
-                }
-            }.alloc,
-            .remap = std.heap.page_allocator.vtable.remap,
-            .resize = std.heap.page_allocator.vtable.resize,
-            .free = std.heap.page_allocator.vtable.free,
-        },
-    };
+    var gpa_allocator: std.heap.DebugAllocator(.{}) = .init;
+    // Zig 0.16's page allocator no longer keeps the mmap address hint that the old custom
+    // forwarding allocator had to clear to avoid stack-probe collisions.
+    gpa_allocator.backing_allocator = std.heap.page_allocator;
     const gpa = gpa_allocator.allocator();
 
     var flags = stdx.Flags.init(gpa);
@@ -149,20 +127,20 @@ fn main_smoke(gpa: std.mem.Allocator) !void {
         });
         const fuzz_duration = timer_single.elapsed(time.monotonic());
         if (fuzz_duration.ns > 10 * std.time.ns_per_s) {
-            log.err("fuzzer too slow for the smoke mode: " ++ @tagName(fuzzer) ++ " {}", .{
-                std.fmt.fmtDuration(fuzz_duration.ns),
+            log.err("fuzzer too slow for the smoke mode: " ++ @tagName(fuzzer) ++ " {f}", .{
+                std.Io.Duration.fromNanoseconds(@intCast(fuzz_duration.ns)),
             });
         }
     }
 
     const elapsed = timer_all.elapsed(time.monotonic());
-    log.info("done in {}", .{std.fmt.fmtDuration(elapsed.ns)});
+    log.info("done in {f}", .{std.Io.Duration.fromNanoseconds(@intCast(elapsed.ns))});
 }
 
 fn main_single(gpa: std.mem.Allocator, cli_args: CLIArgs) !void {
     assert(cli_args.fuzzer != .smoke);
 
-    const seed = cli_args.seed orelse std.crypto.random.int(u64);
+    const seed = cli_args.seed orelse stdx.random_int(u64);
     log.info("Fuzz seed = {}", .{seed});
 
     var time: TimeOS = .{};
@@ -180,5 +158,5 @@ fn main_single(gpa: std.mem.Allocator, cli_args: CLIArgs) !void {
         }),
     }
     const elapsed = timer.elapsed(time.monotonic());
-    log.info("done in {}", .{std.fmt.fmtDuration(elapsed.ns)});
+    log.info("done in {f}", .{std.Io.Duration.fromNanoseconds(@intCast(elapsed.ns))});
 }

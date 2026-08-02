@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
+const Kqueue = std.Io.Kqueue;
 const mem = std.mem;
 const assert = std.debug.assert;
 const log = std.log.scoped(.io);
@@ -33,14 +34,14 @@ pub const IO = struct {
         _ = entries;
         _ = flags;
 
-        const kq = try posix.kqueue();
+        const kq = try Kqueue.createFileDescriptor();
         assert(kq > -1);
         return IO{ .kq = kq };
     }
 
     pub fn deinit(self: *IO) void {
         assert(self.kq > -1);
-        posix.close(self.kq);
+        std.Io.Threaded.closeFd(self.kq);
         self.kq = -1;
     }
 
@@ -126,7 +127,7 @@ pub const IO = struct {
                 }
             }
 
-            const new_events = try posix.kevent(
+            const new_events = try Kqueue.kevent(
                 self.kq,
                 events[0..change_events],
                 events[0..events.len],
@@ -225,7 +226,7 @@ pub const IO = struct {
         },
         connect: struct {
             socket: socket_t,
-            address: std.net.Address,
+            address: stdx.Address,
             initiated: bool,
         },
         fsync: struct {
@@ -273,7 +274,7 @@ pub const IO = struct {
         comptime callback: anytype,
         completion: *Completion,
         comptime operation_tag: std.meta.Tag(Operation),
-        operation_data: std.meta.TagPayload(Operation, operation_tag),
+        operation_data: @FieldType(Operation, @tagName(operation_tag)),
         comptime OperationImpl: type,
     ) void {
         const on_complete_fn = struct {
@@ -319,7 +320,9 @@ pub const IO = struct {
         }
     }
 
-    pub const AcceptError = posix.AcceptError || posix.SetSockOptError;
+    pub const AcceptError = std.Io.net.Server.AcceptError ||
+        posix.SetSockOptError ||
+        error{NetworkSubsystemFailed};
 
     pub fn accept(
         self: *IO,
@@ -343,13 +346,54 @@ pub const IO = struct {
             },
             struct {
                 fn do_operation(op: anytype) AcceptError!socket_t {
-                    const fd = try posix.accept(
-                        op.socket,
-                        null,
-                        null,
-                        posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC,
-                    );
-                    errdefer posix.close(fd);
+                    const fd: socket_t = while (true) {
+                        const rc = posix.system.accept(op.socket, null, null);
+                        switch (posix.errno(rc)) {
+                            .SUCCESS => break @intCast(rc),
+                            .INTR => continue,
+                            .AGAIN => return error.WouldBlock,
+                            .CONNABORTED => return error.ConnectionAborted,
+                            .INVAL => return error.SocketNotListening,
+                            .MFILE => return error.ProcessFdQuotaExceeded,
+                            .NFILE => return error.SystemFdQuotaExceeded,
+                            .NOBUFS, .NOMEM => return error.SystemResources,
+                            .PROTO => return error.ProtocolFailure,
+                            .PERM => return error.BlockedByFirewall,
+                            .BADF, .FAULT, .NOTSOCK, .OPNOTSUPP => unreachable,
+                            else => |err| return stdx.unexpected_errno("accept", err),
+                        }
+                    };
+                    errdefer std.Io.Threaded.closeFd(fd);
+
+                    const status_flags: usize = while (true) {
+                        const rc = posix.system.fcntl(fd, posix.F.GETFL, @as(usize, 0));
+                        switch (posix.errno(rc)) {
+                            .SUCCESS => break @intCast(rc),
+                            .INTR => continue,
+                            else => |err| return stdx.unexpected_errno("fcntl", err),
+                        }
+                    };
+                    while (true) {
+                        const nonblocking = status_flags |
+                            @as(usize, 1 << @bitOffsetOf(posix.O, "NONBLOCK"));
+                        switch (posix.errno(posix.system.fcntl(fd, posix.F.SETFL, nonblocking))) {
+                            .SUCCESS => break,
+                            .INTR => continue,
+                            else => |err| return stdx.unexpected_errno("fcntl", err),
+                        }
+                    }
+                    while (true) {
+                        const rc = posix.system.fcntl(
+                            fd,
+                            posix.F.SETFD,
+                            @as(usize, posix.FD_CLOEXEC),
+                        );
+                        switch (posix.errno(rc)) {
+                            .SUCCESS => break,
+                            .INTR => continue,
+                            else => |err| return stdx.unexpected_errno("fcntl", err),
+                        }
+                    }
 
                     // Darwin doesn't support posix.MSG_NOSIGNAL to avoid getting SIGPIPE on
                     // socket send(). Instead, it uses the SO_NOSIGPIPE socket option which does
@@ -414,7 +458,27 @@ pub const IO = struct {
         );
     }
 
-    pub const ConnectError = posix.ConnectError;
+    pub const ConnectError = error{
+        AccessDenied,
+        AddressInUse,
+        AddressNotAvailable,
+        AddressFamilyNotSupported,
+        WouldBlock,
+        OpenAlreadyInProgress,
+        FileDescriptorInvalid,
+        ConnectionRefused,
+        ConnectionResetByPeer,
+        AlreadyConnected,
+        NetworkUnreachable,
+        HostUnreachable,
+        FileNotFound,
+        FileDescriptorNotASocket,
+        PermissionDenied,
+        ProtocolNotSupported,
+        ConnectionTimedOut,
+        SystemResources,
+        Canceled,
+    } || posix.UnexpectedError;
 
     pub fn connect(
         self: *IO,
@@ -441,19 +505,28 @@ pub const IO = struct {
             },
             struct {
                 fn do_operation(op: anytype) ConnectError!void {
-                    // Don't call connect after being rescheduled by io_pending as it gives EISCONN.
-                    // Instead, check the socket error to see if has been connected successfully.
-                    const result = switch (op.initiated) {
-                        true => posix.getsockoptError(op.socket),
-                        else => posix.connect(
-                            op.socket,
-                            &op.address.any,
-                            op.address.getOsSockLen(),
-                        ),
-                    };
-
                     op.initiated = true;
-                    return result;
+                    while (true) switch (posix.errno(posix.system.connect(
+                        op.socket,
+                        &op.address.any,
+                        op.address.getOsSockLen(),
+                    ))) {
+                        .SUCCESS, .ISCONN => return,
+                        .INTR => continue,
+                        .AGAIN, .INPROGRESS, .ALREADY => return error.WouldBlock,
+                        .ACCES => return error.AccessDenied,
+                        .ADDRINUSE => return error.AddressInUse,
+                        .ADDRNOTAVAIL => return error.AddressNotAvailable,
+                        .AFNOSUPPORT => return error.AddressFamilyNotSupported,
+                        .BADF => return error.FileDescriptorInvalid,
+                        .CONNREFUSED => return error.ConnectionRefused,
+                        .CONNRESET => return error.ConnectionResetByPeer,
+                        .HOSTUNREACH => return error.HostUnreachable,
+                        .NETUNREACH => return error.NetworkUnreachable,
+                        .NOTSOCK => return error.FileDescriptorNotASocket,
+                        .TIMEDOUT => return error.ConnectionTimedOut,
+                        else => |err| return stdx.unexpected_errno("connect", err),
+                    };
                 }
             },
         );
@@ -546,7 +619,7 @@ pub const IO = struct {
                             .PERM => error.AccessDenied,
                             .EXIST => error.PathAlreadyExists,
                             .BUSY => error.DeviceBusy,
-                            .OPNOTSUPP => error.FileLocksNotSupported,
+                            .OPNOTSUPP => error.FileLocksUnsupported,
                             .AGAIN => error.WouldBlock,
                             .TXTBSY => error.FileBusy,
                             else => |err| stdx.unexpected_errno("openat", err),
@@ -627,7 +700,18 @@ pub const IO = struct {
         );
     }
 
-    pub const RecvError = posix.RecvFromError;
+    pub const RecvError = error{
+        WouldBlock,
+        FileDescriptorInvalid,
+        ConnectionRefused,
+        SystemResources,
+        SocketNotConnected,
+        FileDescriptorNotASocket,
+        ConnectionResetByPeer,
+        ConnectionTimedOut,
+        OperationNotSupported,
+        Canceled,
+    } || posix.UnexpectedError;
 
     pub fn recv(
         self: *IO,
@@ -654,13 +738,44 @@ pub const IO = struct {
             },
             struct {
                 fn do_operation(op: anytype) RecvError!usize {
-                    return posix.recv(op.socket, op.buf[0..op.len], 0);
+                    while (true) {
+                        const rc = posix.system.recv(op.socket, op.buf, op.len, 0);
+                        switch (posix.errno(rc)) {
+                            .SUCCESS => return @intCast(rc),
+                            .INTR => continue,
+                            .AGAIN => return error.WouldBlock,
+                            .BADF => return error.FileDescriptorInvalid,
+                            .CONNREFUSED => return error.ConnectionRefused,
+                            .CONNRESET => return error.ConnectionResetByPeer,
+                            .NOBUFS, .NOMEM => return error.SystemResources,
+                            .NOTCONN => return error.SocketNotConnected,
+                            .NOTSOCK => return error.FileDescriptorNotASocket,
+                            .TIMEDOUT => return error.ConnectionTimedOut,
+                            else => |err| return stdx.unexpected_errno("recv", err),
+                        }
+                    }
                 }
             },
         );
     }
 
-    pub const SendError = error{ConnectionRefused} || posix.SendError;
+    pub const SendError = error{
+        AccessDenied,
+        WouldBlock,
+        FastOpenAlreadyInProgress,
+        AddressFamilyNotSupported,
+        FileDescriptorInvalid,
+        ConnectionResetByPeer,
+        MessageTooBig,
+        SystemResources,
+        SocketNotConnected,
+        FileDescriptorNotASocket,
+        OperationNotSupported,
+        BrokenPipe,
+        ConnectionTimedOut,
+        ConnectionRefused,
+        Canceled,
+    } || posix.UnexpectedError;
 
     pub fn send(
         self: *IO,
@@ -691,24 +806,26 @@ pub const IO = struct {
                     // may return `ConnectionRefused`.
                     // https://github.com/ziglang/zig/issues/20219
                     // https://github.com/ziglang/zig/pull/20223
-                    return posix.sendto(
-                        op.socket,
-                        op.buf[0..op.len],
-                        0,
-                        null,
-                        0,
-                    ) catch |err| switch (err) {
-                        error.AddressFamilyNotSupported => unreachable,
-                        error.SymLinkLoop => unreachable,
-                        error.NameTooLong => unreachable,
-                        error.FileNotFound => unreachable,
-                        error.NotDir => unreachable,
-                        error.NetworkUnreachable => unreachable,
-                        error.AddressNotAvailable => unreachable,
-                        error.SocketNotConnected => unreachable,
-                        error.UnreachableAddress => unreachable,
-                        else => |e| return e,
-                    };
+                    while (true) {
+                        const rc = posix.system.sendto(op.socket, op.buf, op.len, 0, null, 0);
+                        switch (posix.errno(rc)) {
+                            .SUCCESS => return @intCast(rc),
+                            .INTR => continue,
+                            .AGAIN => return error.WouldBlock,
+                            .ACCES => return error.AccessDenied,
+                            .BADF => return error.FileDescriptorInvalid,
+                            .CONNREFUSED => return error.ConnectionRefused,
+                            .CONNRESET => return error.ConnectionResetByPeer,
+                            .MSGSIZE => return error.MessageTooBig,
+                            .NOBUFS, .NOMEM => return error.SystemResources,
+                            .NOTCONN => return error.SocketNotConnected,
+                            .NOTSOCK => return error.FileDescriptorNotASocket,
+                            .OPNOTSUPP => return error.OperationNotSupported,
+                            .PIPE => return error.BrokenPipe,
+                            .TIMEDOUT => return error.ConnectionTimedOut,
+                            else => |err| return stdx.unexpected_errno("send", err),
+                        }
+                    }
                 }
             },
         );
@@ -794,7 +911,7 @@ pub const IO = struct {
         }
     }
 
-    pub const WriteError = posix.PWriteError;
+    pub const WriteError = std.Io.File.WritePositionalError;
 
     pub fn write(
         self: *IO,
@@ -826,7 +943,15 @@ pub const IO = struct {
                     // In the current implementation, Darwin file IO (namely, the posix.pwrite
                     // below) is _synchronous_, so it's safe to call fs_sync after it has
                     // completed.
-                    const result = posix.pwrite(op.fd, op.buf[0..op.len], op.offset);
+                    const file = std.Io.File{
+                        .handle = op.fd,
+                        .flags = .{ .nonblocking = false },
+                    };
+                    const result = try file.writePositional(
+                        stdx.process_io,
+                        &.{op.buf[0..op.len]},
+                        op.offset,
+                    );
                     try fs_sync(op.fd);
 
                     return result;
@@ -850,7 +975,7 @@ pub const IO = struct {
         kev[0].filter = posix.system.EVFILT.USER;
         kev[0].flags = posix.system.EV.ADD | posix.system.EV.ENABLE | posix.system.EV.CLEAR;
 
-        const polled = posix.kevent(self.kq, &kev, kev[0..0], null) catch |err| switch (err) {
+        const polled = Kqueue.kevent(self.kq, &kev, kev[0..0], null) catch |err| switch (err) {
             error.AccessDenied => unreachable, // EV_FILTER is allowed for every user.
             error.EventNotFound => unreachable, // We're not modifying or deleting an existing one.
             error.ProcessNotFound => unreachable, // We're not monitoring a process.
@@ -891,7 +1016,7 @@ pub const IO = struct {
         kev[0].fflags = posix.system.NOTE.TRIGGER;
         kev[0].udata = @intFromPtr(completion);
 
-        const polled: usize = posix.kevent(self.kq, &kev, kev[0..0], null) catch unreachable;
+        const polled: usize = Kqueue.kevent(self.kq, &kev, kev[0..0], null) catch unreachable;
         assert(polled == 0);
     }
 
@@ -904,7 +1029,7 @@ pub const IO = struct {
         kev[0].flags = posix.system.EV.DELETE;
         kev[0].udata = 0; // Not needed for EV_DELETE.
 
-        const polled = posix.kevent(self.kq, &kev, kev[0..0], null) catch unreachable;
+        const polled = Kqueue.kevent(self.kq, &kev, kev[0..0], null) catch unreachable;
         assert(polled == 0);
     }
 
@@ -918,7 +1043,7 @@ pub const IO = struct {
     ) !socket_t {
         const fd = try self.open_socket(
             family.to_std(),
-            posix.SOCK.STREAM | posix.SOCK.NONBLOCK,
+            posix.SOCK.STREAM,
             posix.IPPROTO.TCP,
         );
         errdefer self.close_socket(fd);
@@ -931,21 +1056,58 @@ pub const IO = struct {
     pub fn open_socket_udp(self: *IO, family: stdx.IPAddress.Family) !socket_t {
         return try self.open_socket(
             family.to_std(),
-            posix.SOCK.DGRAM | posix.SOCK.NONBLOCK,
+            posix.SOCK.DGRAM,
             posix.IPPROTO.UDP,
         );
     }
 
     fn open_socket(self: *IO, family: u32, sock_type: u32, protocol: u32) !socket_t {
-        const fd = try posix.socket(
-            family,
-            sock_type | posix.SOCK.NONBLOCK,
-            protocol,
-        );
+        const fd: socket_t = while (true) {
+            const rc = posix.system.socket(family, sock_type, protocol);
+            switch (posix.errno(rc)) {
+                .SUCCESS => break @intCast(rc),
+                .INTR => continue,
+                .AFNOSUPPORT => return error.AddressFamilyUnsupported,
+                .MFILE => return error.ProcessFdQuotaExceeded,
+                .NFILE => return error.SystemFdQuotaExceeded,
+                .NOBUFS, .NOMEM => return error.SystemResources,
+                .PROTONOSUPPORT => return error.ProtocolUnsupportedByAddressFamily,
+                .PROTOTYPE => return error.SocketModeUnsupported,
+                else => |err| return stdx.unexpected_errno("socket", err),
+            }
+        };
         errdefer self.close_socket(fd);
 
+        // Zig 0.16's Darwin SOCK.NONBLOCK is a std.posix wrapper-only shim and
+        // cannot be passed to the raw socket syscall above. Set O_NONBLOCK on
+        // the descriptor explicitly, as we already do for accepted sockets.
+        const status_flags: usize = while (true) {
+            const rc = posix.system.fcntl(fd, posix.F.GETFL, @as(usize, 0));
+            switch (posix.errno(rc)) {
+                .SUCCESS => break @intCast(rc),
+                .INTR => continue,
+                else => |err| return stdx.unexpected_errno("fcntl", err),
+            }
+        };
+        while (true) {
+            const nonblocking = status_flags |
+                @as(usize, 1 << @bitOffsetOf(posix.O, "NONBLOCK"));
+            switch (posix.errno(posix.system.fcntl(fd, posix.F.SETFL, nonblocking))) {
+                .SUCCESS => break,
+                .INTR => continue,
+                else => |err| return stdx.unexpected_errno("fcntl", err),
+            }
+        }
+
         // Darwin doesn't support SOCK_CLOEXEC.
-        _ = try posix.fcntl(fd, posix.F.SETFD, posix.FD_CLOEXEC);
+        while (true) {
+            const rc = posix.system.fcntl(fd, posix.F.SETFD, @as(usize, posix.FD_CLOEXEC));
+            switch (posix.errno(rc)) {
+                .SUCCESS => break,
+                .INTR => continue,
+                else => |err| return stdx.unexpected_errno("fcntl", err),
+            }
+        }
         // Darwin doesn't support posix.MSG_NOSIGNAL, but instead a socket option to avoid SIGPIPE.
         try common.setsockopt(fd, posix.SOL.SOCKET, posix.SO.NOSIGPIPE, 1);
 
@@ -955,7 +1117,7 @@ pub const IO = struct {
     /// Closes a socket opened by the IO instance.
     pub fn close_socket(self: *IO, socket: socket_t) void {
         _ = self;
-        posix.close(socket);
+        std.Io.Threaded.closeFd(socket);
     }
 
     /// Listen on the given TCP socket.
@@ -970,13 +1132,36 @@ pub const IO = struct {
         return try common.listen(fd, address, options);
     }
 
-    pub fn shutdown(_: *IO, socket: socket_t, how: posix.ShutdownHow) posix.ShutdownError!void {
-        return posix.shutdown(socket, how);
+    pub fn shutdown(
+        _: *IO,
+        socket: socket_t,
+        how: std.Io.net.ShutdownHow,
+    ) (error{
+        SocketNotConnected,
+        ConnectionAborted,
+        ConnectionResetByPeer,
+        BlockingOperationInProgress,
+        NetworkSubsystemFailed,
+        SystemResources,
+    } || posix.UnexpectedError)!void {
+        const posix_how: i32 = switch (how) {
+            .recv => posix.SHUT.RD,
+            .send => posix.SHUT.WR,
+            .both => posix.SHUT.RDWR,
+        };
+        while (true) switch (posix.errno(posix.system.shutdown(socket, posix_how))) {
+            .SUCCESS => return,
+            .INTR => continue,
+            .NOTCONN => return error.SocketNotConnected,
+            .NOBUFS => return error.SystemResources,
+            else => |err| return stdx.unexpected_errno("shutdown", err),
+        };
     }
 
     /// Opens a directory with read only access.
     pub fn open_dir(dir_path: []const u8) !fd_t {
-        return posix.open(dir_path, .{ .CLOEXEC = true, .ACCMODE = .RDONLY }, 0);
+        const dir = try std.Io.Dir.cwd().openDir(stdx.process_io, dir_path, .{});
+        return dir.handle;
     }
 
     pub const fd_t = posix.fd_t;
@@ -1040,30 +1225,45 @@ pub const IO = struct {
         assert(!std.fs.path.isAbsolute(relative_path));
         const fd = try posix.openat(dir_fd, relative_path, flags, mode);
         // TODO Return a proper error message when the path exists or does not exist (init/start).
-        errdefer posix.close(fd);
+        errdefer std.Io.Threaded.closeFd(fd);
 
         // TODO Check that the file is actually a file.
 
         // On darwin assume that Direct I/O is always supported.
         // Use F_NOCACHE to disable the page cache as O_DIRECT doesn't exist.
         if (direct_io != .direct_io_disabled) {
-            _ = try posix.fcntl(fd, posix.F.NOCACHE, 1);
+            while (true) switch (posix.errno(posix.system.fcntl(
+                fd,
+                posix.F.NOCACHE,
+                @as(usize, 1),
+            ))) {
+                .SUCCESS => break,
+                .INTR => continue,
+                else => |err| return stdx.unexpected_errno("fcntl", err),
+            };
         }
 
         // Obtain an advisory exclusive lock that works only if all processes actually use flock().
         // LOCK_NB means that we want to fail the lock without waiting if another process has it.
-        posix.flock(fd, posix.LOCK.EX | posix.LOCK.NB) catch |err| switch (err) {
-            error.WouldBlock => {
+        while (true) switch (posix.errno(posix.system.flock(
+            fd,
+            posix.LOCK.EX | posix.LOCK.NB,
+        ))) {
+            .SUCCESS => break,
+            .INTR => continue,
+            .AGAIN => {
                 if (purpose == .inspect) {
                     log.warn(
                         "another process holds the data file lock - results may be inconsistent",
                         .{},
                     );
-                } else {
-                    @panic("another process holds the data file lock");
+                    break;
                 }
+                @panic("another process holds the data file lock");
             },
-            else => return err,
+            .NOLCK => return error.SystemResources,
+            .OPNOTSUPP => return error.FileLocksUnsupported,
+            else => |err| return stdx.unexpected_errno("flock", err),
         };
 
         // Ask the file system to allocate contiguous sectors for the file (if possible):
@@ -1083,7 +1283,11 @@ pub const IO = struct {
         try fs_sync(dir_fd);
 
         // TODO Document that `size` is now `data_file_size_min` from `main.zig`.
-        const stat = try posix.fstat(fd);
+        const file = std.Io.File{
+            .handle = fd,
+            .flags = .{ .nonblocking = false },
+        };
+        const stat = try file.stat(stdx.process_io);
         if (stat.size < size) @panic("data file inode size was truncated or corrupted");
 
         return fd;
@@ -1096,13 +1300,19 @@ pub const IO = struct {
         // TODO: This is of dubious safety - it's _not_ safe to fall back on posix.fsync unless it's
         // known at startup that the disk (eg, an external disk on a Mac) doesn't support
         // F_FULLFSYNC.
-        _ = posix.fcntl(fd, posix.F.FULLFSYNC, 1) catch return posix.fsync(fd);
+        const rc = posix.system.fcntl(fd, posix.F.FULLFSYNC, @as(usize, 1));
+        if (posix.errno(rc) == .SUCCESS) return;
+        const file = std.Io.File{
+            .handle = fd,
+            .flags = .{ .nonblocking = false },
+        };
+        return file.sync(stdx.process_io);
     }
 
     /// Allocates a file contiguously using fallocate() if supported.
     /// Alternatively, writes to the last sector so that at least the file size is correct.
     fn fs_allocate(fd: fd_t, size: u64) !void {
-        log.info("allocating {}...", .{std.fmt.fmtIntSizeBin(size)});
+        log.info("allocating {}...", .{stdx.fmt_int_size_bin(size)});
 
         // Darwin doesn't have fallocate() but we can simulate it using fcntl()s.
         //
@@ -1154,15 +1364,20 @@ pub const IO = struct {
         }
 
         // Now actually perform the allocation.
-        return posix.ftruncate(fd, size) catch |err| switch (err) {
-            error.AccessDenied => error.PermissionDenied,
-            else => |e| e,
+        const file = std.Io.File{
+            .handle = fd,
+            .flags = .{ .nonblocking = false },
         };
+        return file.setLength(stdx.process_io, size);
     }
 
-    pub const PReadError = posix.PReadError;
+    pub const PReadError = std.Io.File.ReadPositionalError;
 
-    pub fn aof_blocking_write_all(_: *IO, fd: fd_t, buffer: []const u8) posix.WriteError!void {
+    pub fn aof_blocking_write_all(
+        _: *IO,
+        fd: fd_t,
+        buffer: []const u8,
+    ) std.Io.File.Writer.Error!void {
         return common.aof_blocking_write_all(fd, buffer);
     }
 
@@ -1174,11 +1389,14 @@ pub const IO = struct {
         return common.aof_blocking_close(fd);
     }
 
-    pub fn aof_blocking_stat(_: *IO, path: []const u8) std.fs.Dir.StatFileError!std.fs.File.Stat {
+    pub fn aof_blocking_stat(
+        _: *IO,
+        path: []const u8,
+    ) std.Io.Dir.StatFileError!std.Io.File.Stat {
         return common.aof_blocking_stat(path);
     }
 
-    pub fn aof_blocking_fstat(_: *IO, fd: fd_t) std.fs.Dir.StatError!std.fs.File.Stat {
+    pub fn aof_blocking_fstat(_: *IO, fd: fd_t) std.Io.File.StatError!std.Io.File.Stat {
         return common.aof_blocking_fstat(fd);
     }
 

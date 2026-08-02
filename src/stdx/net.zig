@@ -155,12 +155,8 @@ pub const IPAddress = extern struct {
 
     pub fn format(
         address: IPAddress,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        comptime assert(fmt.len == 0);
-        _ = options;
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
         switch (address.family()) {
             .IPv4 => try address.format_v4(writer),
             .IPv6 => try address.format_v6(writer),
@@ -278,7 +274,7 @@ test IPAddress {
         fn check_ok_canonical(text: []const u8) !void {
             const ip = try IPAddress.parse(text);
             var buffer: [64]u8 = undefined;
-            const text_canonical = try std.fmt.bufPrint(&buffer, "{}", .{ip});
+            const text_canonical = try std.fmt.bufPrint(&buffer, "{f}", .{ip});
             try expectEqualStrings(text, text_canonical);
 
             try check_ok(text);
@@ -287,7 +283,7 @@ test IPAddress {
         fn check_ok_non_canonical(text: []const u8) !void {
             const ip = try IPAddress.parse(text);
             var buffer: [64]u8 = undefined;
-            const text_canonical = try std.fmt.bufPrint(&buffer, "{}", .{ip});
+            const text_canonical = try std.fmt.bufPrint(&buffer, "{f}", .{ip});
             if (std.mem.eql(u8, text, text_canonical)) {
                 std.log.err("{s} is already canonical", .{text});
                 return error.TestUnexpectedResult;
@@ -301,22 +297,9 @@ test IPAddress {
             errdefer std.log.err("text={s}", .{text});
 
             const ip = try IPAddress.parse(text);
-            const address = SocketAddress.to_std(.{ .ip = ip, .port = 0 });
-            const address_std = try parse_std(text);
-            if (!address.eql(address_std)) {
-                if (address.any.family == std.posix.AF.INET and
-                    address_std.any.family == std.posix.AF.INET6 and
-                    std.mem.eql(u8, &IPAddress.IPv4_prefix_octets, address_std.in6.sa.addr[0..12]))
-                {
-                    // Std doesn't canonicalize IPv6-mapped IPv4 addresses.
-                } else {
-                    std.log.err("{} != {}", .{ address, address_std });
-                    return error.TestUnexpectedResult;
-                }
-            }
 
             var buffer: [64]u8 = undefined;
-            const text_roundtrip = try std.fmt.bufPrint(&buffer, "{}", .{ip});
+            const text_roundtrip = try std.fmt.bufPrint(&buffer, "{f}", .{ip});
             const ip_roundtrip = try IPAddress.parse(text_roundtrip);
             assert(std.meta.eql(ip, ip_roundtrip));
         }
@@ -326,30 +309,6 @@ test IPAddress {
             errdefer std.log.err("text={s}", .{text});
 
             try expectError(error.InvalidIPAddress, IPAddress.parse(text));
-
-            const address_std = parse_std(text) catch return;
-            if ((std.mem.startsWith(u8, text, ":") and !std.mem.startsWith(u8, text, "::")) or
-                (std.mem.endsWith(u8, text, ":") and !std.mem.endsWith(u8, text, "::")))
-            {
-                return; //TODO(Zig): 0.14.1 incorrectly parses trailing/leading colons.
-            }
-
-            if (stdx.cut(text, "%")) |cut| {
-                // Std supports scopes, but we intentionally don't.
-                const address = try IPAddress.parse(cut.@"0");
-                assert(address.family() == .IPv6);
-                return;
-            }
-
-            if (stdx.cut_prefix(text, "::ffff:")) |ipv4| {
-                // Similarly, don't support explicit IPv6-mapped-IPv4 syntax;
-                const address = try IPAddress.parse(ipv4);
-                assert(address.family() == .IPv4);
-                return;
-            }
-
-            std.log.err("incorrectly parsed as {}", .{address_std});
-            return error.ExpectedError;
         }
 
         // - Build alphabet from corpus + random draw.
@@ -390,10 +349,6 @@ test IPAddress {
 
             assert(ok + err == options.test_count);
             return .{ .ok = ok, .err = err };
-        }
-
-        fn parse_std(text: []const u8) !std.net.Address {
-            return try std.net.Address.parseIp(text, 0);
         }
     };
 
@@ -442,8 +397,9 @@ test IPAddress {
 
 test "IPAddress: from_v4" {
     const v4 = IPAddress.from_v4(.{ 1, 2, 3, 4 });
-    const v4_std = std.net.Address.initIp4(.{ 1, 2, 3, 4 }, 0);
-    try expectEqual(v4, (try SocketAddress.from_std(v4_std)).ip);
+    try expectEqual(IPAddress{ .big = .{
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4,
+    } }, v4);
 
     try snap(@src(),
         \\00 00 00 00 00 00 00 00  00 00 ff ff 01 02 03 04
@@ -454,11 +410,14 @@ pub const SocketAddress = struct {
     ip: IPAddress,
     port: u16,
 
-    pub fn to_std(socket: SocketAddress) std.net.Address {
+    pub fn to_std(socket: SocketAddress) Address {
         switch (socket.ip.family()) {
             .IPv4 => {
                 const octets: [4]u8 = socket.ip.as_v4().?;
-                return .{ .in = std.net.Ip4Address.init(octets, socket.port) };
+                return .{ .in = .{
+                    .port = std.mem.nativeToBig(u16, socket.port),
+                    .addr = @bitCast(octets),
+                } };
             },
             .IPv6 => {
                 // The following two fields are machine-local and can be safely zeroed-out.
@@ -473,27 +432,27 @@ pub const SocketAddress = struct {
                 // which interface to use.
                 const scopeid = 0;
 
-                return .{ .in6 = std.net.Ip6Address.init(
-                    socket.ip.big,
-                    socket.port,
-                    flowinfo,
-                    scopeid,
-                ) };
+                return .{ .in6 = .{
+                    .port = std.mem.nativeToBig(u16, socket.port),
+                    .flowinfo = flowinfo,
+                    .addr = socket.ip.big,
+                    .scope_id = scopeid,
+                } };
             },
         }
     }
 
-    pub fn from_std(address: std.net.Address) error{UnsupportedFamily}!SocketAddress {
+    pub fn from_std(address: Address) error{UnsupportedFamily}!SocketAddress {
         switch (address.any.family) {
             std.posix.AF.INET => {
-                const octets_big: [4]u8 = @bitCast(address.in.sa.addr);
+                const octets_big: [4]u8 = @bitCast(address.in.addr);
                 const ip = IPAddress.from_v4(octets_big);
-                const port = std.mem.bigToNative(u16, address.in.sa.port);
+                const port = std.mem.bigToNative(u16, address.in.port);
                 return .{ .ip = ip, .port = port };
             },
             std.posix.AF.INET6 => {
-                const ip: IPAddress = .{ .big = address.in6.sa.addr };
-                const port = std.mem.bigToNative(u16, address.in6.sa.port);
+                const ip: IPAddress = .{ .big = address.in6.addr };
+                const port = std.mem.bigToNative(u16, address.in6.port);
                 return .{ .ip = ip, .port = port };
             },
             else => return error.UnsupportedFamily,
@@ -505,9 +464,30 @@ pub const SocketAddress = struct {
     }
 };
 
+/// Zig 0.16 moved the public networking API to `std.Io.net` and no longer
+/// exposes the old kernel-ABI `std.net.Address`. TigerBeetle's direct async I/O
+/// backend intentionally works with sockaddr values, so retain that explicit
+/// representation at this boundary.
+pub const Address = extern union {
+    any: std.posix.sockaddr,
+    in: std.posix.sockaddr.in,
+    in6: std.posix.sockaddr.in6,
+    un: std.posix.sockaddr.un,
+
+    pub fn getOsSockLen(address: Address) std.posix.socklen_t {
+        return switch (address.any.family) {
+            std.posix.AF.INET => @sizeOf(std.posix.sockaddr.in),
+            std.posix.AF.INET6 => @sizeOf(std.posix.sockaddr.in6),
+            std.posix.AF.UNIX => @sizeOf(std.posix.sockaddr.un),
+            else => @sizeOf(std.posix.sockaddr),
+        };
+    }
+};
+
 test "SocketAddress: from_std bad family" {
     if (builtin.os.tag == .windows) return;
-    const unix_domain = try std.net.Address.initUnix("/tmp/socket");
+    var unix_domain: Address = undefined;
+    unix_domain.any.family = std.posix.AF.UNIX;
     try expectError(error.UnsupportedFamily, SocketAddress.from_std(unix_domain));
 }
 

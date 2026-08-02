@@ -75,7 +75,11 @@ fn notify(context: *Context) void {
     assert(std.Thread.getCurrentId() != context.main_thread_id);
     while (context.signal.status() != .shutdown_completed) {
         const delay_us = 1; // Shorter than `tick_us`.
-        std.time.sleep(delay_us * std.time.ns_per_us);
+        std.Io.sleep(
+            stdx.process_io,
+            .fromNanoseconds(delay_us * std.time.ns_per_us),
+            .awake,
+        ) catch unreachable;
 
         if (context.stop_request.load(.monotonic) == .user_thread) {
             // Stop can be called by multiple threads.

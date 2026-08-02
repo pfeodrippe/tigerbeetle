@@ -841,16 +841,19 @@ fn ScanTreeLevelType(comptime ScanTree: type, comptime Storage: type) type {
             const data_checksums = index_schema.value_checksums_used(self.buffer.index_block);
             assert(data_addresses.len == data_checksums.len);
 
-            self.state = iterating: {
-                const key_exclusive_next = self.state.loading_index.key_exclusive_next;
-                break :iterating .{
-                    .iterating = .{
-                        .key_exclusive_next = key_exclusive_next,
-                        .index_key_min = self.state.loading_index.table_key_min,
-                        .index_key_max = self.state.loading_index.table_key_max,
-                        .values = .none,
-                    },
-                };
+            // Capture the active union payload before changing its tag. Zig
+            // 0.16 may activate `.iterating` before evaluating every field of
+            // the assignment RHS, making later `.loading_index` reads invalid.
+            const key_exclusive_next = self.state.loading_index.key_exclusive_next;
+            const index_key_min = self.state.loading_index.table_key_min;
+            const index_key_max = self.state.loading_index.table_key_max;
+            self.state = .{
+                .iterating = .{
+                    .key_exclusive_next = key_exclusive_next,
+                    .index_key_min = index_key_min,
+                    .index_key_max = index_key_max,
+                    .values = .none,
+                },
             };
 
             if (range_found) |range| {

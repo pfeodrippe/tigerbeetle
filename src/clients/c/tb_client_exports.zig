@@ -190,8 +190,8 @@ pub fn register_log_callback(
     callback_maybe: ?Logging.Callback,
     debug: bool,
 ) callconv(.c) tb_register_log_callback_status {
-    Logging.global.mutex.lock();
-    defer Logging.global.mutex.unlock();
+    Logging.global.mutex.lockUncancelable(stdx.process_io);
+    defer Logging.global.mutex.unlock(stdx.process_io);
 
     if (Logging.global.callback == null) {
         if (callback_maybe) |callback| {
@@ -226,14 +226,14 @@ pub const Logging = struct {
     var global: Logging = .{};
 
     callback: ?Callback = null,
-    mutex: std.Thread.Mutex = .{},
+    mutex: std.Io.Mutex = .init,
     buffer: [log_line_max]u8 = undefined,
     debug: bool = false,
 
     /// A logger which defers to an application provided handler.
     pub fn application_logger(
         comptime message_level: std.log.Level,
-        comptime scope: @Type(.enum_literal),
+        comptime scope: @EnumLiteral(),
         comptime format: []const u8,
         args: anytype,
     ) void {
@@ -253,8 +253,8 @@ pub const Logging = struct {
 
         // Protect everything with a mutex - logging can be called from different threads
         // simultaneously, and there's only one buffer for now.
-        Logging.global.mutex.lock();
-        defer Logging.global.mutex.unlock();
+        Logging.global.mutex.lockUncancelable(stdx.process_io);
+        defer Logging.global.mutex.unlock(stdx.process_io);
 
         const callback = Logging.global.callback orelse return;
 

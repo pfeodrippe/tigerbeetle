@@ -101,7 +101,7 @@ pub fn validate_release_package(shell: *Shell, gpa: std.mem.Allocator, options: 
             },
         );
         switch (result.term) {
-            .Exited => |code| if (code == 0) break,
+            .exited => |code| if (code == 0) break,
             else => {},
         }
 

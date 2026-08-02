@@ -110,7 +110,7 @@ pub fn ScanBuilderType(
             timestamp_range: TimestampRange,
             direction: Direction,
         ) *Scan {
-            const field = comptime std.enums.nameCast(std.meta.FieldEnum(Scan.Dispatcher), index);
+            const field = comptime @field(std.meta.FieldEnum(Scan.Dispatcher), @tagName(index));
             const scan = self.scan_add(field) catch unreachable;
             const scan_impl = &@field(scan.dispatcher, @tagName(field));
             scan_impl.init(
@@ -135,7 +135,7 @@ pub fn ScanBuilderType(
             value: UniqueKeyType(index),
             direction: Direction,
         ) *Scan {
-            const field = comptime std.enums.nameCast(std.meta.FieldEnum(Scan.Dispatcher), index);
+            const field = comptime @field(std.meta.FieldEnum(Scan.Dispatcher), @tagName(index));
             const scan = self.scan_add(field) catch unreachable;
             const scan_impl = &@field(scan.dispatcher, @tagName(field));
             scan_impl.init(
@@ -381,7 +381,7 @@ pub fn ScanType(
                     };
                 }
 
-                break :blk @Type(.{ .@"enum" = .{
+                break :blk stdx.type_from_info(.{ .@"enum" = .{
                     .tag_type = std.math.IntFittingRange(0, tag_fields.len - 1),
                     .fields = &tag_fields,
                     .decls = &.{},
@@ -389,7 +389,7 @@ pub fn ScanType(
                 } });
             };
 
-            break :T @Type(type_info);
+            break :T stdx.type_from_info(type_info);
         };
 
         dispatcher: Dispatcher,

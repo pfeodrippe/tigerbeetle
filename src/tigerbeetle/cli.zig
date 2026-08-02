@@ -789,7 +789,8 @@ fn parse_args_format(format: CLIArgs.Format) Command.Format {
     assert(replica < constants.members_max);
     assert(replica < format.replica_count + constants.standbys_max);
 
-    const cluster_random = std.crypto.random.int(u128);
+    var cluster_random: u128 = undefined;
+    stdx.process_io.random(std.mem.asBytes(&cluster_random));
     assert(cluster_random != 0);
     const cluster = format.cluster orelse cluster_random;
     if (format.cluster == null) {

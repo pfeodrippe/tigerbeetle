@@ -28,8 +28,9 @@ pub const CLIArgs = struct {
     addresses: []const u8,
 };
 
-pub fn main() !void {
-    var gpa_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(process_init: std.process.Init) !void {
+    stdx.set_process_context(process_init);
+    var gpa_allocator = std.heap.DebugAllocator(.{}).init;
     defer switch (gpa_allocator.deinit()) {
         .ok => {},
         .leak => @panic("memory leak"),
@@ -43,28 +44,20 @@ pub fn main() !void {
     log.info("addresses: {s}", .{args.addresses});
 
     var tb_client: c.tb_client_t = undefined;
-    const init_status = c.tb_client_init(
-        &tb_client,
-        std.mem.asBytes(&args.cluster),
-        args.addresses.ptr,
-        @intCast(args.addresses.len),
-        0,
-        on_complete,
-    );
-    if (init_status != c.TB_INIT_SUCCESS) {
-        return error.ClientInitError;
-    }
+    try client_init(&tb_client, args);
     defer {
         const client_status = c.tb_client_deinit(&tb_client);
         assert(client_status == c.TB_CLIENT_OK);
     }
 
-    const stdin = std.io.getStdIn().reader().any();
-    const stdout = std.io.getStdOut().writer().any();
+    var stdin_buffer: [4096]u8 = undefined;
+    var stdin = std.Io.File.stdin().reader(process_init.io, &stdin_buffer);
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout = std.Io.File.stdout().writer(process_init.io, &stdout_buffer);
 
     while (true) {
         var events_buffer: [events_buffer_size_max]u8 = undefined;
-        const operation, const events = receive(stdin, events_buffer[0..]) catch |err| {
+        const operation, const events = receive(&stdin.interface, events_buffer[0..]) catch |err| {
             switch (err) {
                 error.EndOfStream => break,
                 else => return err,
@@ -74,12 +67,12 @@ pub fn main() !void {
         var context = RequestContext{};
 
         {
-            context.lock.lock();
-            defer context.lock.unlock();
+            context.lock.lockUncancelable(stdx.process_io);
+            defer context.lock.unlock(stdx.process_io);
 
             var packet: c.tb_packet_t = undefined;
             packet.operation = @intFromEnum(operation);
-            packet.user_data = @constCast(@ptrCast(&context));
+            packet.user_data = @ptrCast(@constCast(&context));
             packet.data = @constCast(events.ptr);
             packet.data_size = @intCast(events.len);
             packet.user_tag = 0;
@@ -89,25 +82,30 @@ pub fn main() !void {
             assert(client_status == c.TB_CLIENT_OK);
 
             while (!context.completed) {
-                context.condition.wait(&context.lock);
+                context.condition.waitUncancelable(stdx.process_io, &context.lock);
             }
         }
 
-        write_results(stdout, operation, context.result[0..context.result_size]) catch |err| {
-            switch (err) {
-                error.BrokenPipe => {
-                    log.info("stdout is closed, exiting", .{});
-                    break;
-                },
-                else => return err,
-            }
-        };
+        try write_results(&stdout.interface, operation, context.result[0..context.result_size]);
+        try stdout.interface.flush();
     }
 }
 
+fn client_init(tb_client: *c.tb_client_t, args: CLIArgs) !void {
+    const status = c.tb_client_init(
+        tb_client,
+        std.mem.asBytes(&args.cluster),
+        args.addresses.ptr,
+        @intCast(args.addresses.len),
+        0,
+        on_complete,
+    );
+    if (status != c.TB_INIT_SUCCESS) return error.ClientInitError;
+}
+
 const RequestContext = struct {
-    lock: std.Thread.Mutex = .{},
-    condition: std.Thread.Condition = .{},
+    lock: std.Io.Mutex = .init,
+    condition: std.Io.Condition = .init,
     completed: bool = false,
     result: [constants.message_body_size_max]u8 = undefined,
     result_size: u32 = 0,
@@ -124,8 +122,8 @@ pub fn on_complete(
     _ = timestamp;
     const context: *RequestContext = @ptrCast(@alignCast(tb_packet.*.user_data.?));
 
-    context.lock.lock();
-    defer context.lock.unlock();
+    context.lock.lockUncancelable(stdx.process_io);
+    defer context.lock.unlock(stdx.process_io);
 
     assert(tb_packet.*.status == c.TB_PACKET_OK);
     assert(result != null);
@@ -133,11 +131,11 @@ pub fn on_complete(
     stdx.copy_disjoint(.exact, u8, context.result[0..result_size], result.?[0..result_size]);
     context.result_size = result_size;
     context.completed = true;
-    context.condition.signal();
+    context.condition.signal(stdx.process_io);
 }
 
 fn write_results(
-    writer: std.io.AnyWriter,
+    writer: *std.Io.Writer,
     operation: Operation,
     result: []const u8,
 ) !void {
@@ -159,9 +157,9 @@ fn write_results(
     }
 }
 
-fn receive(reader: std.io.AnyReader, buffer: []u8) !struct { Operation, []const u8 } {
-    const operation = try reader.readEnum(Operation, .little);
-    const count = try reader.readInt(u32, .little);
+fn receive(reader: *std.Io.Reader, buffer: []u8) !struct { Operation, []const u8 } {
+    const operation = try reader.takeEnum(Operation, .little);
+    const count = try reader.takeInt(u32, .little);
 
     return switch (operation) {
         inline else => |operation_comptime| {
@@ -170,8 +168,7 @@ fn receive(reader: std.io.AnyReader, buffer: []u8) !struct { Operation, []const 
             const response_size = operation_comptime.event_size() * count;
             assert(buffer.len >= response_size);
 
-            const read_total_size = try reader.readAtLeast(buffer, response_size);
-            assert(read_total_size == response_size);
+            try reader.readSliceAll(buffer[0..response_size]);
 
             return .{ operation_comptime, buffer[0..response_size] };
         },

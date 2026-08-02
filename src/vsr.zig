@@ -1004,92 +1004,69 @@ fn parse_address(string: []const u8) !stdx.IPAddress {
 }
 
 test parse_addresses {
+    const expected_address = struct {
+        fn parse(ip: []const u8, port: u16) !stdx.SocketAddress {
+            return .{ .ip = try stdx.IPAddress.parse(ip), .port = port };
+        }
+    }.parse;
     const vectors_positive = &[_]struct {
         raw: []const u8,
-        addresses: []const std.net.Address,
+        addresses: []const stdx.SocketAddress,
     }{
         .{
             // Test the minimum/maximum address/port.
             .raw = "1.2.3.4:567,0.0.0.0:0,255.255.255.255:65535",
-            .addresses = &[3]std.net.Address{
-                std.net.Address.initIp4([_]u8{ 1, 2, 3, 4 }, 567),
-                std.net.Address.initIp4([_]u8{ 0, 0, 0, 0 }, 0),
-                std.net.Address.initIp4([_]u8{ 255, 255, 255, 255 }, 65535),
+            .addresses = &[3]stdx.SocketAddress{
+                try expected_address("1.2.3.4", 567),
+                try expected_address("0.0.0.0", 0),
+                try expected_address("255.255.255.255", 65535),
             },
         },
         .{
             // Addresses are not reordered.
             .raw = "3.4.5.6:7777,200.3.4.5:6666,1.2.3.4:5555",
-            .addresses = &[3]std.net.Address{
-                std.net.Address.initIp4([_]u8{ 3, 4, 5, 6 }, 7777),
-                std.net.Address.initIp4([_]u8{ 200, 3, 4, 5 }, 6666),
-                std.net.Address.initIp4([_]u8{ 1, 2, 3, 4 }, 5555),
+            .addresses = &[3]stdx.SocketAddress{
+                try expected_address("3.4.5.6", 7777),
+                try expected_address("200.3.4.5", 6666),
+                try expected_address("1.2.3.4", 5555),
             },
         },
         .{
             // Test default address and port.
             .raw = "1.2.3.4:5,4321,2.3.4.5",
-            .addresses = &[3]std.net.Address{
-                std.net.Address.initIp4([_]u8{ 1, 2, 3, 4 }, 5),
-                try std.net.Address.parseIp4(constants.address, 4321),
-                std.net.Address.initIp4([_]u8{ 2, 3, 4, 5 }, constants.port),
+            .addresses = &[3]stdx.SocketAddress{
+                try expected_address("1.2.3.4", 5),
+                try expected_address(constants.address, 4321),
+                try expected_address("2.3.4.5", constants.port),
             },
         },
         .{
             // Test addresses less than address_limit.
             .raw = "1.2.3.4:5,4321",
-            .addresses = &[2]std.net.Address{
-                std.net.Address.initIp4([_]u8{ 1, 2, 3, 4 }, 5),
-                try std.net.Address.parseIp4(constants.address, 4321),
+            .addresses = &[2]stdx.SocketAddress{
+                try expected_address("1.2.3.4", 5),
+                try expected_address(constants.address, 4321),
             },
         },
         .{
             // Test IPv6 address with default port.
             .raw = "[fe80::1ff:fe23:4567:890a]",
-            .addresses = &[_]std.net.Address{
-                std.net.Address.initIp6(
-                    [_]u8{
-                        0xfe, 0x80,
-                        0,    0,
-                        0,    0,
-                        0,    0,
-                        0x01, 0xff,
-                        0xfe, 0x23,
-                        0x45, 0x67,
-                        0x89, 0x0a,
-                    },
-                    constants.port,
-                    0,
-                    0,
-                ),
+            .addresses = &[_]stdx.SocketAddress{
+                try expected_address("fe80::1ff:fe23:4567:890a", constants.port),
             },
         },
         .{
             // Test IPv6 address with port.
             .raw = "[fe80::1ff:fe23:4567:890a]:1234",
-            .addresses = &[_]std.net.Address{
-                std.net.Address.initIp6(
-                    [_]u8{
-                        0xfe, 0x80,
-                        0,    0,
-                        0,    0,
-                        0,    0,
-                        0x01, 0xff,
-                        0xfe, 0x23,
-                        0x45, 0x67,
-                        0x89, 0x0a,
-                    },
-                    1234,
-                    0,
-                    0,
-                ),
+            .addresses = &[_]stdx.SocketAddress{
+                try expected_address("fe80::1ff:fe23:4567:890a", 1234),
             },
         },
         .{
             // Test IPv6-mapped IPv4 address.
             .raw = "[::ffff:7f00:1]:1234",
-            .addresses = &[_]std.net.Address{
-                std.net.Address.initIp4([_]u8{ 127, 0, 0, 1 }, 1234),
+            .addresses = &[_]stdx.SocketAddress{
+                try expected_address("127.0.0.1", 1234),
             },
         },
     };
@@ -1122,9 +1099,8 @@ test parse_addresses {
         const addresses_actual = try parse_addresses(vector.raw, &buffer);
 
         try std.testing.expectEqual(addresses_actual.len, vector.addresses.len);
-        for (vector.addresses, 0..) |address_expect_std, i| {
+        for (vector.addresses, 0..) |address_expect, i| {
             const address_actual = addresses_actual[i];
-            const address_expect = try stdx.SocketAddress.from_std(address_expect_std);
             try std.testing.expectEqual(address_expect, address_actual);
         }
     }
@@ -1680,13 +1656,13 @@ test "Checkpoint ops diagram" {
     const Snap = stdx.Snap;
     const snap = Snap.snap_fn("src");
 
-    var string = std.ArrayList(u8).init(std.testing.allocator);
+    var string: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer string.deinit();
 
-    var string2 = std.ArrayList(u8).init(std.testing.allocator);
+    var string2: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer string2.deinit();
 
-    try string.writer().print(
+    try string.writer.print(
         \\journal_slot_count={[journal_slot_count]}
         \\lsm_compaction_ops={[lsm_compaction_ops]}
         \\pipeline_prepare_queue_max={[pipeline_prepare_queue_max]}
@@ -1727,9 +1703,9 @@ test "Checkpoint ops diagram" {
         };
 
         // Marker for tidy.zig to ignore the long lines.
-        if (op % constants.journal_slot_count == 0) try string.appendSlice("OPS: ");
+        if (op % constants.journal_slot_count == 0) try string.writer.writeAll("OPS: ");
 
-        try string.writer().print("{s}{:_>3}{s}", .{
+        try string.writer.print("{s}{:_>3}{s}", .{
             switch (op_type) {
                 .normal => " ",
                 .checkpoint => if (checkpoint_count % 2 == 0) "[" else "{",
@@ -1745,8 +1721,8 @@ test "Checkpoint ops diagram" {
             },
         });
 
-        if (last_slot) try string.append('\n');
-        if (!last_slot and last_beat) try string.append(' ');
+        if (last_slot) try string.writer.writeByte('\n');
+        if (!last_slot and last_beat) try string.writer.writeByte(' ');
 
         if (op_type == .checkpoint) {
             checkpoint_prev = checkpoint_next;
@@ -1772,7 +1748,7 @@ test "Checkpoint ops diagram" {
         \\OPS:  256  257  258 {259   260  261  262 <263>  264  265  266  267   268  269  270  271]  272  273  274  275   276  277  278 [279   280  281  282 <283>  284  285  286  287
         \\OPS:  288  289  290  291}  292  293  294  295   296  297  298 {299   300  301  302 <303>  304  305  306  307   308  309  310  311]  312  313  314  315   316  317  318 [319
         \\
-    ).diff(string.items);
+    ).diff(string.written());
 }
 
 pub const Snapshot = struct {

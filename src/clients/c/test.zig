@@ -8,8 +8,8 @@ const stdx = tb_client.vsr.stdx;
 const constants = @import("../../constants.zig");
 const tb = tb_client.vsr.tigerbeetle;
 
-const Mutex = std.Thread.Mutex;
-const Condition = std.Thread.Condition;
+const Mutex = std.Io.Mutex;
+const Condition = std.Io.Condition;
 
 fn RequestContextType(comptime request_size_max: comptime_int) type {
     return struct {
@@ -57,24 +57,24 @@ fn RequestContextType(comptime request_size_max: comptime_int) type {
 // Notifies the main thread when all pending requests are completed.
 const Completion = struct {
     pending: usize,
-    mutex: Mutex = .{},
-    cond: Condition = .{},
+    mutex: Mutex = .init,
+    cond: Condition = .init,
 
     pub fn complete(self: *Completion) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(stdx.process_io);
+        defer self.mutex.unlock(stdx.process_io);
 
         assert(self.pending > 0);
         self.pending -= 1;
-        self.cond.signal();
+        self.cond.signal(stdx.process_io);
     }
 
     pub fn wait_pending(self: *Completion) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(stdx.process_io);
+        defer self.mutex.unlock(stdx.process_io);
 
         while (self.pending > 0)
-            self.cond.wait(&self.mutex);
+            self.cond.waitUncancelable(stdx.process_io, &self.mutex);
     }
 };
 

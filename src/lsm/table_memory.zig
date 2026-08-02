@@ -1042,7 +1042,7 @@ test "table_memory: merge and absorb (last wins across streams)" {
 
     try snap(@src(),
         \\{ { 2, 1 }, { 4, 0 }, { 5, 0 } }
-    ).diff_fmt("{any}", .{keys});
+    ).diff_fmt("{f}", .{format_key_versions(&keys)});
 }
 
 test "table_memory: compact and deduplicate across runs" {
@@ -1117,7 +1117,22 @@ test "table_memory: compact and deduplicate across runs" {
 
     try snap(@src(),
         \\{ { 2, 3 } }
-    ).diff_fmt("{any}", .{keys});
+    ).diff_fmt("{f}", .{format_key_versions(&keys)});
+}
+
+fn format_key_versions(keys: anytype) struct {
+    keys: @TypeOf(keys),
+
+    pub fn format(self: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        try writer.writeAll("{ ");
+        for (self.keys, 0..) |key_version, index| {
+            if (index > 0) try writer.writeAll(", ");
+            try writer.print("{{ {any}, {any} }}", .{ key_version[0], key_version[1] });
+        }
+        try writer.writeAll(" }");
+    }
+} {
+    return .{ .keys = keys };
 }
 
 test "table_memory (secondary): annihilation yields zero after deduplicate" {

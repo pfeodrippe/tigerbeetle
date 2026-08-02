@@ -501,10 +501,14 @@ pub fn AOFType(comptime IO: type) type {
             last_checksum: ?u128 = null,
 
             pub fn init(io: *IO, path: []const u8) !Iterator {
-                const file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
-                errdefer file.close();
+                const file = try std.Io.Dir.cwd().openFile(
+                    stdx.process_io,
+                    path,
+                    .{ .mode = .read_only },
+                );
+                errdefer file.close(stdx.process_io);
 
-                const size = (try file.stat()).size;
+                const size = (try file.stat(stdx.process_io)).size;
 
                 return Iterator{ .io = io, .file_descriptor = file.handle, .size = size };
             }
@@ -598,7 +602,8 @@ pub fn AOFType(comptime IO: type) type {
             input_paths: []const []const u8,
             output_path: []const u8,
         ) !void {
-            const stdout = std.io.getStdOut().writer();
+            var stdout_writer = std.Io.File.stdout().writer(stdx.process_io, &.{});
+            const stdout = &stdout_writer.interface;
 
             var aofs: [constants.members_max]Iterator = undefined;
             var aof_count: usize = 0;
@@ -624,7 +629,7 @@ pub fn AOFType(comptime IO: type) type {
             defer allocator.destroy(target);
 
             const dir_fd = try IO.open_dir(std.fs.path.dirname(output_path) orelse ".");
-            defer std.posix.close(dir_fd);
+            defer _ = std.posix.system.close(dir_fd);
 
             for (input_paths) |input_path| {
                 aofs[aof_count] = try Iterator.init(io, input_path);
@@ -795,8 +800,8 @@ test "aof write / read" {
     const AOFIterator = AOF.Iterator;
 
     const aof_file = "test.aof";
-    std.fs.cwd().deleteFile(aof_file) catch {};
-    defer std.fs.cwd().deleteFile(aof_file) catch {};
+    std.Io.Dir.cwd().deleteFile(stdx.process_io, aof_file) catch {};
+    defer std.Io.Dir.cwd().deleteFile(stdx.process_io, aof_file) catch {};
 
     const allocator = std.testing.allocator;
 
@@ -804,7 +809,7 @@ test "aof write / read" {
     defer io.deinit();
 
     const dir_fd = try IO.open_dir(".");
-    defer std.posix.close(dir_fd);
+    defer _ = std.posix.system.close(dir_fd);
 
     var aof = try AOF.init(&io, aof_file);
 
@@ -930,7 +935,7 @@ const CLIArgs = union(enum) {
 };
 
 pub fn main() !void {
-    var gpa_instance: std.heap.GeneralPurposeAllocator(.{}) = .{};
+    var gpa_instance: std.heap.DebugAllocator(.{}) = .init;
     const gpa = gpa_instance.allocator();
 
     var time_os: vsr.time.TimeOS = .{};
@@ -972,7 +977,8 @@ pub fn main() !void {
             var data_checksum: [32]u8 = undefined;
             var blake3 = std.crypto.hash.Blake3.init(.{});
 
-            const stdout = std.io.getStdOut().writer();
+            var stdout_writer = std.Io.File.stdout().writer(stdx.process_io, &.{});
+            const stdout = &stdout_writer.interface;
             while (try it.next(target)) |entry| {
                 const header = entry.header();
                 if (!AOFReplayClient.replay_message(header)) continue;

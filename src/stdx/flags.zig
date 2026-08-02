@@ -62,8 +62,10 @@ pub fn deinit(flags: *Flags, gpa: Allocator) void {
 
 /// Format and print an error message to stderr, then exit with an exit code of 1.
 fn fatal(comptime fmt_string: []const u8, args: anytype) noreturn {
-    const stderr = std.io.getStdErr().writer();
-    stderr.print("error: " ++ fmt_string ++ "\n", args) catch {};
+    var buffer: [4096]u8 = undefined;
+    var stderr_writer = std.Io.File.stderr().writer(stdx.process_io, &buffer);
+    stderr_writer.interface.print("error: " ++ fmt_string ++ "\n", args) catch {};
+    stderr_writer.interface.flush() catch {};
     // NB: this status must match vsr.FatalReason.cli, but it would be wrong for flags to depend on
     // vsr. The right way would be to parametrize flags by this behavior, and let the caller inject
     // the implementation of fatal function, but let's be pragmatic here and just match the behavior
@@ -104,7 +106,7 @@ pub fn parse(flags: *Flags, comptime CLIArgs: type) CLIArgs {
 
     const arena = flags.arena.allocator();
 
-    var args = std.process.argsWithAllocator(arena) catch |err| oom(err);
+    var args = stdx.process_args.iterateAllocator(arena) catch |err| oom(err);
     if (!args.skip()) fatal("executable name missing", .{});
 
     return parse_flags(arena, &args, CLIArgs);
@@ -112,7 +114,7 @@ pub fn parse(flags: *Flags, comptime CLIArgs: type) CLIArgs {
 
 fn parse_commands(
     arena: Allocator,
-    args: *std.process.ArgIterator,
+    args: *std.process.Args.Iterator,
     comptime Commands: type,
 ) Commands {
     comptime assert(@typeInfo(Commands) == .@"union");
@@ -126,7 +128,10 @@ fn parse_commands(
     // NB: help must be declared as *pub* const to be visible here.
     if (@hasDecl(Commands, "help")) {
         if (std.mem.eql(u8, first_arg, "-h") or std.mem.eql(u8, first_arg, "--help")) {
-            std.io.getStdOut().writeAll(Commands.help) catch std.process.exit(1);
+            var buffer: [4096]u8 = undefined;
+            var stdout_writer = std.Io.File.stdout().writer(stdx.process_io, &buffer);
+            stdout_writer.interface.writeAll(Commands.help) catch std.process.exit(1);
+            stdout_writer.interface.flush() catch std.process.exit(1);
             std.process.exit(0);
         }
     }
@@ -140,7 +145,7 @@ fn parse_commands(
     fatal("unknown subcommand: '{s}'", .{first_arg});
 }
 
-fn parse_flags(arena: Allocator, args: *std.process.ArgIterator, comptime CLIArgs: type) CLIArgs {
+fn parse_flags(arena: Allocator, args: *std.process.Args.Iterator, comptime CLIArgs: type) CLIArgs {
     @setEvalBranchQuota(5_000);
 
     if (CLIArgs == void) {
@@ -695,8 +700,12 @@ pub const main =
             ;
         };
 
-        fn main() !void {
-            var gpa_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+        fn main(process_init: std.process.Init) !void {
+            stdx.set_process_context(process_init);
+
+            var gpa_allocator: std.heap.DebugAllocator(.{}) = .init;
+            defer _ = gpa_allocator.deinit();
+
             const gpa = gpa_allocator.allocator();
 
             var flags = Flags.init(gpa);
@@ -704,8 +713,11 @@ pub const main =
 
             const cli_args = flags.parse(CLIArgs);
 
-            const stdout = std.io.getStdOut();
-            const out_stream = stdout.writer();
+            var stdout_buffer: [4096]u8 = undefined;
+            var stdout_writer = std.Io.File.stdout().writer(stdx.process_io, &stdout_buffer);
+            defer stdout_writer.interface.flush() catch {};
+
+            const out_stream = &stdout_writer.interface;
             switch (cli_args) {
                 .empty => try out_stream.print("empty\n", .{}),
                 .prefix => |values| {
@@ -735,7 +747,7 @@ pub const main =
                     try out_stream.print("boolean: {}\n", .{values.boolean});
                     try out_stream.print("path: {s}\n", .{values.path});
                     try out_stream.print("optional: {?s}\n", .{values.optional});
-                    try out_stream.print("choice: {?s}\n", .{@tagName(values.choice)});
+                    try out_stream.print("choice: {s}\n", .{@tagName(values.choice)});
                 },
                 .subcommand => |values| {
                     switch (values) {
@@ -757,14 +769,17 @@ test "flags" {
 
         gpa: std.mem.Allocator,
         tmp_dir: std.testing.TmpDir,
-        output_buf: std.ArrayList(u8),
+        output_buf: std.Io.Writer.Allocating,
         flags_exe_buf: *[std.fs.max_path_bytes]u8,
         flags_exe: []const u8,
 
         fn init(gpa: std.mem.Allocator) !T {
             // TODO: Avoid std.posix.getenv() as it currently causes a linker error on windows.
             // See: https://github.com/ziglang/zig/issues/8456
-            const zig_exe = try std.process.getEnvVarOwned(gpa, "ZIG_EXE"); // Set by build.zig
+            const zig_exe = try stdx.current_process_environ().getAlloc(
+                gpa,
+                "ZIG_EXE", // Set by build.zig.
+            );
             defer gpa.free(zig_exe);
 
             var tmp_dir = std.testing.tmpDir(.{});
@@ -777,7 +792,7 @@ test "flags" {
             });
             defer gpa.free(tmp_dir_path);
 
-            const output_buf = std.ArrayList(u8).init(gpa);
+            var output_buf: std.Io.Writer.Allocating = .init(gpa);
             errdefer output_buf.deinit();
 
             const flags_exe_buf = try gpa.create([std.fs.max_path_bytes]u8);
@@ -790,32 +805,39 @@ test "flags" {
                 });
                 defer gpa.free(path_relative);
 
-                const this_file = try std.fs.cwd().realpath(
+                const this_file_len = try std.Io.Dir.cwd().realPathFile(
+                    stdx.process_io,
                     path_relative,
                     flags_exe_buf,
                 );
+                const this_file = flags_exe_buf[0..this_file_len];
                 const argv = [_][]const u8{ zig_exe, "build-exe", this_file };
-                const exec_result = try std.process.Child.run(.{
-                    .allocator = gpa,
+                const exec_result = try std.process.run(gpa, stdx.process_io, .{
                     .argv = &argv,
-                    .cwd = tmp_dir_path,
+                    .cwd = .{ .path = tmp_dir_path },
                 });
                 defer gpa.free(exec_result.stdout);
                 defer gpa.free(exec_result.stderr);
 
-                if (exec_result.term.Exited != 0) {
+                if (exec_result.term.exited != 0) {
                     std.debug.print("{s}{s}", .{ exec_result.stdout, exec_result.stderr });
                     return error.FailedToCompile;
                 }
             }
 
-            const flags_exe = try tmp_dir.dir.realpath(
+            const flags_exe_len = try tmp_dir.dir.realPathFile(
+                stdx.process_io,
                 "flags" ++ comptime builtin.target.exeFileExt(),
                 flags_exe_buf,
             );
+            const flags_exe = flags_exe_buf[0..flags_exe_len];
 
-            const sanity_check = try std.fs.openFileAbsolute(flags_exe, .{});
-            sanity_check.close();
+            const sanity_check = try std.Io.Dir.openFileAbsolute(
+                stdx.process_io,
+                flags_exe,
+                .{},
+            );
+            sanity_check.close(stdx.process_io);
 
             return .{
                 .gpa = gpa,
@@ -845,8 +867,7 @@ test "flags" {
                 assert(argv[argv.len - 1].ptr == cli[cli.len - 1].ptr);
             }
 
-            const exec_result = try std.process.Child.run(.{
-                .allocator = t.gpa,
+            const exec_result = try std.process.run(t.gpa, stdx.process_io, .{
                 .argv = argv,
             });
             defer t.gpa.free(exec_result.stdout);
@@ -854,17 +875,17 @@ test "flags" {
 
             t.output_buf.clearRetainingCapacity();
 
-            if (exec_result.term.Exited != 0) {
-                try t.output_buf.writer().print("status: {}\n", .{exec_result.term.Exited});
+            if (exec_result.term.exited != 0) {
+                try t.output_buf.writer.print("status: {}\n", .{exec_result.term.exited});
             }
             if (exec_result.stdout.len > 0) {
-                try t.output_buf.writer().print("stdout:\n{s}", .{exec_result.stdout});
+                try t.output_buf.writer.print("stdout:\n{s}", .{exec_result.stdout});
             }
             if (exec_result.stderr.len > 0) {
-                try t.output_buf.writer().print("stderr:\n{s}", .{exec_result.stderr});
+                try t.output_buf.writer.print("stderr:\n{s}", .{exec_result.stderr});
             }
 
-            try want.diff(t.output_buf.items);
+            try want.diff(t.output_buf.written());
         }
     };
 

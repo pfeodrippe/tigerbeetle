@@ -77,11 +77,9 @@ pub const Duration = struct {
     // NB: this is a lossy operation, durations are rounded to look nice.
     pub fn format(
         duration: Duration,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        try std.fmt.fmtDuration(duration.ns).format(fmt, options, writer);
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        try std.Io.Duration.fromNanoseconds(@intCast(duration.ns)).format(writer);
     }
 
     pub fn parse_flag_value(
@@ -215,7 +213,8 @@ pub const InstantUnix = struct {
     }
 
     pub fn now() InstantUnix {
-        const timestamp_ns = std.time.nanoTimestamp();
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const timestamp_ns = std.Io.Clock.real.now(io).nanoseconds;
         assert(timestamp_ns > 0);
         assert(timestamp_ns <= std.math.maxInt(u64));
         return .{ .ns = @intCast(timestamp_ns) };
@@ -253,12 +252,8 @@ pub const InstantUnix = struct {
 
     pub fn format(
         instant: InstantUnix,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
         const datetime = instant.date_time();
         try writer.print("{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}Z", .{
             datetime.year,
@@ -281,11 +276,11 @@ test "InstantUnix format" {
     var buffer: [24]u8 = undefined;
     try std.testing.expectEqualStrings(
         "1970-01-01 00:00:00.000Z",
-        try std.fmt.bufPrint(&buffer, "{}", .{instant_min}),
+        try std.fmt.bufPrint(&buffer, "{f}", .{instant_min}),
     );
     const instant_max = InstantUnix{ .ns = std.math.maxInt(u64) };
     try std.testing.expectEqualStrings(
         "2554-07-21 23:34:33.709Z",
-        try std.fmt.bufPrint(&buffer, "{}", .{instant_max}),
+        try std.fmt.bufPrint(&buffer, "{f}", .{instant_max}),
     );
 }

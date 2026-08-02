@@ -895,10 +895,10 @@ pub fn TestContextType(
 
         snapshot_max: u64 = 1,
         snapshots: stdx.BoundedArrayType(u64, 8) = .{},
-        snapshot_tables: stdx.BoundedArrayType(std.ArrayList(TableInfo), 8) = .{},
+        snapshot_tables: stdx.BoundedArrayType(std.array_list.Managed(TableInfo), 8) = .{},
 
         /// Contains only tables with snapshot_max == lsm.snapshot_latest
-        reference: std.ArrayList(TableInfo),
+        reference: std.array_list.Managed(TableInfo),
 
         inserts: u64 = 0,
         removes: u64 = 0,
@@ -921,7 +921,7 @@ pub fn TestContextType(
             try context.level.init(testing.allocator, &context.pool);
             errdefer context.level.deinit(testing.allocator, &context.pool);
 
-            context.reference = std.ArrayList(TableInfo).init(testing.allocator);
+            context.reference = std.array_list.Managed(TableInfo).init(testing.allocator);
             errdefer context.reference.deinit();
         }
 
@@ -1076,7 +1076,7 @@ pub fn TestContextType(
 
             context.snapshots.push(context.take_snapshot());
 
-            var tables = std.ArrayList(TableInfo).init(testing.allocator);
+            var tables = std.array_list.Managed(TableInfo).init(testing.allocator);
             try tables.insertSlice(0, context.reference.items);
             context.snapshot_tables.push(tables);
         }
@@ -1157,7 +1157,7 @@ pub fn TestContextType(
             }
 
             {
-                var to_remove = std.ArrayList(TableInfo).init(testing.allocator);
+                var to_remove = std.array_list.Managed(TableInfo).init(testing.allocator);
                 defer to_remove.deinit();
 
                 for (context.reference.items[index..][0..count]) |table| {

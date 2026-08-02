@@ -2,6 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const vsr = @import("../tb_client.zig").vsr;
+const stdx = vsr.stdx;
 const TimeOS = vsr.time.TimeOS;
 const IO = vsr.io.IO;
 
@@ -201,7 +202,11 @@ test "signal" {
         fn notify(self: *Context) void {
             assert(std.Thread.getCurrentId() != self.main_thread_id);
             while (self.signal.status() != .shutdown_completed) {
-                std.time.sleep(delay + 1);
+                std.Io.sleep(
+                    stdx.process_io,
+                    .fromNanoseconds(delay + 1),
+                    .awake,
+                ) catch unreachable;
 
                 // Triggering the event:
                 self.signal.notify();

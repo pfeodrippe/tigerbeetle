@@ -116,7 +116,7 @@ test "benchmark: segmented array" {
         const queries = try alloc_shuffled_index(allocator, options.value_count, &prng);
         defer allocator.free(queries);
 
-        var timer = try std.time.Timer.start();
+        var timer = try stdx.Timer.start();
         const repetitions = @max(1, @divFloor(samples, queries.len));
         var j: usize = 0;
         while (j < repetitions) : (j += 1) {

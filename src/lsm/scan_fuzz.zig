@@ -199,10 +199,8 @@ const QuerySpec = struct {
     /// E.g. "((a OR b) and c)".
     pub fn format(
         self: *const QuerySpec,
-        comptime _: []const u8,
-        _: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
         var stack: stdx.BoundedArrayType(QueryPart.Merge, query_scans_max - 1) = .{};
         var print_operator: bool = false;
         for (0..self.query.count()) |index| {
@@ -560,7 +558,7 @@ const Environment = struct {
                 .blocks_released_prior_checkpoint_durability_max = 0,
             }),
             .forest = undefined,
-            .model = .{},
+            .model = .empty,
             .model_matches = @splat(.{}),
             .model_live = try std.DynamicBitSetUnmanaged.initEmpty(gpa, 0),
 
@@ -604,7 +602,8 @@ const Environment = struct {
 
         const query_specs = QuerySpecFuzzer.generate_fuzz_query_specs(env.prng, index_cardinality);
         for (&query_specs, 0..) |*query_spec, i| {
-            log.info("query_specs[{}]: {} {s}", .{ i, query_spec, @tagName(query_spec.direction) });
+            const direction = @tagName(query_spec.direction);
+            log.info("query_specs[{}]: {f} {s}", .{ i, query_spec, direction });
         }
 
         for (0..commits_max) |_| {
@@ -962,9 +961,9 @@ const Environment = struct {
 
                     const scan = switch (field.index) {
                         inline else => |comptime_index| scan_builder.scan_prefix(
-                            comptime std.enums.nameCast(
+                            comptime @field(
                                 std.meta.FieldEnum(ThingsGroove.IndexTrees),
-                                comptime_index,
+                                @tagName(comptime_index),
                             ),
                             scan_buffer_pool.acquire_assume_capacity(),
                             snapshot,

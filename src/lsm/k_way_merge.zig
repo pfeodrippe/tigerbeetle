@@ -354,7 +354,7 @@ fn TestContextType(comptime streams_max: u32) type {
 
             const gpa = std.testing.allocator;
 
-            var actual = std.ArrayList(Value).init(gpa);
+            var actual = std.array_list.Managed(Value).init(gpa);
             defer actual.deinit();
 
             var streams: [streams_max][]Value = undefined;
@@ -617,7 +617,7 @@ fn FuzzTestContextType(comptime streams_max: u32) type {
                 fuzz_stream_peek,
                 stream_pop,
             );
-            var actual = std.ArrayList(Value).init(gpa);
+            var actual = std.array_list.Managed(Value).init(gpa);
             defer actual.deinit();
 
             var streams: [streams_max][]Value = undefined;

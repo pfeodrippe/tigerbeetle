@@ -257,14 +257,14 @@ test "repl integration" {
 test "benchmark/inspect smoke" {
     const data_file = data_file: {
         var random_bytes: [4]u8 = undefined;
-        std.crypto.random.bytes(&random_bytes);
+        std.testing.io.random(&random_bytes);
         const random_suffix: [8]u8 = std.fmt.bytesToHex(random_bytes, .lower);
         break :data_file "0_0-" ++ random_suffix ++ ".tigerbeetle.benchmark";
     };
-    defer std.fs.cwd().deleteFile(data_file) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, data_file) catch {};
 
     const trace_file = data_file ++ ".json";
-    defer std.fs.cwd().deleteFile(trace_file) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, trace_file) catch {};
 
     const shell = try Shell.create(std.testing.allocator);
     defer shell.destroy();
@@ -326,28 +326,31 @@ test "benchmark/inspect smoke" {
     );
 
     {
-        const file = try std.fs.cwd().openFile(data_file, .{ .mode = .read_write });
-        defer file.close();
+        const file = try std.Io.Dir.cwd().openFile(std.testing.io, data_file, .{
+            .mode = .read_write,
+        });
+        defer file.close(std.testing.io);
 
         var prng = stdx.PRNG.from_seed_testing();
         var random_bytes: [256]u8 = undefined;
         prng.fill(&random_bytes);
 
-        try file.pwriteAll(&random_bytes, offset);
+        try file.writePositionalAll(std.testing.io, &random_bytes, offset);
     }
 
     // `shell.exec` assumes that success is a zero exit code; but in this case the test expects
     // corruption to be found and wants to assert a non-zero exit code.
-    var child = std.process.Child.init(
-        &.{ tigerbeetle, "inspect", "integrity", data_file },
-        std.testing.allocator,
-    );
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
+    const result = try std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ tigerbeetle, "inspect", "integrity", data_file },
+        .stdout_limit = .limited(1 * stdx.MiB),
+        .stderr_limit = .limited(1 * stdx.MiB),
+    });
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
 
-    const term = try child.spawnAndWait();
-    switch (term) {
-        .Exited, .Signal => |value| try std.testing.expect(value != 0),
+    switch (result.term) {
+        .exited => |code| try std.testing.expect(code != 0),
+        .signal => {},
         else => unreachable,
     }
 }

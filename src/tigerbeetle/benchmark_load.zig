@@ -139,14 +139,14 @@ pub fn main(
 
     const client_requests = try allocator.alignedAlloc(
         [constants.message_body_size_max]u8,
-        constants.cache_line_size,
+        .fromByteUnits(constants.cache_line_size),
         clients.count(),
     );
     defer allocator.free(client_requests);
 
     const client_replies = try allocator.alignedAlloc(
         [constants.message_body_size_max]u8,
-        constants.cache_line_size,
+        .fromByteUnits(constants.cache_line_size),
         clients.count(),
     );
     defer allocator.free(client_replies);
@@ -188,11 +188,12 @@ pub fn main(
     else
         null;
 
+    var stdout_writer = std.Io.File.stdout().writer(stdx.process_io, &.{});
     var benchmark = Benchmark{
         .io = io,
         .prng = &prng,
-        .timer = try std.time.Timer.start(),
-        .output = std.io.getStdOut().writer().any(),
+        .timer = try stdx.Timer.start(),
+        .output = &stdout_writer.interface,
         .clients = clients.slice(),
         .client_timeouts = client_timeouts,
         .client_requests = client_requests,
@@ -291,7 +292,9 @@ const TbidGenerator = struct {
     random: u80,
 
     fn init(prng: *stdx.PRNG) TbidGenerator {
-        const epoch_ms: u128 = @intCast(std.time.milliTimestamp());
+        const epoch_ms: u128 = @intCast(
+            @divFloor(std.Io.Clock.real.now(stdx.process_io).nanoseconds, std.time.ns_per_ms),
+        );
         return .{
             .prng = prng,
             .epoch_ms = epoch_ms,
@@ -300,7 +303,9 @@ const TbidGenerator = struct {
     }
 
     fn next(generator: *TbidGenerator) u128 {
-        const now: u128 = @intCast(std.time.milliTimestamp());
+        const now: u128 = @intCast(
+            @divFloor(std.Io.Clock.real.now(stdx.process_io).nanoseconds, std.time.ns_per_ms),
+        );
 
         if (now > generator.epoch_ms) {
             // Time advanced: use new time and new random.
@@ -323,8 +328,8 @@ const TbidGenerator = struct {
 const Benchmark = struct {
     io: *IO,
     prng: *stdx.PRNG,
-    timer: std.time.Timer,
-    output: std.io.AnyWriter,
+    timer: stdx.Timer,
+    output: *std.Io.Writer,
     clients: []Client,
 
     // Configuration:
@@ -1068,7 +1073,7 @@ const Benchmark = struct {
 };
 
 fn print_percentiles_histogram(
-    stdout: std.io.AnyWriter,
+    stdout: *std.Io.Writer,
     label: []const u8,
     histogram_buckets: []const u64,
 ) void {

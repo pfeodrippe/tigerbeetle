@@ -28,7 +28,7 @@ const Operation = operation_enum: {
         }
     }
 
-    break :operation_enum @Type(.{ .@"enum" = .{
+    break :operation_enum stdx.type_from_info(.{ .@"enum" = .{
         .tag_type = u8,
         .fields = operation_fields,
         .decls = &.{},
@@ -50,7 +50,7 @@ const TreeEnum = tree_enum: {
         }
     }
 
-    break :tree_enum @Type(.{ .@"enum" = .{
+    break :tree_enum stdx.type_from_info(.{ .@"enum" = .{
         .tag_type = u32,
         .fields = tree_fields,
         .decls = &.{},
@@ -70,7 +70,7 @@ const GrooveEnum = groove_enum: {
         }};
     }
 
-    break :groove_enum @Type(.{ .@"enum" = .{
+    break :groove_enum stdx.type_from_info(.{ .@"enum" = .{
         .tag_type = u32,
         .fields = groove_fields,
         .decls = &.{},
@@ -368,13 +368,8 @@ pub const EventTiming = union(Event.Tag) {
 
     pub fn format(
         event: *const EventTiming,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
-
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
         switch (event.*) {
             inline else => |data| {
                 try format_data(data, writer);
@@ -508,13 +503,8 @@ pub const EventTracing = union(Event.Tag) {
 
     pub fn format(
         event: *const EventTracing,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
-
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
         switch (event.*) {
             inline else => |data| {
                 try format_data(data, writer);
@@ -735,7 +725,7 @@ pub const EventMetricAggregate = struct {
 
 test "EventMetric slot doesn't have collisions" {
     const allocator = std.testing.allocator;
-    var stacks: std.ArrayListUnmanaged(u32) = .{};
+    var stacks: std.ArrayListUnmanaged(u32) = .empty;
     defer stacks.deinit(allocator);
 
     var g: @import("../testing/exhaustigen.zig") = .{};
@@ -784,7 +774,7 @@ test "EventMetric slot doesn't have collisions" {
 
 test "EventTiming slot doesn't have collisions" {
     const allocator = std.testing.allocator;
-    var stacks: std.ArrayListUnmanaged(u32) = .{};
+    var stacks: std.ArrayListUnmanaged(u32) = .empty;
     defer stacks.deinit(allocator);
 
     var g: @import("../testing/exhaustigen.zig") = .{};

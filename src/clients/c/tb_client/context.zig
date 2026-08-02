@@ -160,7 +160,7 @@ pub fn ContextType(
 ) type {
     return struct {
         const Context = @This();
-        const GPA = std.heap.GeneralPurposeAllocator(.{
+        const GPA = std.heap.DebugAllocator(.{
             .thread_safe = true,
         });
 
@@ -1046,10 +1046,9 @@ pub fn ContextType(
     };
 }
 
-/// Implements the `Mutex` API as an `extern` struct, based on `std.Thread.Futex`.
+/// Implements the `Mutex` API as an `extern` struct, using Zig's explicit-I/O futex API.
 /// Vendored from `std.Thread.Mutex.FutexImpl`.
 const Locker = extern struct {
-    const Futex = std.Thread.Futex;
     const unlocked: u32 = 0b00;
     const locked: u32 = 0b01;
     const contended: u32 = 0b11; // Must contain the `locked` bit for x86 optimization below.
@@ -1083,7 +1082,7 @@ const Locker = extern struct {
         // An atomic swap unconditionally stores which marks the cache-line as modified
         // unnecessarily.
         if (self.state.load(.monotonic) == contended) {
-            Futex.wait(&self.state, contended);
+            stdx.process_io.futexWaitUncancelable(u32, &self.state.raw, contended);
         }
 
         // Try to acquire the lock while also telling the existing lock holder that there are
@@ -1099,7 +1098,7 @@ const Locker = extern struct {
         // Acquire barrier ensures grabbing the lock happens before the critical section
         // and that the previous lock holder's critical section happens before we grab the lock.
         while (self.state.swap(contended, .acquire) != unlocked) {
-            Futex.wait(&self.state, contended);
+            stdx.process_io.futexWaitUncancelable(u32, &self.state.raw, contended);
         }
     }
 
@@ -1115,7 +1114,7 @@ const Locker = extern struct {
         assert(state != unlocked);
 
         if (state == contended) {
-            Futex.wake(&self.state, 1);
+            stdx.process_io.futexWake(u32, &self.state.raw, 1);
         }
     }
 };

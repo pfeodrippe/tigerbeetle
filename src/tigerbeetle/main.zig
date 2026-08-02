@@ -1,7 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const assert = std.debug.assert;
-const fmt = std.fmt;
 const mem = std.mem;
 const os = std.os;
 const log = std.log.scoped(.main);
@@ -33,7 +32,7 @@ const ReplicaReformat =
     vsr.ReplicaReformatType(StateMachine, MessageBus, Storage);
 const data_file_size_min = vsr.superblock.data_file_size_min;
 
-const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator(.{});
+const GeneralPurposeAllocator = std.heap.DebugAllocator(.{});
 
 const KiB = stdx.KiB;
 const MiB = stdx.MiB;
@@ -45,7 +44,7 @@ pub var log_level_runtime: std.log.Level = .info;
 
 pub fn log_runtime(
     comptime message_level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
+    comptime scope: @EnumLiteral(),
     comptime format: []const u8,
     args: anytype,
 ) void {
@@ -62,7 +61,8 @@ pub const std_options: std.Options = .{
     .logFn = log_runtime,
 };
 
-pub fn main() !void {
+pub fn main(process_init: std.process.Init) !void {
+    stdx.set_process_context(process_init);
     if (builtin.os.tag == .windows) try vsr.multiversion.wait_for_parent_to_exit();
 
     var allocator = GeneralPurposeAllocator.init;
@@ -106,8 +106,8 @@ pub fn main() !void {
     var time_os: TimeOS = .{};
     const time = time_os.time();
 
-    var trace_file: ?std.fs.File = null;
-    defer if (trace_file) |file| file.close();
+    var trace_file: ?std.Io.File = null;
+    defer if (trace_file) |file| file.close(stdx.process_io);
 
     var statsd_address: ?stdx.SocketAddress = null;
     var log_trace = true;
@@ -115,7 +115,11 @@ pub fn main() !void {
     switch (command) {
         .start => |*args| {
             if (args.trace) |path| {
-                trace_file = std.fs.cwd().createFile(path, .{ .exclusive = true }) catch |err| {
+                trace_file = std.Io.Dir.cwd().createFile(
+                    stdx.process_io,
+                    path,
+                    .{ .exclusive = true },
+                ) catch |err| {
                     log.err("error creating trace file '{s}': {}", .{ path, err });
                     return err;
                 };
@@ -130,8 +134,14 @@ pub fn main() !void {
         },
     }
 
+    var trace_file_writer: std.Io.File.Writer = undefined;
+    const trace_writer: ?*std.Io.Writer = if (trace_file) |file| writer: {
+        trace_file_writer = file.writer(stdx.process_io, &.{});
+        break :writer &trace_file_writer.interface;
+    } else null;
+
     var tracer = try Tracer.init(gpa, time, .unknown, .{
-        .writer = if (trace_file) |file| file.writer().any() else null,
+        .writer = trace_writer,
         .statsd_options = if (statsd_address) |address| .{
             .udp = .{
                 .io = &io,
@@ -176,23 +186,23 @@ pub fn main() !void {
         .benchmark => |*args| try benchmark_driver.command_benchmark(gpa, &io, time, args),
         .inspect => |*args| try inspect.command_inspect(gpa, &io, &tracer, args),
         .multiversion => |*args| {
-            var stdout_buffer = std.io.bufferedWriter(std.io.getStdOut().writer());
-            var stdout_writer = stdout_buffer.writer();
-            const stdout = stdout_writer.any();
+            var stdout_buffer: [4096]u8 = undefined;
+            var stdout_file_writer = std.Io.File.stdout().writer(stdx.process_io, &stdout_buffer);
+            const stdout = &stdout_file_writer.interface;
 
             try vsr.multiversion.print_information(gpa, args.path, stdout);
-            try stdout_buffer.flush();
+            try stdout.flush();
         },
         .amqp => |*args| try command_amqp(gpa, time, args),
     }
 }
 
 fn command_version(gpa: mem.Allocator, verbose: bool) !void {
-    var stdout_buffer = std.io.bufferedWriter(std.io.getStdOut().writer());
-    var stdout_writer = stdout_buffer.writer();
-    const stdout = stdout_writer.any();
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_file_writer = std.Io.File.stdout().writer(stdx.process_io, &stdout_buffer);
+    const stdout = &stdout_file_writer.interface;
 
-    try std.fmt.format(stdout, "TigerBeetle version {}\n", .{constants.semver});
+    try stdout.print("TigerBeetle version {f}\n", .{constants.semver});
 
     if (verbose) {
         try stdout.writeAll("\n");
@@ -225,7 +235,7 @@ fn command_version(gpa: mem.Allocator, verbose: bool) !void {
 
         vsr.multiversion.print_information(gpa, self_exe_path, stdout) catch {};
     }
-    try stdout_buffer.flush();
+    try stdout.flush();
 }
 
 fn command_format(
@@ -341,9 +351,9 @@ fn command_start(
         break :blk multiversion_os.?.multiversion();
     };
 
-    log.info("release={}", .{config.process.release});
-    log.info("release_client_min={}", .{config.process.release_client_min});
-    log.info("releases_bundled={any}", .{multiversion.releases_bundled().slice()});
+    log.info("release={f}", .{config.process.release});
+    log.info("release_client_min={f}", .{config.process.release_client_min});
+    log.info("releases_bundled={f}", .{multiversion.releases_bundled()});
     log.info("git_commit={?s}", .{config.process.git_commit});
 
     const clients_limit = constants.pipeline_prepare_queue_max + args.pipeline_requests_limit;
@@ -467,9 +477,12 @@ fn command_start(
     // - tigerbeetle process exits when its stdin gets closed.
     if (args.addresses.zero) {
         const port_actual = replica.message_bus.accept_address.?.port;
-        const stdout = std.io.getStdOut();
-        try stdout.writer().print("{}\n", .{port_actual});
-        stdout.close();
+        const stdout = std.Io.File.stdout();
+        var stdout_buffer: [128]u8 = undefined;
+        var stdout_writer = stdout.writer(stdx.process_io, &stdout_buffer);
+        try stdout_writer.interface.print("{}\n", .{port_actual});
+        try stdout_writer.interface.flush();
+        stdout.close(stdx.process_io);
 
         // While it is possible to integrate stdin with our io_uring loop, using a dedicated
         // thread is simpler, and gives us _un_graceful shutdown, which is exactly what we want
@@ -477,7 +490,7 @@ fn command_start(
         const watchdog = try std.Thread.spawn(.{}, struct {
             fn thread_main() void {
                 var buf: [1]u8 = .{0};
-                _ = std.io.getStdIn().read(&buf) catch {};
+                _ = std.Io.File.stdin().readStreaming(stdx.process_io, &.{&buf}) catch {};
                 log.info("stdin closed, exiting", .{});
                 std.process.exit(0);
             }
@@ -644,7 +657,7 @@ fn print_value(
 ) !void {
     if (@TypeOf(value) == ?[40]u8) {
         assert(std.mem.eql(u8, field, "process.git_commit"));
-        return std.fmt.format(writer, "{s}=\"{?s}\"\n", .{
+        return writer.print("{s}=\"{?s}\"\n", .{
             field,
             value,
         });
@@ -652,11 +665,11 @@ fn print_value(
 
     switch (@typeInfo(@TypeOf(value))) {
         .@"fn" => {}, // Ignore the log() function.
-        .pointer => try std.fmt.format(writer, "{s}=\"{s}\"\n", .{
+        .pointer => try writer.print("{s}=\"{s}\"\n", .{
             field,
-            std.fmt.fmtSliceEscapeLower(value),
+            value,
         }),
-        else => try std.fmt.format(writer, "{s}={any}\n", .{
+        else => try writer.print("{s}={any}\n", .{
             field,
             value,
         }),

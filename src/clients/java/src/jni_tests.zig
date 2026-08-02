@@ -1700,7 +1700,8 @@ test "JNI: primitive arrays" {
 }
 
 const get_testing_env = struct {
-    var init = std.once(jvm_create);
+    var init_mutex: std.Io.Mutex = .init;
+    var initialized = false;
     var env: *JNIEnv = undefined;
 
     fn jvm_create() void {
@@ -1716,7 +1717,12 @@ const get_testing_env = struct {
     }
 
     pub fn get_env() *JNIEnv {
-        init.call();
+        init_mutex.lockUncancelable(std.testing.io);
+        defer init_mutex.unlock(std.testing.io);
+        if (!initialized) {
+            jvm_create();
+            initialized = true;
+        }
         return env;
     }
 }.get_env;

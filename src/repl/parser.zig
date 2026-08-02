@@ -12,9 +12,12 @@ const tb = vsr.tigerbeetle;
 pub const Parser = struct {
     input: []const u8,
     offset: u32 = 0,
-    stderr: std.io.AnyWriter,
+    stderr: *std.Io.Writer,
 
-    pub const ArgumentsList = std.ArrayListAlignedUnmanaged(u8, constants.cache_line_size);
+    pub const ArgumentsList = std.array_list.Aligned(
+        u8,
+        .fromByteUnits(constants.cache_line_size),
+    );
     pub const Error = error{ParseError};
 
     pub const Command = enum {
@@ -171,7 +174,7 @@ pub const Parser = struct {
         comptime field: std.meta.FieldEnum(Object),
         value_string: []const u8,
     ) !void {
-        const Value = std.meta.FieldType(Object, field);
+        const Value = @FieldType(Object, @tagName(field));
 
         if (@hasField(Object, "flags") and field == .flags) {
             var flags_strings = std.mem.splitScalar(u8, value_string, '|');
@@ -361,7 +364,7 @@ pub const Parser = struct {
     // TODO(zig): Replace the (implicit) anyerror with a concrete (std.io.Writer.Error || Error).
     pub fn parse_statement(
         input: []const u8,
-        stderr: std.io.AnyWriter,
+        stderr: *std.Io.Writer,
         arguments: *ArgumentsList,
     ) !Statement {
         var parser = Parser{ .input = input, .stderr = stderr };
@@ -483,11 +486,11 @@ test "Parser: fuzz" {
         break :fields fields;
     };
 
-    var stderr = std.ArrayListUnmanaged(u8){};
-    defer stderr.deinit(std.testing.allocator);
+    var stderr: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer stderr.deinit();
 
-    var input = try std.ArrayListUnmanaged(u8).initCapacity(std.testing.allocator, input_size_max);
-    defer input.deinit(std.testing.allocator);
+    var input = try std.Io.Writer.Allocating.initCapacity(std.testing.allocator, input_size_max);
+    defer input.deinit();
 
     var body =
         try Parser.ArgumentsList.initCapacity(std.testing.allocator, constants.message_size_max);
@@ -503,12 +506,12 @@ test "Parser: fuzz" {
         const input_size_target = prng.int_inclusive(u32, input_size_max / 3);
         const separator_probability = stdx.PRNG.ratio(1, 4);
 
-        input.appendSliceAssumeCapacity(@tagName(commands[prng.index(commands)]));
-        input.appendAssumeCapacity(' ');
+        try input.writer.writeAll(@tagName(commands[prng.index(commands)]));
+        try input.writer.writeByte(' ');
 
-        while (input.items.len < input_size_target) {
-            input.appendSliceAssumeCapacity(fields[prng.index(fields)]);
-            input.appendAssumeCapacity('=');
+        while (input.written().len < input_size_target) {
+            try input.writer.writeAll(fields[prng.index(fields)]);
+            try input.writer.writeByte('=');
 
             const value_powers = [_]u8{ 0, 8, 16, 32, 64, 128 };
             const value_power = value_powers[prng.index(value_powers)];
@@ -518,23 +521,23 @@ test "Parser: fuzz" {
                 (@as(u256, 1) << value_power) - @intFromBool(prng.boolean());
 
             _ = switch (prng.enum_uniform(enum { hex, dec, oct, bin })) {
-                .dec => input.writer(std.testing.allocator).print("{d}", .{value}),
-                .hex => input.writer(std.testing.allocator).print("0x{x}", .{value}),
-                .oct => input.writer(std.testing.allocator).print("0o{o}", .{value}),
-                .bin => input.writer(std.testing.allocator).print("0b{b}", .{value}),
+                .dec => input.writer.print("{d}", .{value}),
+                .hex => input.writer.print("0x{x}", .{value}),
+                .oct => input.writer.print("0o{o}", .{value}),
+                .bin => input.writer.print("0b{b}", .{value}),
             } catch unreachable;
 
-            input.appendAssumeCapacity(' ');
-            if (prng.chance(separator_probability)) input.appendAssumeCapacity(',');
+            try input.writer.writeByte(' ');
+            if (prng.chance(separator_probability)) try input.writer.writeByte(',');
         }
 
         if (prng.boolean()) {
             const alphabet = "\n\t _|-=;,01aA";
-            input.items[prng.index(input.items)] = alphabet[prng.index(alphabet)];
+            const written = input.written();
+            written[prng.index(written)] = alphabet[prng.index(alphabet)];
         }
 
-        const stderr_writer = stderr.writer(std.testing.allocator);
-        _ = Parser.parse_statement(input.items, stderr_writer.any(), &body) catch {
+        _ = Parser.parse_statement(input.written(), &stderr.writer, &body) catch {
             error_count += 1;
         };
     }
@@ -548,22 +551,21 @@ test "Parser: snap" {
 
     const T = struct {
         body: Parser.ArgumentsList,
-        body_formatted: std.ArrayListUnmanaged(u8),
-        stderr: std.ArrayListUnmanaged(u8),
+        body_formatted: std.Io.Writer.Allocating,
+        stderr: std.Io.Writer.Allocating,
 
         fn check(t: *@This(), string: []const u8, want: stdx.Snap) !void {
             assert(t.body.items.len == 0);
-            assert(t.body_formatted.items.len == 0);
-            assert(t.stderr.items.len == 0);
+            assert(t.body_formatted.written().len == 0);
+            assert(t.stderr.written().len == 0);
             defer t.body.clearRetainingCapacity();
             defer t.body_formatted.clearRetainingCapacity();
             defer t.stderr.clearRetainingCapacity();
 
             try t.body.ensureTotalCapacity(std.testing.allocator, constants.message_size_max);
 
-            const stderr_writer = t.stderr.writer(std.testing.allocator);
-            const statement = Parser.parse_statement(string, stderr_writer.any(), &t.body) catch {
-                try want.diff(t.stderr.items);
+            const statement = Parser.parse_statement(string, &t.stderr.writer, &t.body) catch {
+                try want.diff(t.stderr.written());
                 return;
             };
 
@@ -578,7 +580,7 @@ test "Parser: snap" {
                     )),
                 ),
             }
-            try want.diff(t.body_formatted.items);
+            try want.diff(t.body_formatted.written());
         }
 
         fn print_objects(
@@ -586,13 +588,13 @@ test "Parser: snap" {
             comptime operation: StateMachine.Operation,
             objects: []const ObjectType(operation),
         ) !void {
-            const body_formatted_writer = t.body_formatted.writer(std.testing.allocator);
+            const body_formatted_writer = &t.body_formatted.writer;
             try body_formatted_writer.print("{s}", .{@tagName(operation)});
-            if (objects.len > 1) try t.body_formatted.append(std.testing.allocator, '\n');
+            if (objects.len > 1) try body_formatted_writer.writeByte('\n');
 
             const Object = ObjectType(operation);
             for (objects, 0..) |*object, i| {
-                if (i > 0) try t.body_formatted.append(std.testing.allocator, '\n');
+                if (i > 0) try body_formatted_writer.writeByte('\n');
                 inline for (std.meta.fields(Object)) |field| {
                     const value = @field(object, field.name);
 
@@ -623,9 +625,13 @@ test "Parser: snap" {
         }
     };
 
-    var t = T{ .body = .{}, .body_formatted = .{}, .stderr = .{} };
-    defer t.stderr.deinit(std.testing.allocator);
-    defer t.body_formatted.deinit(std.testing.allocator);
+    var t = T{
+        .body = .empty,
+        .body_formatted = .init(std.testing.allocator),
+        .stderr = .init(std.testing.allocator),
+    };
+    defer t.stderr.deinit();
+    defer t.body_formatted.deinit();
     defer t.body.deinit(std.testing.allocator);
 
     // create_transfers

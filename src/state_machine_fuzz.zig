@@ -43,14 +43,14 @@ pub fn main(allocator: std.mem.Allocator, args: fuzz.FuzzArgs) !void {
 
     const request_buffer = try allocator.alignedAlloc(
         u8,
-        constants.cache_line_size,
+        .fromByteUnits(constants.cache_line_size),
         vsr.constants.message_body_size_max,
     );
     defer allocator.free(request_buffer);
 
     const reply_buffer = try allocator.alignedAlloc(
         u8,
-        constants.cache_line_size,
+        .fromByteUnits(constants.cache_line_size),
         vsr.constants.message_body_size_max,
     );
     defer allocator.free(reply_buffer);
@@ -276,7 +276,7 @@ test "int_edge_biased" {
         }
 
         inline for (1..129) |bits| {
-            const IntType = @Type(.{ .int = .{
+            const IntType = stdx.type_from_info(.{ .int = .{
                 .signedness = .unsigned,
                 .bits = bits,
             } });

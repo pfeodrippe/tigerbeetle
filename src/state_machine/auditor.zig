@@ -12,7 +12,7 @@ const tb = @import("../tigerbeetle.zig");
 const IdPermutation = @import("../testing/id.zig").IdPermutation;
 const TimestampRange = @import("../lsm/timestamp_range.zig").TimestampRange;
 
-const PriorityQueue = std.PriorityQueue;
+const PriorityQueue = stdx.PriorityQueueType;
 const Storage = @import("../testing/storage.zig").Storage;
 const StateMachine = @import("../state_machine.zig").StateMachineType(Storage);
 

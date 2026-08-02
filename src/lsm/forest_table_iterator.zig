@@ -22,6 +22,7 @@
 //! tables that are compacted with move-table.
 const std = @import("std");
 const assert = std.debug.assert;
+const stdx = @import("stdx");
 
 const constants = @import("../constants.zig");
 const TableInfo = @import("./schema.zig").ManifestNode.TableInfo;
@@ -42,7 +43,7 @@ pub fn ForestTableIteratorType(comptime Forest: type) type {
             };
         }
 
-        break :iterator @Type(.{ .@"struct" = .{
+        break :iterator stdx.type_from_info(.{ .@"struct" = .{
             .layout = .auto,
             .fields = &fields,
             .decls = &.{},

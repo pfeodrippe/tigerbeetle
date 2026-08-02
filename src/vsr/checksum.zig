@@ -40,7 +40,8 @@ const MiB = stdx.MiB;
 
 const Aegis128LMac_128 = stdx.aegis.Aegis128LMac_128;
 
-var seed_once = std.once(seed_init);
+// 0 = uninitialized, 1 = one thread is initializing, 2 = ready.
+var seed_status = std.atomic.Value(u8).init(0);
 var seed_state: Aegis128LMac_128 = undefined;
 
 comptime {
@@ -56,6 +57,16 @@ comptime {
 fn seed_init() void {
     const key: [16]u8 = @splat(0);
     seed_state = Aegis128LMac_128.init(&key);
+}
+
+fn seed_init_once() void {
+    if (seed_status.load(.acquire) == 2) return;
+    if (seed_status.cmpxchgStrong(0, 1, .acq_rel, .acquire) == null) {
+        seed_init();
+        seed_status.store(2, .release);
+        return;
+    }
+    while (seed_status.load(.acquire) != 2) std.atomic.spinLoopHint();
 }
 
 // Lazily initialize the Aegis State instead of recomputing it on each call to checksum().
@@ -81,7 +92,7 @@ pub const ChecksumStream = struct {
     state: Aegis128LMac_128,
 
     pub fn init() ChecksumStream {
-        seed_once.call();
+        seed_init_once();
         return ChecksumStream{ .state = seed_state };
     }
 
@@ -210,7 +221,7 @@ test "checksum stability" {
 test "checksum alignment and sizing" {
     var gpa = std.testing.allocator;
 
-    var input: []align(1) u8 = try gpa.alignedAlloc(u8, 1, 8 * stdx.KiB);
+    var input: []align(1) u8 = try gpa.alignedAlloc(u8, .fromByteUnits(1), 8 * stdx.KiB);
     defer gpa.free(input);
 
     var prng = stdx.PRNG.from_seed(92);

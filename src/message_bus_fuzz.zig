@@ -162,7 +162,7 @@ pub fn main(gpa: std.mem.Allocator, args: fuzz.FuzzArgs) !void {
     // peer type of nodes).
     var messages = try std.ArrayListAlignedUnmanaged(
         [constants.message_size_max]u8,
-        constants.sector_size,
+        .fromByteUnits(constants.sector_size),
     ).initCapacity(gpa, messages_max + node_count);
     defer messages.deinit(gpa);
 
@@ -426,7 +426,7 @@ const IO = struct {
     pub const NextTickSource = RealIO.NextTickSource;
     pub const socket_t = i32;
     pub const fd_t = i32;
-    const EventQueue = std.PriorityQueue(Event, void, Event.less_than);
+    const EventQueue = stdx.PriorityQueueType(Event, void, Event.less_than);
 
     pub const Options = struct {
         seed: u64 = 0,
@@ -776,14 +776,27 @@ const IO = struct {
         }
     }
 
-    pub fn shutdown(io: *IO, socket: socket_t, how: posix.ShutdownHow) posix.ShutdownError!void {
+    pub fn shutdown(
+        io: *IO,
+        socket: socket_t,
+        how: std.Io.net.ShutdownHow,
+    ) ShutdownError!void {
         if (io.prng.chance(io.options.shutdown_error_probability)) {
-            return io.prng.error_uniform(posix.ShutdownError);
+            return io.prng.error_uniform(ShutdownError);
         } else {
             if (how == .both or how == .recv) io.connections.getPtr(socket).?.shutdown_recv = false;
             if (how == .both or how == .send) io.connections.getPtr(socket).?.shutdown_send = false;
         }
     }
+
+    const ShutdownError = error{
+        SocketNotConnected,
+        ConnectionAborted,
+        ConnectionResetByPeer,
+        BlockingOperationInProgress,
+        NetworkSubsystemFailed,
+        SystemResources,
+    } || posix.UnexpectedError;
 
     pub fn accept(
         io: *IO,

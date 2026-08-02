@@ -129,12 +129,12 @@ pub const SASLPlainAuth = struct {
             .write = &struct {
                 fn write(context: *const anyopaque, buffer: []u8) usize {
                     const auth: *const SASLPlainAuth = @ptrCast(@alignCast(context));
-                    var fbs = std.io.fixedBufferStream(buffer);
-                    fbs.writer().print("\x00{s}\x00{s}", .{
+                    var writer = std.Io.Writer.fixed(buffer);
+                    writer.print("\x00{s}\x00{s}", .{
                         auth.user_name,
                         auth.password,
                     }) catch unreachable;
-                    return fbs.pos;
+                    return writer.end;
                 }
             }.write,
         };

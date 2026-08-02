@@ -292,7 +292,7 @@ pub const IO = struct {
             @sizeOf(linux.io_uring_getevents_arg),
         );
 
-        switch (linux.E.init(res)) {
+        switch (linux.errno(res)) {
             .SUCCESS => {},
             // The kernel was unable to allocate memory or ran out of resources for the request.
             // The application should wait for some completions and try again:
@@ -427,7 +427,7 @@ pub const IO = struct {
                         op.dir_fd,
                         op.file_path,
                         op.flags,
-                        op.mask,
+                        @bitCast(op.mask),
                         op.statxbuf,
                     );
                 },
@@ -580,7 +580,7 @@ pub const IO = struct {
                                 .PERM => error.AccessDenied,
                                 .EXIST => error.PathAlreadyExists,
                                 .BUSY => error.DeviceBusy,
-                                .OPNOTSUPP => error.FileLocksNotSupported,
+                                .OPNOTSUPP => error.FileLocksUnsupported,
                                 .AGAIN => error.WouldBlock,
                                 .TXTBSY => error.FileBusy,
                                 else => |errno| stdx.unexpected_errno("openat", errno),
@@ -781,7 +781,7 @@ pub const IO = struct {
         },
         connect: struct {
             socket: socket_t,
-            address: std.net.Address,
+            address: stdx.Address,
         },
         fsync: struct {
             fd: fd_t,
@@ -1146,17 +1146,23 @@ pub const IO = struct {
         // and has an `unreachable` on eg NetworkUnreachable and a few others. Tring to check this
         // before using the socket is race prone, so rather use sendto() directly to correctly
         // handle those cases.
-        return posix.sendto(
-            socket,
-            buffer,
-            posix.MSG.DONTWAIT | posix.MSG.NOSIGNAL,
-            null,
-            0,
-        ) catch |err| switch (err) {
-            error.WouldBlock => return null,
-            // To avoid duplicating error handling, force the caller to fallback to normal send.
-            else => return null,
-        };
+        while (true) {
+            const rc = linux.sendto(
+                socket,
+                buffer.ptr,
+                buffer.len,
+                posix.MSG.DONTWAIT | posix.MSG.NOSIGNAL,
+                null,
+                0,
+            );
+            switch (linux.errno(rc)) {
+                .SUCCESS => return @intCast(rc),
+                .INTR => continue,
+                // To avoid duplicating error handling, force the caller to fallback to normal
+                // send for every synchronous error, including WouldBlock.
+                else => return null,
+            }
+        }
     }
 
     pub const StatxError = error{
@@ -1164,7 +1170,7 @@ pub const IO = struct {
         FileNotFound,
         NameTooLong,
         NotDir,
-    } || std.fs.File.StatError || posix.UnexpectedError;
+    } || std.Io.File.StatError || posix.UnexpectedError;
 
     pub fn statx(
         self: *IO,
@@ -1280,15 +1286,15 @@ pub const IO = struct {
         _ = self;
 
         // eventfd initialized with no (zero) previous write value.
-        const event_fd = posix.eventfd(0, linux.EFD.CLOEXEC) catch |err| switch (err) {
-            error.SystemResources,
-            error.SystemFdQuotaExceeded,
-            error.ProcessFdQuotaExceeded,
-            => return error.SystemResources,
-            error.Unexpected => return error.Unexpected,
+        const rc = linux.eventfd(0, linux.EFD.CLOEXEC);
+        const event_fd: Event = switch (linux.errno(rc)) {
+            .SUCCESS => @intCast(rc),
+            .MFILE, .NFILE, .NODEV, .NOMEM => return error.SystemResources,
+            .INVAL => unreachable,
+            else => |err| return stdx.unexpected_errno("eventfd", err),
         };
         assert(event_fd != INVALID_EVENT);
-        errdefer os.close(event_fd);
+        errdefer std.Io.Threaded.closeFd(event_fd);
 
         return event_fd;
     }
@@ -1332,7 +1338,15 @@ pub const IO = struct {
         _ = completion;
 
         const value: u64 = 1;
-        const bytes = posix.write(event, std.mem.asBytes(&value)) catch unreachable;
+        const bytes: usize = while (true) {
+            const buffer = std.mem.asBytes(&value);
+            const rc = linux.write(event, buffer.ptr, buffer.len);
+            switch (linux.errno(rc)) {
+                .SUCCESS => break @intCast(rc),
+                .INTR => continue,
+                else => unreachable,
+            }
+        };
         assert(bytes == @sizeOf(u64));
     }
 
@@ -1340,10 +1354,26 @@ pub const IO = struct {
         assert(event != INVALID_EVENT);
         _ = self;
 
-        posix.close(event);
+        std.Io.Threaded.closeFd(event);
     }
 
     pub const socket_t = posix.socket_t;
+
+    fn open_socket(family: u32, socket_type: u32, protocol: u32) !socket_t {
+        const rc = linux.socket(family, socket_type, protocol);
+        return switch (linux.errno(rc)) {
+            .SUCCESS => @intCast(rc),
+            .ACCES => error.PermissionDenied,
+            .AFNOSUPPORT => error.AddressFamilyNotSupported,
+            .INVAL => error.ProtocolFamilyNotAvailable,
+            .MFILE => error.ProcessFdQuotaExceeded,
+            .NFILE => error.SystemFdQuotaExceeded,
+            .NOBUFS, .NOMEM => error.SystemResources,
+            .PROTONOSUPPORT => error.ProtocolNotSupported,
+            .PROTOTYPE => error.SocketTypeNotSupported,
+            else => |err| stdx.unexpected_errno("socket", err),
+        };
+    }
 
     /// Creates a TCP socket that can be used for async operations with the IO instance.
     pub fn open_socket_tcp(
@@ -1351,7 +1381,7 @@ pub const IO = struct {
         family: stdx.IPAddress.Family,
         options: TCPOptions,
     ) !socket_t {
-        const fd = try posix.socket(
+        const fd = try open_socket(
             family.to_std(),
             posix.SOCK.STREAM | posix.SOCK.CLOEXEC,
             posix.IPPROTO.TCP,
@@ -1365,7 +1395,7 @@ pub const IO = struct {
     /// Creates a UDP socket that can be used for async operations with the IO instance.
     pub fn open_socket_udp(self: *IO, family: stdx.IPAddress.Family) !socket_t {
         _ = self;
-        return try posix.socket(
+        return try open_socket(
             family.to_std(),
             std.posix.SOCK.DGRAM | posix.SOCK.CLOEXEC,
             posix.IPPROTO.UDP,
@@ -1375,7 +1405,7 @@ pub const IO = struct {
     /// Closes a socket opened by the IO instance.
     pub fn close_socket(self: *IO, socket: socket_t) void {
         _ = self;
-        posix.close(socket);
+        std.Io.Threaded.closeFd(socket);
     }
 
     /// Listen on the given TCP socket.
@@ -1390,8 +1420,31 @@ pub const IO = struct {
         return common.listen(fd, address, options);
     }
 
-    pub fn shutdown(_: *IO, socket: socket_t, how: posix.ShutdownHow) posix.ShutdownError!void {
-        return posix.shutdown(socket, how);
+    pub fn shutdown(
+        _: *IO,
+        socket: socket_t,
+        how: std.Io.net.ShutdownHow,
+    ) (error{
+        SocketNotConnected,
+        ConnectionAborted,
+        ConnectionResetByPeer,
+        BlockingOperationInProgress,
+        NetworkSubsystemFailed,
+        SystemResources,
+    } || posix.UnexpectedError)!void {
+        const posix_how: i32 = switch (how) {
+            .recv => posix.SHUT.RD,
+            .send => posix.SHUT.WR,
+            .both => posix.SHUT.RDWR,
+        };
+        while (true) switch (linux.errno(linux.shutdown(socket, posix_how))) {
+            .SUCCESS => return,
+            .INTR => continue,
+            .BADF, .INVAL, .NOTSOCK => unreachable,
+            .NOTCONN => return error.SocketNotConnected,
+            .NOBUFS => return error.SystemResources,
+            else => |err| return stdx.unexpected_errno("shutdown", err),
+        };
     }
 
     /// Opens a directory with read only access.
@@ -1645,7 +1698,7 @@ pub const IO = struct {
                 const BLKGETSIZE64 = os.linux.IOCTL.IOR(0x12, 114, usize);
                 var block_device_size: usize = 0;
 
-                switch (os.linux.E.init(os.linux.ioctl(
+                switch (os.linux.errno(os.linux.ioctl(
                     fd,
                     BLKGETSIZE64,
                     @intFromPtr(&block_device_size),
@@ -1714,7 +1767,7 @@ pub const IO = struct {
                     // a real device. replica_format.zig checks that the format doesn't depend on
                     // preexisting data.
                     log.info("discarding {}...", .{std.fmt.fmtIntSizeBin(block_device_size)});
-                    switch (os.linux.E.init(os.linux.ioctl(
+                    switch (os.linux.errno(os.linux.ioctl(
                         fd,
                         BLKDISCARD,
                         @intFromPtr(&range),
@@ -1743,7 +1796,7 @@ pub const IO = struct {
 
         while (true) {
             const res = stdx.fstatfs(dir_fd, &statfs);
-            switch (os.linux.E.init(res)) {
+            switch (os.linux.errno(res)) {
                 .SUCCESS => {
                     return statfs.f_type == stdx.TmpfsMagic;
                 },
@@ -1771,7 +1824,7 @@ pub const IO = struct {
         while (true) {
             const dir_flags: posix.O = .{ .CLOEXEC = true, .ACCMODE = .RDONLY, .DIRECT = true };
             const res = os.linux.openat(dir_fd, path, dir_flags, 0);
-            switch (os.linux.E.init(res)) {
+            switch (os.linux.errno(res)) {
                 .SUCCESS => {
                     posix.close(@intCast(res));
                     return true;
@@ -1792,7 +1845,7 @@ pub const IO = struct {
 
         while (true) {
             const rc = os.linux.fallocate(fd, mode, offset, length);
-            switch (os.linux.E.init(rc)) {
+            switch (os.linux.errno(rc)) {
                 .SUCCESS => return,
                 .BADF => return error.FileDescriptorInvalid,
                 .FBIG => return error.FileTooBig,
@@ -1811,9 +1864,13 @@ pub const IO = struct {
         }
     }
 
-    pub const PReadError = posix.PReadError;
+    pub const PReadError = std.Io.File.ReadPositionalError;
 
-    pub fn aof_blocking_write_all(_: *IO, fd: fd_t, buffer: []const u8) posix.WriteError!void {
+    pub fn aof_blocking_write_all(
+        _: *IO,
+        fd: fd_t,
+        buffer: []const u8,
+    ) std.Io.File.Writer.Error!void {
         return common.aof_blocking_write_all(fd, buffer);
     }
 
@@ -1825,11 +1882,14 @@ pub const IO = struct {
         return common.aof_blocking_close(fd);
     }
 
-    pub fn aof_blocking_stat(_: *IO, path: []const u8) std.fs.Dir.StatFileError!std.fs.File.Stat {
+    pub fn aof_blocking_stat(
+        _: *IO,
+        path: []const u8,
+    ) std.Io.Dir.StatFileError!std.Io.File.Stat {
         return common.aof_blocking_stat(path);
     }
 
-    pub fn aof_blocking_fstat(_: *IO, fd: fd_t) std.fs.Dir.StatError!std.fs.File.Stat {
+    pub fn aof_blocking_fstat(_: *IO, fd: fd_t) std.Io.File.StatError!std.Io.File.Stat {
         return common.aof_blocking_fstat(fd);
     }
 

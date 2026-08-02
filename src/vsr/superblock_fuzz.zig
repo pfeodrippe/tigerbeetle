@@ -182,7 +182,7 @@ fn run_fuzz(gpa: std.mem.Allocator, seed: u64, transitions_count_total: usize) !
 const Environment = struct {
     /// Track the expected value of parameters at a particular sequence.
     /// Indexed by sequence.
-    const SequenceStates = std.ArrayList(struct {
+    const SequenceStates = std.array_list.Managed(struct {
         vsr_state: VSRState,
         view_headers: vsr.Headers.Array,
     });

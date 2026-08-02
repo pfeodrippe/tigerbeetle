@@ -12,7 +12,7 @@ const MessagePool = message_pool.MessagePool;
 const Message = MessagePool.Message;
 
 const ReplicaSet = stdx.BitSetType(constants.members_max);
-const Commits = std.ArrayList(struct {
+const Commits = std.array_list.Managed(struct {
     header: vsr.Header.Prepare,
     // null for operation=root and operation=upgrade
     release: ?vsr.Release,
@@ -66,7 +66,7 @@ pub fn StateCheckerType(comptime Client: type, comptime Replica: type) type {
                 .replicas = commit_replicas,
             });
 
-            var client_replies: std.AutoArrayHashMapUnmanaged(u128, vsr.Header.Reply) = .{};
+            var client_replies: std.AutoArrayHashMapUnmanaged(u128, vsr.Header.Reply) = .empty;
             try client_replies.ensureTotalCapacity(allocator, constants.clients_max);
             errdefer client_replies.deinit(allocator);
 

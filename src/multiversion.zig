@@ -168,6 +168,18 @@ pub const ReleaseList = struct {
         assert(release_list.count > 0);
         return release_list.slice()[release_list.count - 1];
     }
+
+    pub fn format(
+        release_list: ReleaseList,
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        try writer.writeAll("{ ");
+        for (release_list.slice(), 0..) |release, index| {
+            if (index > 0) try writer.writeAll(", ");
+            try writer.print("{f}", .{release});
+        }
+        try writer.writeAll(" }");
+    }
 };
 
 pub const Release = extern struct {
@@ -211,12 +223,8 @@ pub const Release = extern struct {
 
     pub fn format(
         release: Release,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        _ = fmt;
-        _ = options;
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
         const release_triple = release.triple();
         return writer.print("{}.{}.{}", .{
             release_triple.major,
@@ -296,7 +304,7 @@ test "ReleaseTriple.parse" {
 }
 
 pub const MultiversionHeader = extern struct {
-    pub const Flags = packed struct {
+    pub const Flags = packed struct(u8) {
         /// Normally release upgrades are allowed to skip to the latest. If a corresponding release
         /// is set to true here, it must be visited on the way to the newest release.
         visit: bool,
@@ -724,7 +732,7 @@ pub const MultiversionOS = struct {
         // This does impact memory usage.
         const source_buffer = try allocator.alignedAlloc(
             u8,
-            8,
+            .fromByteUnits(8),
             multiversion_binary_size_max_by_format,
         );
         errdefer allocator.free(source_buffer);
@@ -755,7 +763,7 @@ pub const MultiversionOS = struct {
         const target_fd: posix.fd_t = switch (builtin.target.os.tag) {
             .linux => blk: {
                 const fd = open_memory_file(target_path);
-                errdefer posix.close(fd);
+                errdefer std.Io.Threaded.closeFd(fd);
 
                 try posix.ftruncate(fd, multiversion_binary_size_max_by_format);
 
@@ -764,21 +772,26 @@ pub const MultiversionOS = struct {
 
             .macos, .windows => blk: {
                 const mode = if (builtin.target.os.tag == .macos) 0o755 else 0;
-                const file = std.fs.createFileAbsolute(
+                const file = std.Io.Dir.createFileAbsolute(
+                    stdx.process_io,
                     target_path,
-                    .{ .read = true, .truncate = true, .mode = mode },
+                    .{
+                        .read = true,
+                        .truncate = true,
+                        .permissions = .fromMode(mode),
+                    },
                 ) catch |e| std.debug.panic(
                     "error in target_fd open: {}",
                     .{e},
                 );
-                try file.setEndPos(multiversion_binary_size_max);
+                try file.setLength(stdx.process_io, multiversion_binary_size_max);
 
                 break :blk file.handle;
             },
 
             else => @panic("unsupported platform"),
         };
-        errdefer posix.close(target_fd);
+        errdefer std.Io.Threaded.closeFd(target_fd);
 
         const args_envp: ArgsEnvp = switch (builtin.target.os.tag) {
             .linux, .macos => blk: {
@@ -788,17 +801,21 @@ pub const MultiversionOS = struct {
                 //
                 // For args, modify them so that argv[0] is exe_path. This allows our memfd executed
                 // binary to find its way back to the real file on disk.
-                const args = try allocator.allocSentinel(?[*:0]const u8, os.argv.len, null);
+                const argv = stdx.process_args.vector;
+                const args = try allocator.allocSentinel(?[*:0]const u8, argv.len, null);
                 errdefer allocator.free(args);
 
                 args[0] = try allocator.dupeZ(u8, exe_path);
                 errdefer allocator.free(args[0]);
 
-                for (1..os.argv.len) |i| args[i] = os.argv[i];
+                for (1..argv.len) |i| args[i] = argv[i];
 
                 break :blk .{
                     .args = args,
-                    .envp = @as([*:null]const ?[*:0]const u8, @ptrCast(os.environ.ptr)),
+                    .envp = @as(
+                        [*:null]const ?[*:0]const u8,
+                        @ptrCast(stdx.current_process_environ().block.slice.ptr),
+                    ),
                 };
             },
 
@@ -840,7 +857,7 @@ pub const MultiversionOS = struct {
     }
 
     pub fn deinit(self: *MultiversionOS, allocator: std.mem.Allocator) void {
-        posix.close(self.target_fd);
+        std.Io.Threaded.closeFd(self.target_fd);
         self.target_fd = IO.INVALID_FILE;
         allocator.free(self.target_path);
 
@@ -1024,8 +1041,11 @@ pub const MultiversionOS = struct {
                 0,
             ),
             .macos, .windows => {
-                const file = std.fs.openFileAbsolute(self.exe_path, .{}) catch |e|
-                    std.debug.panic("error in binary_open: {}", .{e});
+                const file = std.Io.Dir.openFileAbsolute(
+                    stdx.process_io,
+                    self.exe_path,
+                    .{},
+                ) catch |e| std.debug.panic("error in binary_open: {}", .{e});
                 self.binary_open_callback(&self.completion, file.handle);
             },
             else => @panic("unsupported platform"),
@@ -1084,7 +1104,7 @@ pub const MultiversionOS = struct {
                 assert(self.source_fd != null);
                 assert(self.source_offset != null);
 
-                posix.close(self.source_fd.?);
+                std.Io.Threaded.closeFd(self.source_fd.?);
                 self.source_offset = null;
                 self.source_fd = null;
             }
@@ -1214,8 +1234,11 @@ pub const MultiversionOS = struct {
         errdefer log.warn("target binary update failed - " ++
             "this replica might fail to automatically restart!", .{});
 
-        const target_file = std.fs.File{ .handle = self.target_fd };
-        try target_file.pwriteAll(source_buffer, 0);
+        const target_file = std.Io.File{
+            .handle = self.target_fd,
+            .flags = .{ .nonblocking = false },
+        };
+        try target_file.writePositionalAll(stdx.process_io, source_buffer, 0);
 
         self.target_header = header;
         self.target_body_offset = active.body_offset;
@@ -1238,7 +1261,7 @@ pub const MultiversionOS = struct {
         assert(release.value != Release.minimum.value);
 
         if (!self.releases_bundled.contains(release)) {
-            log.err("release_execute: release {} is not available;" ++
+            log.err("release_execute: release {f} is not available;" ++
                 " upgrade (or downgrade) the binary", .{
                 release,
             });
@@ -1295,12 +1318,12 @@ pub const MultiversionOS = struct {
         // The trailing newline is intentional - it provides visual separation in the logs when
         // exec'ing new versions.
         if (release_target_current) {
-            log.info("executing current release {} via {s}...\n", .{
+            log.info("executing current release {f} via {s}...\n", .{
                 release_target,
                 self.exe_path,
             });
         } else if (release_target_past) {
-            log.info("executing current release {} (target: {}) via {s}...\n", .{
+            log.info("executing current release {f} (target: {f}) via {s}...\n", .{
                 Release{ .value = self.target_header.?.current_release },
                 release_target,
                 self.exe_path,
@@ -1335,7 +1358,7 @@ pub const MultiversionOS = struct {
             // 5. Replica starts up, running B's binary.
             // 6. During open, replica reads the binary's header from disk.
             // But that's C's binary/header, so B is unexpectedly not the latest release in it.
-            log.warn("binary changed unexpectedly (expected={} found={})", .{
+            log.warn("binary changed unexpectedly (expected={f} found={f})", .{
                 constants.config.process.release,
                 Release{ .value = header.current_release },
             });
@@ -1356,26 +1379,31 @@ pub const MultiversionOS = struct {
         const binary_size = header.past.sizes[index];
         const binary_checksum = header.past.checksums[index];
 
-        const target_file = std.fs.File{ .handle = self.target_fd };
+        const target_file = std.Io.File{
+            .handle = self.target_fd,
+            .flags = .{ .nonblocking = false },
+        };
 
         // Our target release is physically embedded in the binary. Shuffle the bytes
         // around, so that it's at the start, then truncate the descriptor so there's nothing
         // trailing.
-        const bytes_read = try target_file.preadAll(
+        const bytes_read = try target_file.readPositionalAll(
+            stdx.process_io,
             self.source_buffer[0..binary_size],
             self.target_body_offset.? + binary_offset,
         );
         assert(bytes_read == binary_size);
 
-        try target_file.pwriteAll(self.source_buffer[0..binary_size], 0);
+        try target_file.writePositionalAll(stdx.process_io, self.source_buffer[0..binary_size], 0);
 
         // Zero the remaining bytes in the file.
-        try posix.ftruncate(self.target_fd, binary_size);
+        try target_file.setLength(stdx.process_io, binary_size);
 
         // Ensure the checksum matches the header. This could have been done above, but
         // do it in a separate step to make sure.
         const written_checksum = blk: {
-            const bytes_read_for_checksum = try target_file.preadAll(
+            const bytes_read_for_checksum = try target_file.readPositionalAll(
+                stdx.process_io,
                 self.source_buffer[0..binary_size],
                 0,
             );
@@ -1387,7 +1415,7 @@ pub const MultiversionOS = struct {
 
         // The trailing newline is intentional - it provides visual separation in the logs when
         // exec'ing new versions.
-        log.info("executing internal release {} via {s}...\n", .{
+        log.info("executing internal release {f} via {s}...\n", .{
             release_target,
             self.exe_path,
         });
@@ -1410,10 +1438,14 @@ pub const MultiversionOS = struct {
                 }
             },
             .macos => {
-                std.posix.execveZ(self.target_path, self.args_envp.args, self.args_envp.envp) catch
-                    return error.ExecveZFailed;
-
-                unreachable;
+                switch (std.posix.errno(std.posix.system.execve(
+                    self.target_path,
+                    self.args_envp.args,
+                    self.args_envp.envp,
+                ))) {
+                    .SUCCESS => unreachable,
+                    else => return error.ExecveZFailed,
+                }
             },
             .windows => {
                 // "The Unicode version of this function, CreateProcessW, can modify the contents of
@@ -1432,7 +1464,7 @@ pub const MultiversionOS = struct {
                 var lp_process_information: std.os.windows.PROCESS_INFORMATION = undefined;
 
                 // Close the handle before trying to execute.
-                posix.close(self.target_fd);
+                std.Io.Threaded.closeFd(self.target_fd);
 
                 const pipe_name: [*:0]const u16 =
                     std.unicode.utf8ToUtf16LeStringLiteral("\\\\.\\pipe\\") ++ random_wstr();
@@ -1535,7 +1567,7 @@ pub fn self_exe_path(allocator: std.mem.Allocator) ![:0]const u8 {
         }
     }
 
-    const native_self_exe_path = try std.fs.selfExePath(&buf);
+    const native_self_exe_path = buf[0..try std.process.executablePath(stdx.process_io, &buf)];
 
     if (builtin.target.os.tag == .linux and
         std.mem.eql(u8, native_self_exe_path, "/memfd:" ++ multiversion_uuid ++ " (deleted)"))
@@ -1546,10 +1578,7 @@ pub fn self_exe_path(allocator: std.mem.Allocator) ![:0]const u8 {
         assert(std.fs.cwd().statFile(native_self_exe_path) catch null == null);
 
         // Running from a memfd already; the real path is argv[0].
-        const path = try allocator.dupeZ(u8, std.mem.span(os.argv[0]));
-        assert(std.fs.path.isAbsolute(path));
-
-        return path;
+        return self_exe_path_argv0(allocator);
     }
 
     if (builtin.target.os.tag == .macos and
@@ -1560,10 +1589,7 @@ pub fn self_exe_path(allocator: std.mem.Allocator) ![:0]const u8 {
         // it's not possible to assert this.
 
         // Running from a temp path already; the real path is argv[0].
-        const path = try allocator.dupeZ(u8, std.mem.span(os.argv[0]));
-        assert(std.fs.path.isAbsolute(path));
-
-        return path;
+        return self_exe_path_argv0(allocator);
     }
 
     if (builtin.target.os.tag == .windows and
@@ -1584,6 +1610,15 @@ pub fn self_exe_path(allocator: std.mem.Allocator) ![:0]const u8 {
 
     // Not running from a memfd or temp path. `native_self_exe_path` is the real path.
     return try allocator.dupeZ(u8, native_self_exe_path);
+}
+
+fn self_exe_path_argv0(allocator: std.mem.Allocator) ![:0]const u8 {
+    var args = try stdx.process_args.iterateAllocator(allocator);
+    defer args.deinit();
+
+    const path = try allocator.dupeZ(u8, args.next().?);
+    assert(std.fs.path.isAbsolute(path));
+    return path;
 }
 
 pub fn random_wstr() [32]u16 {
@@ -1688,7 +1723,8 @@ const HeaderBodyOffsets = struct {
 /// like bounds checking on slices.
 pub fn parse_elf(buffer: []align(@alignOf(elf.Elf64_Ehdr)) const u8) !HeaderBodyOffsets {
     if (@sizeOf(elf.Elf64_Ehdr) > buffer.len) return error.InvalidELF;
-    const elf_header = try elf.Header.parse(buffer[0..@sizeOf(elf.Elf64_Ehdr)]);
+    var elf_reader = std.Io.Reader.fixed(buffer[0..@sizeOf(elf.Elf64_Ehdr)]);
+    const elf_header = elf.Header.read(&elf_reader) catch return error.InvalidELF;
 
     // TigerBeetle only supports little endian on 64 bit platforms.
     if (elf_header.endian != .little) return error.WrongEndian;
@@ -1920,9 +1956,9 @@ pub fn parse_pe(buffer: []const u8) !HeaderBodyOffsets {
         .body_size = body_size,
     };
 
-    return switch (coff.getCoffHeader().machine) {
+    return switch (coff.getHeader().machine) {
         .ARM64 => .{ .format = .pe, .aarch64 = offsets, .x86_64 = null },
-        .X64 => .{ .format = .pe, .aarch64 = null, .x86_64 = offsets },
+        .AMD64 => .{ .format = .pe, .aarch64 = null, .x86_64 = offsets },
         else => error.UnknownArchitecture,
     };
 }
@@ -2065,21 +2101,22 @@ test parse_elf {
 pub fn print_information(
     gpa: std.mem.Allocator,
     exe_path: []const u8,
-    output: std.io.AnyWriter,
+    output: *std.Io.Writer,
 ) !void {
     var io = try IO.init(32, 0);
     defer io.deinit();
 
-    const absolute_exe_path = try std.fs.cwd().realpathAlloc(gpa, exe_path);
+    const absolute_exe_path = try std.Io.Dir.cwd().realPathFileAlloc(
+        stdx.process_io,
+        exe_path,
+        gpa,
+    );
     defer gpa.free(absolute_exe_path);
-
-    const absolute_exe_path_z = try gpa.dupeZ(u8, absolute_exe_path);
-    defer gpa.free(absolute_exe_path_z);
 
     var multiversion = try MultiversionOS.init(
         gpa,
         &io,
-        absolute_exe_path_z,
+        absolute_exe_path,
         .detect,
     );
     defer multiversion.deinit(gpa);
@@ -2115,13 +2152,14 @@ pub fn print_information(
         switch (field) {
             .past, .current_flags_padding, .past_padding, .reserved => continue,
             .current_git_commit => {
+                const git_commit_hex = std.fmt.bytesToHex(header.current_git_commit, .lower);
                 try output.print("multiversioning.header.{s}={s}\n", .{
                     field_name,
-                    std.fmt.fmtSliceHexLower(&header.current_git_commit),
+                    &git_commit_hex,
                 });
             },
             .current_release, .current_release_client_min => {
-                try output.print("multiversioning.header.{s}={any}\n", .{
+                try output.print("multiversioning.header.{s}={f}\n", .{
                     field_name,
                     Release{ .value = @field(header, field_name) },
                 });
@@ -2151,20 +2189,23 @@ pub fn print_information(
             .releases, .release_client_mins => {
                 comptime assert(@sizeOf(Release) ==
                     @sizeOf(@TypeOf(@field(header.past, field_name)[0])));
-                const release_list: []const Release =
-                    @ptrCast(@field(header.past, field_name)[0..header.past.count]);
+                var release_list = ReleaseList.empty;
+                for (@field(header.past, field_name)[0..header.past.count]) |release| {
+                    release_list.push(.{ .value = release });
+                }
 
-                try output.print("multiversioning.header.past.{s}={any}\n", .{
+                try output.print("multiversioning.header.past.{s}={f}\n", .{
                     field_name,
                     release_list,
                 });
             },
             .git_commits => {
                 for (@field(header.past, field_name)[0..header.past.count], 0..) |*git_commit, i| {
-                    try output.print("multiversioning.header.past.{s}.{}={}\n", .{
+                    const git_commit_hex = std.fmt.bytesToHex(git_commit.*, .lower);
+                    try output.print("multiversioning.header.past.{s}.{f}={s}\n", .{
                         field_name,
                         Release{ .value = header.past.releases[i] },
-                        std.fmt.fmtSliceHexLower(git_commit),
+                        git_commit_hex,
                     });
                 }
             },
@@ -2183,12 +2224,22 @@ pub fn print_information(
 fn system_temporary_directory(allocator: std.mem.Allocator) ![]const u8 {
     switch (builtin.os.tag) {
         .linux, .macos => {
-            return std.process.getEnvVarOwned(allocator, "TMPDIR") catch allocator.dupe(u8, "/tmp");
+            return std.process.Environ.getAlloc(
+                stdx.current_process_environ(),
+                allocator,
+                "TMPDIR",
+            ) catch allocator.dupe(u8, "/tmp");
         },
         .windows => {
-            return std.process.getEnvVarOwned(allocator, "TMP") catch
-                std.process.getEnvVarOwned(allocator, "TEMP") catch
-                allocator.dupe(u8, "C:\\Windows\\Temp");
+            return std.process.Environ.getAlloc(
+                stdx.current_process_environ(),
+                allocator,
+                "TMP",
+            ) catch std.process.Environ.getAlloc(
+                stdx.current_process_environ(),
+                allocator,
+                "TEMP",
+            ) catch allocator.dupe(u8, "C:\\Windows\\Temp");
         },
         else => @panic("unsupported platform"),
     }

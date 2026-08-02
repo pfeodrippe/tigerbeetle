@@ -9,7 +9,7 @@ const constants = @import("../constants.zig");
 const MessagePool = @import("../message_pool.zig").MessagePool;
 const Message = MessagePool.Message;
 
-const PriorityQueue = std.PriorityQueue;
+const PriorityQueue = stdx.PriorityQueueType;
 
 /// Both messages belong to the ReplySequence's `MessagePool`.
 const PendingReply = struct {
