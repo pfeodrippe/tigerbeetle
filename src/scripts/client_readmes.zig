@@ -630,7 +630,7 @@ const Context = struct {
     }
 
     fn header(ctx: *Context, comptime level: u8, content: []const u8) void {
-        ctx.print(("#" ** level) ++ " {s}\n\n", .{content});
+        ctx.print(@as([level]u8, @splat('#')) ++ " {s}\n\n", .{content});
     }
 
     fn paragraph(ctx: *Context, content: []const u8) void {

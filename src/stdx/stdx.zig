@@ -608,8 +608,8 @@ fn has_pointers(comptime T: type) bool {
 
         .array => |info| return comptime has_pointers(info.child),
         .@"struct" => |info| {
-            inline for (info.fields) |field| {
-                if (comptime has_pointers(field.type)) return true;
+            inline for (info.field_types) |Field| {
+                if (comptime has_pointers(Field)) return true;
             }
             return false;
         },
@@ -626,20 +626,20 @@ pub fn no_padding(comptime T: type) bool {
             switch (info.layout) {
                 .auto => return false,
                 .@"extern" => {
-                    for (info.fields) |field| {
-                        if (!no_padding(field.type)) return false;
+                    for (info.field_types) |Field| {
+                        if (!no_padding(Field)) return false;
                     }
 
                     // Check offsets of u128 and pseudo-u256 fields.
-                    for (info.fields) |field| {
-                        if (field.type == u128) {
-                            const offset = @offsetOf(T, field.name);
+                    for (info.field_names, info.field_types) |name, Field| {
+                        if (Field == u128) {
+                            const offset = @offsetOf(T, name);
                             if (offset % @sizeOf(u128) != 0) return false;
 
-                            if (@hasField(T, field.name ++ "_padding")) {
+                            if (@hasField(T, name ++ "_padding")) {
                                 if (offset % @sizeOf(u256) != 0) return false;
                                 if (offset + @sizeOf(u128) !=
-                                    @offsetOf(T, field.name ++ "_padding"))
+                                    @offsetOf(T, name ++ "_padding"))
                                 {
                                     return false;
                                 }
@@ -648,10 +648,10 @@ pub fn no_padding(comptime T: type) bool {
                     }
 
                     var offset = 0;
-                    for (info.fields) |field| {
-                        const field_offset = @offsetOf(T, field.name);
+                    for (info.field_names, info.field_types) |name, Field| {
+                        const field_offset = @offsetOf(T, name);
                         if (offset != field_offset) return false;
-                        offset += @sizeOf(field.type);
+                        offset += @sizeOf(Field);
                     }
                     return offset == @sizeOf(T);
                 },
@@ -659,7 +659,7 @@ pub fn no_padding(comptime T: type) bool {
             }
         },
         .@"enum" => |info| {
-            maybe(info.is_exhaustive);
+            maybe(info.mode == .exhaustive);
             return no_padding(info.tag_type);
         },
         .pointer => return false,
@@ -777,8 +777,8 @@ pub fn update(base: anytype, diff: anytype) @TypeOf(base) {
     assert(@typeInfo(@TypeOf(base)) == .@"struct");
 
     var updated = base;
-    inline for (std.meta.fields(@TypeOf(diff))) |f| {
-        @field(updated, f.name) = @field(diff, f.name);
+    inline for (@typeInfo(@TypeOf(diff)).@"struct".field_names) |name| {
+        @field(updated, name) = @field(diff, name);
     }
     return updated;
 }
@@ -843,8 +843,7 @@ pub fn has_unique_representation(comptime T: type) bool {
 
             var sum_size = @as(usize, 0);
 
-            inline for (info.fields) |field| {
-                const FieldType = field.type;
+            inline for (info.field_types) |FieldType| {
                 if (comptime !has_unique_representation(FieldType)) return false;
                 sum_size += @sizeOf(FieldType);
             }
@@ -944,7 +943,7 @@ test "has_unique_representation" {
 
     try std.testing.expect(!has_unique_representation(TestUnion4));
 
-    inline for ([_]type{ i0, u8, i16, u32, i64 }) |T| {
+    inline for ([_]type{ u0, u8, i16, u32, i64 }) |T| {
         try std.testing.expect(has_unique_representation(T));
     }
     inline for ([_]type{ i1, u9, i17, u33, i24 }) |T| {
@@ -1163,10 +1162,10 @@ pub fn array_print(
 
     comptime {
         var args_worst_case: Args = undefined;
-        for (ArgsStruct.fields, 0..) |field, index| {
-            const arg_worst_case = switch (field.type) {
-                u8, u16, u32, u64, u128 => std.math.maxInt(field.type),
-                else => @compileError("array_print: unsupported type: " ++ @typeName(field.type)),
+        for (ArgsStruct.field_types, 0..) |Field, index| {
+            const arg_worst_case = switch (Field) {
+                u8, u16, u32, u64, u128 => std.math.maxInt(Field),
+                else => @compileError("array_print: unsupported type: " ++ @typeName(Field)),
             };
             args_worst_case[index] = arg_worst_case;
         }

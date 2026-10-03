@@ -118,7 +118,8 @@ fn parse_commands(
     comptime Commands: type,
 ) Commands {
     comptime assert(@typeInfo(Commands) == .@"union");
-    comptime assert(std.meta.fields(Commands).len >= 2);
+    const info = @typeInfo(Commands).@"union";
+    comptime assert(info.field_names.len >= 2);
 
     const first_arg = args.next() orelse fatal(
         "subcommand required, expected {s}",
@@ -136,10 +137,10 @@ fn parse_commands(
         }
     }
 
-    inline for (comptime std.meta.fields(Commands)) |field| {
-        comptime assert(std.mem.indexOfScalar(u8, field.name, '_') == null);
-        if (std.mem.eql(u8, first_arg, field.name)) {
-            return @unionInit(Commands, field.name, parse_flags(arena, args, field.type));
+    inline for (info.field_names, info.field_types) |name, T| {
+        comptime assert(std.mem.indexOfScalar(u8, name, '_') == null);
+        if (std.mem.eql(u8, first_arg, name)) {
+            return @unionInit(Commands, name, parse_flags(arena, args, T));
         }
     }
     fatal("unknown subcommand: '{s}'", .{first_arg});
@@ -161,26 +162,31 @@ fn parse_flags(arena: Allocator, args: *std.process.Args.Iterator, comptime CLIA
 
     assert(@typeInfo(CLIArgs) == .@"struct");
 
-    const fields = std.meta.fields(CLIArgs);
-    comptime var fields_named, var fields_positional: []const std.builtin.Type.StructField =
-        for (fields, 0..) |field, index| {
-            if (std.mem.eql(u8, field.name, "--")) {
-                assert(field.type == void);
-                const positional_count = fields.len - index - 1;
+    const info = @typeInfo(CLIArgs).@"struct";
+    const field_indices = comptime blk: {
+        var indices: [info.field_names.len]usize = undefined;
+        for (&indices, 0..) |*index, i| index.* = i;
+        break :blk indices;
+    };
+    comptime var fields_named, var fields_positional: []const usize =
+        for (info.field_names, 0..) |name, index| {
+            if (std.mem.eql(u8, name, "--")) {
+                assert(info.field_types[index] == void);
+                const positional_count = field_indices.len - index - 1;
                 if (positional_count == 0) @panic("expected positional fields");
 
                 break .{
-                    fields[0..index].*,
-                    fields[index + 1 ..],
+                    field_indices[0..index].*,
+                    field_indices[index + 1 ..],
                 };
             }
         } else .{
-            fields[0..fields.len].*,
+            field_indices,
             &.{},
         };
 
-    comptime var field_extended: ?std.builtin.Type.StructField = null;
-    if (fields_positional.len == 1 and fields_positional[0].type == []const []const u8) {
+    comptime var field_extended: ?usize = null;
+    if (fields_positional.len == 1 and info.field_types[fields_positional[0]] == []const []const u8) {
         field_extended = fields_positional[0];
         fields_positional = fields_positional[1..];
         assert(fields_positional.len == 0);
@@ -191,7 +197,7 @@ fn parse_flags(arena: Allocator, args: *std.process.Args.Iterator, comptime CLIA
 
     comptime {
         assert(
-            fields.len == fields_named.len +
+            field_indices.len == fields_named.len +
                 fields_positional.len +
                 @intFromBool(field_extended != null) +
                 if (field_extended != null or fields_positional.len > 0) 1 else 0, // The @"--"
@@ -204,48 +210,52 @@ fn parse_flags(arena: Allocator, args: *std.process.Args.Iterator, comptime CLIA
         // order during the actual parsing.
         for (fields_named[0..], 0..) |*field_right, i| {
             for (fields_named[0..i]) |*field_left| {
-                if (field_left.name.len < field_right.name.len) {
-                    std.mem.swap(std.builtin.Type.StructField, field_left, field_right);
+                if (info.field_names[field_left.*].len < info.field_names[field_right.*].len) {
+                    std.mem.swap(usize, field_left, field_right);
                 }
             }
         }
 
         for (fields_named) |field| {
-            switch (@typeInfo(field.type)) {
+            const T = info.field_types[field];
+            const default = info.field_attrs[field].defaultValue(T);
+            switch (@typeInfo(T)) {
                 .bool => {
                     // Boolean flags must have a default.
-                    assert(field.defaultValue() != null);
-                    assert(field.defaultValue().? == false);
+                    assert(default != null);
+                    assert(default.? == false);
                 },
                 .optional => |optional| {
                     // Optional flags must have a default.
-                    assert(field.defaultValue() != null);
-                    assert(field.defaultValue().? == null);
+                    assert(default != null);
+                    assert(default.? == null);
 
                     assert_valid_value_type(optional.child);
                 },
                 else => {
-                    assert_valid_value_type(field.type);
+                    assert_valid_value_type(T);
                 },
             }
         }
 
         var optional_tail: bool = false;
         for (fields_positional) |field| {
-            if (field.defaultValue() == null) {
+            const T = info.field_types[field];
+            const default = info.field_attrs[field].defaultValue(T);
+            if (default == null) {
                 if (optional_tail) @panic("optional positional arguments must be trailing");
             } else {
                 optional_tail = true;
             }
-            switch (@typeInfo(field.type)) {
+            switch (@typeInfo(T)) {
                 .optional => |optional| {
                     // optional flags should have a default
-                    assert(field.defaultValue() != null);
-                    assert(field.defaultValue().? == null);
+                    assert(default != null);
+                    assert(default.? == null);
                     assert_valid_value_type(optional.child);
                 },
                 else => {
-                    assert_valid_value_type(field.type);
+                    assert_valid_value_type(T);
                 },
             }
         }
@@ -257,18 +267,19 @@ fn parse_flags(arena: Allocator, args: *std.process.Args.Iterator, comptime CLIA
     next_arg: while (args.next()) |arg| {
         comptime var field_len_prev = std.math.maxInt(usize);
         inline for (fields_named) |field| {
-            const flag = comptime flag_name(field);
+            const name = info.field_names[field];
+            const flag = comptime flag_name(name);
 
-            comptime assert(field_len_prev >= field.name.len);
-            field_len_prev = field.name.len;
+            comptime assert(field_len_prev >= name.len);
+            field_len_prev = name.len;
             if (std.mem.startsWith(u8, arg, flag)) {
                 if (parsed_positional) {
                     fatal("unexpected trailing option: '{s}'", .{arg});
                 }
 
-                @field(counts, field.name) += 1;
-                const flag_value = parse_flag(field.type, flag, arg);
-                @field(result, field.name) = flag_value;
+                @field(counts, name) += 1;
+                const flag_value = parse_flag(info.field_types[field], flag, arg);
+                @field(result, name) = flag_value;
                 continue :next_arg;
             }
         }
@@ -279,7 +290,7 @@ fn parse_flags(arena: Allocator, args: *std.process.Args.Iterator, comptime CLIA
             switch (counts.@"--" - 1) {
                 inline 0...fields_positional.len - 1 => |field_index| {
                     const field = fields_positional[field_index];
-                    const flag = comptime flag_name_positional(field);
+                    const flag = comptime flag_name_positional(info.field_names[field]);
 
                     if (arg.len == 0) fatal("{s}: empty argument", .{flag});
                     // Prevent ambiguity between a flag and positional argument value. We could add
@@ -288,8 +299,8 @@ fn parse_flags(arena: Allocator, args: *std.process.Args.Iterator, comptime CLIA
                     if (arg[0] == '-') fatal("unexpected argument: '{s}'", .{arg});
                     parsed_positional = true;
 
-                    @field(result, field.name) =
-                        parse_value(field.type, flag, arg);
+                    @field(result, info.field_names[field]) =
+                        parse_value(info.field_types[field], flag, arg);
                     continue :next_arg;
                 },
                 else => {}, // Fall-through to the unexpected argument error.
@@ -315,10 +326,11 @@ fn parse_flags(arena: Allocator, args: *std.process.Args.Iterator, comptime CLIA
     assert(args.next() == null);
 
     inline for (fields_named) |field| {
-        const flag = flag_name(field);
-        switch (@field(counts, field.name)) {
-            0 => if (field.defaultValue()) |default| {
-                @field(result, field.name) = default;
+        const name = info.field_names[field];
+        const flag = flag_name(name);
+        switch (@field(counts, name)) {
+            0 => if (info.field_attrs[field].defaultValue(info.field_types[field])) |default| {
+                @field(result, name) = default;
             } else {
                 fatal("{s}: argument is required", .{flag});
             },
@@ -332,9 +344,9 @@ fn parse_flags(arena: Allocator, args: *std.process.Args.Iterator, comptime CLIA
         assert(counts.@"--" <= fields_positional.len);
         inline for (fields_positional, 0..) |field, field_index| {
             if (field_index >= counts.@"--") {
-                const flag = comptime flag_name_positional(field);
-                if (field.defaultValue()) |default| {
-                    @field(result, field.name) = default;
+                const flag = comptime flag_name_positional(info.field_names[field]);
+                if (info.field_attrs[field].defaultValue(info.field_types[field])) |default| {
+                    @field(result, info.field_names[field]) = default;
                 } else {
                     fatal("{s}: argument is required", .{flag});
                 }
@@ -344,7 +356,7 @@ fn parse_flags(arena: Allocator, args: *std.process.Args.Iterator, comptime CLIA
 
     if (field_extended) |field| {
         assert(fields_positional.len == 0);
-        @field(result, field.name) = arg_extended.items;
+        @field(result, info.field_names[field]) = arg_extended.items;
     }
 
     return result;
@@ -357,8 +369,8 @@ fn assert_valid_value_type(comptime T: type) void {
 
         if (@typeInfo(T) == .@"enum") {
             const info = @typeInfo(T).@"enum";
-            assert(info.is_exhaustive);
-            assert(info.fields.len >= 2);
+            assert(info.mode == .exhaustive);
+            assert(info.field_names.len >= 2);
             return;
         }
 
@@ -482,7 +494,7 @@ fn parse_value_bool(flag: []const u8, value: [:0]const u8) bool {
 
 fn parse_value_enum(comptime E: type, flag: []const u8, value: [:0]const u8) E {
     assert((flag[0] == '-' and flag[1] == '-') or flag[0] == '<');
-    comptime assert(@typeInfo(E).@"enum".is_exhaustive);
+    comptime assert(@typeInfo(E).@"enum".mode == .exhaustive);
 
     return std.meta.stringToEnum(E, value) orelse fatal(
         "{s}: expected one of {s}, but found '{s}'",
@@ -492,46 +504,50 @@ fn parse_value_enum(comptime E: type, flag: []const u8, value: [:0]const u8) E {
 
 fn fields_to_comma_list(comptime E: type) []const u8 {
     comptime {
-        const field_count = std.meta.fields(E).len;
+        const names = switch (@typeInfo(E)) {
+            .@"enum" => |info| info.field_names,
+            .@"union" => |info| info.field_names,
+            else => unreachable,
+        };
+        const field_count = names.len;
         assert(field_count >= 2);
 
         var result: []const u8 = "";
-        for (std.meta.fields(E), 0..) |field, field_index| {
+        for (names, 0..) |name, field_index| {
             const separator = switch (field_index) {
                 0 => "",
                 else => ", ",
                 field_count - 1 => if (field_count == 2) " or " else ", or ",
             };
-            result = result ++ separator ++ "'" ++ field.name ++ "'";
+            result = result ++ separator ++ "'" ++ name ++ "'";
         }
         return result;
     }
 }
 
-fn flag_name(comptime field: std.builtin.Type.StructField) []const u8 {
+fn flag_name(comptime name: []const u8) []const u8 {
     return comptime blk: {
-        assert(!std.mem.eql(u8, field.name, "-"));
-        assert(!std.mem.eql(u8, field.name, "--"));
+        assert(!std.mem.eql(u8, name, "-"));
+        assert(!std.mem.eql(u8, name, "--"));
 
         var result: []const u8 = "--";
         var index = 0;
-        while (std.mem.indexOfScalar(u8, field.name[index..], '_')) |i| {
-            result = result ++ field.name[index..][0..i] ++ "-";
+        while (std.mem.indexOfScalar(u8, name[index..], '_')) |i| {
+            result = result ++ name[index..][0..i] ++ "-";
             index = index + i + 1;
         }
-        result = result ++ field.name[index..];
+        result = result ++ name[index..];
         break :blk result;
     };
 }
 
 test flag_name {
-    const field = @typeInfo(struct { statsd: bool }).@"struct".fields[0];
-    try std.testing.expectEqualStrings(flag_name(field), "--statsd");
+    try std.testing.expectEqualStrings(flag_name("statsd"), "--statsd");
 }
 
-fn flag_name_positional(comptime field: std.builtin.Type.StructField) []const u8 {
-    comptime assert(std.mem.indexOfScalar(u8, field.name, '_') == null);
-    return "<" ++ field.name ++ ">";
+fn flag_name_positional(comptime name: []const u8) []const u8 {
+    comptime assert(std.mem.indexOfScalar(u8, name, '_') == null);
+    return "<" ++ name ++ ">";
 }
 
 /// Fuzz parse_flag_value function:

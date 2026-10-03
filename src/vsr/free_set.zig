@@ -1208,7 +1208,7 @@ test "FreeSet encode/decode manual" {
         0b10101010_10101010_10101010_10101010_10101010_10101010_10101010_10101010, // literal 1
         0b01010101_01010101_01010101_01010101_01010101_01010101_01010101_01010101, // literal 2
         0b10101010_10101010_10101010_10101010_10101010_10101010_10101010_10101010, // literal 3
-    } ++ ([1]usize{~@as(usize, 0)} ** (64 - 5));
+    } ++ @as([64 - 5]usize, @splat(~@as(usize, 0)));
     const blocks_count = decoded_expect.len * @bitSizeOf(usize);
 
     const gpa = std.testing.allocator;

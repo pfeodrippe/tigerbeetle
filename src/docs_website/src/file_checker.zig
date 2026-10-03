@@ -225,8 +225,13 @@ fn check_link_external(arena: std.mem.Allocator, link: Link) !void {
     if (!check_links_external) return;
     if (https_exceptions.has(link.base)) return;
 
-    errdefer |err| log.err("got {} while checking external link '{s}'", .{ err, link.base });
+    return fetch_link_external(arena, link) catch |err| {
+        log.err("got {} while checking external link '{s}'", .{ err, link.base });
+        return err;
+    };
+}
 
+fn fetch_link_external(arena: std.mem.Allocator, link: Link) !void {
     log.info("checking external link '{s}'", .{link.base});
 
     var client = std.http.Client{ .allocator = arena };

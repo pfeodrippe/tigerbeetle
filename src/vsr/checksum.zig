@@ -123,7 +123,7 @@ test "checksum test vectors" {
 
     for (&[_]TestVector{
         .{
-            .source = &[_]u8{0x00} ** 16,
+            .source = &@as([16]u8, @splat(0x00)),
             .hash = @byteSwap(@as(u128, 0xf72ad48dd05dd1656133101cd4be3a26)),
         },
         .{

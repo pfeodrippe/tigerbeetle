@@ -465,10 +465,10 @@ test tidy_lines {
     ,
         "" ++
             "pub const x = 92;\n" ++
-            "pub const x = " ++ ("9" ** 199) ++ ";\n" ++
-            "pub const url = \"https://example." ++ ("0" ** 199) ++ " \";\n" ++
-            "        \\\\" ++ ("9" ** 99) ++ "\n" ++
-            "        \"" ++ ("9" ** 99) ++ "\"\n",
+            "pub const x = " ++ (@as([199]u8, @splat('9'))) ++ ";\n" ++
+            "pub const url = \"https://example." ++ (@as([199]u8, @splat('0'))) ++ " \";\n" ++
+            "        \\\\" ++ (@as([99]u8, @splat('9'))) ++ "\n" ++
+            "        \"" ++ (@as([99]u8, @splat('9'))) ++ "\"\n",
         snap(@src(),
             \\lines.zig:2: error: line exceeds 100 columns
             \\lines.zig:5: error: line exceeds 100 columns

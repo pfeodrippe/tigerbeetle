@@ -39,7 +39,8 @@ pub const IO = struct {
     run_for_ns_active: bool = false,
 
     pub fn init(entries: u12, flags: u32) !IO {
-        errdefer |err| switch (err) {
+        var ring = IO_Uring.init(entries, flags) catch |err| {
+            switch (err) {
             error.SystemOutdated => {
                 log.err("io_uring is not available", .{});
                 log.err("likely cause: the syscall is disabled by seccomp", .{});
@@ -50,9 +51,9 @@ pub const IO = struct {
                     "try 'sysctl -w kernel.io_uring_disabled=0'", .{});
             },
             else => {},
+            }
+            return err;
         };
-
-        var ring = try IO_Uring.init(entries, flags);
         errdefer ring.deinit();
 
         // IORING_ENTER_EXT_ARG is the newest feature we currently use: it was added in 5.11.

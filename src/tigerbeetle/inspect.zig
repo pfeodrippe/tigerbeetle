@@ -428,8 +428,8 @@ fn inspect_op(output: *std.Io.Writer, op: u64) !void {
 
 fn print_header(output: *std.Io.Writer, comptime level: u8, comptime header: []const u8) !void {
     const width_total = 32;
-    const pad_left = "  " ** level;
-    const pad_right = " " ** (width_total -| level * 2 -| header.len);
+    const pad_left = @as([level * 2]u8, @splat(' '));
+    const pad_right = @as([width_total -| level * 2 -| header.len]u8, @splat(' '));
     try output.print(pad_left ++ header ++ pad_right, .{});
 }
 
@@ -1086,7 +1086,7 @@ const Inspector = struct {
             var entry_counts = std.enums.EnumArray(
                 schema.ManifestNode.Event,
                 [constants.lsm_levels]usize,
-            ).initDefault([_]usize{0} ** constants.lsm_levels, .{});
+            ).initDefault(@as([constants.lsm_levels]usize, @splat(0)), .{});
 
             const manifest_node = schema.ManifestNode.from(block);
             for (manifest_node.tables_const(block)) |*table_info| {

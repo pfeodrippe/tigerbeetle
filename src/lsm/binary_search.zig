@@ -582,7 +582,7 @@ test "binary search: explicit" {
         );
 
         try test_binary_search.explicit_search(
-            &[_]u32{4} ** 10,
+            &@as([10]u32, @splat(4)),
             &[_]u32{4},
             &[_]BinarySearchResult{
                 .{

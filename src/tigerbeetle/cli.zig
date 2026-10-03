@@ -854,31 +854,32 @@ fn parse_args_start(start: CLIArgs.Start) Command.Start {
         "addresses",   "cache_grid",
         "development", "experimental",
     };
-    inline for (std.meta.fields(@TypeOf(start))) |field| {
+    const info = @typeInfo(@TypeOf(start)).@"struct";
+    inline for (info.field_names, info.field_types, info.field_attrs) |name, Field, attrs| {
         @setEvalBranchQuota(4_000);
         // Positional arguments can't be experimental.
-        comptime if (std.mem.eql(u8, field.name, "--")) break;
+        comptime if (std.mem.eql(u8, name, "--")) break;
 
         const stable_field = comptime for (stable_args) |stable_arg| {
-            assert(std.meta.fieldIndex(@TypeOf(start), stable_arg) != null);
-            if (std.mem.eql(u8, field.name, stable_arg)) {
+            assert(@hasField(@TypeOf(start), stable_arg));
+            if (std.mem.eql(u8, name, stable_arg)) {
                 break true;
             }
         } else false;
         if (stable_field) continue;
 
         const flag_name = comptime blk: {
-            var result: [2 + field.name.len]u8 = ("--" ++ field.name).*;
+            var result: [2 + name.len]u8 = ("--" ++ name).*;
             std.mem.replaceScalar(u8, &result, '_', '-');
             break :blk result;
         };
 
         // If you've added a flag and get a comptime error here, it's likely because
         // we require experimental flags to default to null.
-        const required_default = if (field.type == bool) false else null;
-        assert(field.defaultValue().? == required_default);
+        const required_default = if (Field == bool) false else null;
+        assert(attrs.defaultValue(Field).? == required_default);
 
-        if (@field(start, field.name) != required_default and !start.experimental) {
+        if (@field(start, name) != required_default and !start.experimental) {
             vsr.fatal(
                 .cli,
                 "{s} is marked experimental, add `--experimental` to continue.",

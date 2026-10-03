@@ -61,7 +61,7 @@ fn get_mapped_type_name(comptime Type: type) ?[]const u8 {
 fn to_pascal_case(comptime input: []const u8, comptime min_len: ?usize) []const u8 {
     return comptime blk: {
         var len: usize = 0;
-        var output = [_]u8{' '} ** (min_len orelse input.len);
+        var output = @as([min_len orelse input.len]u8, @splat(' '));
         var iterator = std.mem.tokenizeScalar(u8, input, '_');
         while (iterator.next()) |word| {
             assert(word.len > 0);

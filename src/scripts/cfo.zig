@@ -1462,7 +1462,7 @@ test "cfo: SeedRecord.merge" {
             // First commit, one failure.
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "ewah",
                 .ok = false,
                 .seed_timestamp_start = 1,
@@ -1474,7 +1474,7 @@ test "cfo: SeedRecord.merge" {
             //  Second commit, two successes.
             .{
                 .commit_timestamp = 2,
-                .commit_sha = .{'2'} ** 40,
+                .commit_sha = @as([40]u8, @splat('2')),
                 .fuzzer = "ewah",
                 .ok = true,
                 .seed_timestamp_start = 1,
@@ -1485,7 +1485,7 @@ test "cfo: SeedRecord.merge" {
             },
             .{
                 .commit_timestamp = 2,
-                .commit_sha = .{'2'} ** 40,
+                .commit_sha = @as([40]u8, @splat('2')),
                 .fuzzer = "ewah",
                 .ok = true,
                 .seed_timestamp_start = 2,
@@ -1499,7 +1499,7 @@ test "cfo: SeedRecord.merge" {
             // Two new failures for the first commit, one will be added.
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "ewah",
                 .ok = false,
                 .seed_timestamp_start = 2,
@@ -1510,7 +1510,7 @@ test "cfo: SeedRecord.merge" {
             },
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "ewah",
                 .ok = false,
                 .seed_timestamp_start = 3,
@@ -1522,7 +1522,7 @@ test "cfo: SeedRecord.merge" {
             // One failure for the second commit, it will replace one success.
             .{
                 .commit_timestamp = 2,
-                .commit_sha = .{'2'} ** 40,
+                .commit_sha = @as([40]u8, @splat('2')),
                 .fuzzer = "ewah",
                 .ok = false,
                 .seed_timestamp_start = 4,
@@ -1591,7 +1591,7 @@ test "cfo: SeedRecord.merge" {
             // Two failing commits.
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "ewah",
                 .ok = false,
                 .seed_timestamp_start = 1,
@@ -1602,7 +1602,7 @@ test "cfo: SeedRecord.merge" {
             },
             .{
                 .commit_timestamp = 2,
-                .commit_sha = .{'2'} ** 40,
+                .commit_sha = @as([40]u8, @splat('2')),
                 .fuzzer = "ewah",
                 .ok = false,
                 .seed_timestamp_start = 1,
@@ -1616,7 +1616,7 @@ test "cfo: SeedRecord.merge" {
             // A new successful commit displaces the older failure.
             .{
                 .commit_timestamp = 3,
-                .commit_sha = .{'3'} ** 40,
+                .commit_sha = @as([40]u8, @splat('3')),
                 .fuzzer = "ewah",
                 .ok = true,
                 .seed_timestamp_start = 1,
@@ -1661,7 +1661,7 @@ test "cfo: SeedRecord.merge" {
         &.{
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "ewah",
                 .ok = false,
                 .seed_timestamp_start = 1,
@@ -1674,7 +1674,7 @@ test "cfo: SeedRecord.merge" {
         &.{
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "ewah",
                 .ok = false,
                 .seed_timestamp_start = 1,
@@ -1707,7 +1707,7 @@ test "cfo: SeedRecord.merge" {
         &.{
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "ewah",
                 .ok = false,
                 .seed_timestamp_start = 10,
@@ -1718,7 +1718,7 @@ test "cfo: SeedRecord.merge" {
             },
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "ewah",
                 .ok = false,
                 .seed_timestamp_start = 20,
@@ -1731,7 +1731,7 @@ test "cfo: SeedRecord.merge" {
         &.{
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "ewah",
                 .ok = false,
                 .seed_timestamp_start = 5,
@@ -1776,7 +1776,7 @@ test "cfo: SeedRecord.merge" {
         &.{
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "canary",
                 .ok = false,
                 .seed_timestamp_start = 10,
@@ -1787,7 +1787,7 @@ test "cfo: SeedRecord.merge" {
             },
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "canary",
                 .ok = false,
                 .seed_timestamp_start = 30,
@@ -1800,7 +1800,7 @@ test "cfo: SeedRecord.merge" {
         &.{
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "canary",
                 .ok = false,
                 .seed_timestamp_start = 20,
@@ -1845,7 +1845,7 @@ test "cfo: SeedRecord.merge" {
         &.{
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "ewah",
                 .ok = false,
                 .seed_timestamp_start = 1,
@@ -1858,7 +1858,7 @@ test "cfo: SeedRecord.merge" {
         &.{
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "American Fuzzy Lop",
                 .ok = false,
                 .seed_timestamp_start = 1,
@@ -1903,7 +1903,7 @@ test "cfo: SeedRecord.merge" {
         &.{
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "ewah",
                 .ok = true,
                 .seed_timestamp_start = 1,
@@ -1915,7 +1915,7 @@ test "cfo: SeedRecord.merge" {
             },
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "ewah",
                 .ok = true,
                 .seed_timestamp_start = 1,
@@ -1929,7 +1929,7 @@ test "cfo: SeedRecord.merge" {
         &.{
             .{
                 .commit_timestamp = 1,
-                .commit_sha = .{'1'} ** 40,
+                .commit_sha = @as([40]u8, @splat('1')),
                 .fuzzer = "ewah",
                 .ok = true,
                 .seed_timestamp_start = 1,

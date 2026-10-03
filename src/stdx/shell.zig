@@ -1047,16 +1047,26 @@ pub fn http_post(
 ///
 /// The returned body is owned by the shell arena and doesn't need to be freed.
 /// If the response is not 200 OK, the response body is logged and an error is returned.
+const HttpMethod = union(enum) { get, post: []const u8 };
+
 fn http_request(
     shell: *Shell,
-    method: union(enum) { get, post: []const u8 },
+    method: HttpMethod,
     url: []const u8,
     options: HttpOptions,
 ) anyerror![]const u8 {
-    errdefer |err| log.err(
-        "failed to HTTP {s} to \"{s}\": {s}",
-        .{ @tagName(method), url, @errorName(err) },
-    );
+    return http_request_impl(shell, method, url, options) catch |err| {
+        log.err("failed to HTTP {s} to \"{s}\": {s}", .{ @tagName(method), url, @errorName(err) });
+        return err;
+    };
+}
+
+fn http_request_impl(
+    shell: *Shell,
+    method: HttpMethod,
+    url: []const u8,
+    options: HttpOptions,
+) anyerror![]const u8 {
 
     var client = std.http.Client{ .allocator = shell.gpa, .io = stdx.process_io };
     defer client.deinit();

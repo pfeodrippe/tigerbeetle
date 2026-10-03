@@ -35,6 +35,7 @@ pub fn main(process_init: std.process.Init) !void {
     const hash = try fetch(arena, .{
         .io = process_init.io,
         .zig = zig,
+        .cache = global_cache,
         .tmp = path_join(arena, &.{ global_cache, "tmp" }),
         .url = url,
     });
@@ -120,6 +121,7 @@ fn copy_from_cache(
 fn fetch(arena: Allocator, options: struct {
     io: std.Io,
     zig: []const u8,
+    cache: []const u8,
     tmp: []const u8,
     url: []const u8,
 }) ![]const u8 {
@@ -160,10 +162,10 @@ fn fetch(arena: Allocator, options: struct {
             log.err("curl error: {}", .{curl_result.term});
             return error.Exec;
         }
-        return try stdb.exec(arena, options.io, &.{ options.zig, "fetch", curl_output });
+        return try stdb.exec(arena, options.io, &.{ options.zig, "fetch", "--global-cache-dir", options.cache, curl_output });
     }
     log.debug("download: zig fetch", .{});
-    return try stdb.exec(arena, options.io, &.{ options.zig, "fetch", options.url });
+    return try stdb.exec(arena, options.io, &.{ options.zig, "fetch", "--global-cache-dir", options.cache, options.url });
 }
 
 fn path_join(arena: Allocator, components: []const []const u8) []const u8 {

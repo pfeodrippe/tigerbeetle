@@ -418,16 +418,7 @@ pub const IO = struct {
                         return op.client_socket.?;
                     }
 
-                    // Destroy the client_socket we created if we get a non WouldBlock error.
-                    errdefer |err| switch (err) {
-                        error.WouldBlock => {},
-                        else => {
-                            ctx.io.close_socket(op.client_socket.?);
-                            op.client_socket = null;
-                        },
-                    };
-
-                    return switch (stdx.windows.wsa_get_last_error()) {
+                    const failure: AcceptError = switch (stdx.windows.wsa_get_last_error()) {
                         .WSA_IO_PENDING, .WSAEWOULDBLOCK, .WSA_IO_INCOMPLETE => error.WouldBlock,
                         .WSANOTINITIALISED => unreachable, // WSAStartup() was called.
                         .WSAENETDOWN => unreachable, // WinSock error.
@@ -441,6 +432,12 @@ pub const IO = struct {
                         .WSAEINTR, .WSAEINPROGRESS => unreachable, // No blocking calls.
                         else => |err| stdx.windows.unexpected_wsa_error(err),
                     };
+                    // Destroy the client_socket we created if we get a non WouldBlock error.
+                    if (failure != error.WouldBlock) {
+                        ctx.io.close_socket(op.client_socket.?);
+                        op.client_socket = null;
+                    }
+                    return failure;
                 }
             },
         );

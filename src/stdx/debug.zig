@@ -14,7 +14,7 @@ const TimeIt = struct {
 
     /// Prints elapsed time to stderr and resets the internal timer.
     pub fn print(self: *TimeIt, comptime label: []const u8) void {
-        const label_alignment = comptime " " ** (1 + (12 -| label.len));
+        const label_alignment = comptime @as([1 + (12 -| label.len)]u8, @splat(' '));
 
         const elapsed_ns = self.inner.lap();
         std.debug.print(

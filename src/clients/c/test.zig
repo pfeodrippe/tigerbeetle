@@ -268,8 +268,13 @@ test "tb_client init" {
     try assert_status("", error.AddressInvalid);
 
     // More addresses than "replicas_max" should return "TB_STATUS_ADDRESS_LIMIT_EXCEEDED":
+    const repeated_address = comptime blk: {
+        var addresses: [5 * constants.replicas_max]u8 = undefined;
+        for (0..constants.replicas_max) |index| @memcpy(addresses[index * 5 ..][0..5], "3000,");
+        break :blk addresses;
+    };
     try assert_status(
-        ("3000," ** constants.replicas_max) ++ "3001",
+        repeated_address ++ "3001",
         error.AddressLimitExceeded,
     );
 

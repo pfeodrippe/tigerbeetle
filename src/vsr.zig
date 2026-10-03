@@ -622,7 +622,7 @@ test "ReconfigurationRequest" {
         .members_invalid,
     );
     try t.check(stdx.update(r, .{ .replica_count = 4 }), .members_count_invalid);
-    try t.check(stdx.update(r, .{ .reserved = [_]u8{1} ** 54 }), .reserved_field);
+    try t.check(stdx.update(r, .{ .reserved = @as([54]u8, @splat(1)) }), .reserved_field);
     try t.check(stdx.update(r, .{ .result = .ok }), .result_must_be_reserved);
     try t.check(stdx.update(r, .{ .epoch = 0 }), .epoch_in_the_past);
     try t.check(stdx.update(r, .{ .epoch = 3 }), .epoch_in_the_future);

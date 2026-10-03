@@ -224,7 +224,7 @@ fn emit_docs(
             \\{[indent]s} */
             \\
         , .{
-            .indent = "  " ** indent,
+            .indent = &@as([indent * 2]u8, @splat(' ')),
             .name = field orelse mapping.name,
             .docs_link = docs_link,
             .field = field orelse "",
