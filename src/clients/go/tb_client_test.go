@@ -1,6 +1,7 @@
 package tigerbeetle_go
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -8,7 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
-	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,22 +19,17 @@ import (
 )
 
 const (
-	TIGERBEETLE_PORT                 = "3000"
 	TIGERBEETLE_CLUSTER_ID    uint64 = 0
 	TIGERBEETLE_REPLICA_ID    uint32 = 0
 	TIGERBEETLE_REPLICA_COUNT uint32 = 1
 )
 
 func WithClient(t testing.TB, withClient func(Client)) {
-	var tigerbeetlePath string
-	if runtime.GOOS == "windows" {
-		tigerbeetlePath = "../../../tigerbeetle.exe"
-	} else {
-		tigerbeetlePath = "../../../tigerbeetle"
+	tigerbeetlePath := os.Getenv("TIGERBEETLE_BINARY")
+	if tigerbeetlePath == "" {
+		t.Fatalf("TIGERBEETLE_BINARY environmental variable is required")
 	}
 
-	addressArg := "--addresses=" + TIGERBEETLE_PORT
-	cacheSizeArg := "--cache-grid=256MiB"
 	replicaArg := fmt.Sprintf("--replica=%d", TIGERBEETLE_REPLICA_ID)
 	replicaCountArg := fmt.Sprintf("--replica-count=%d", TIGERBEETLE_REPLICA_COUNT)
 	clusterArg := fmt.Sprintf("--cluster=%d", TIGERBEETLE_CLUSTER_ID)
@@ -52,21 +48,46 @@ func WithClient(t testing.TB, withClient func(Client)) {
 		t.Fatal(err)
 	}
 
-	tbStart := exec.Command(tigerbeetlePath, "start", addressArg, cacheSizeArg, fileName)
+	tbStart := exec.Command(tigerbeetlePath,
+		"start",
+		"--development",
+		"--addresses=0",
+		fileName)
+
 	if testing.Verbose() {
 		tbStart.Stderr = os.Stderr
 	}
-	if err := tbStart.Start(); err != nil {
+
+	// Stdin is not used,
+	// but when running with `--addresses=0`, the replica exits if stdin is closed.
+	stdin, err := tbStart.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = stdin
+
+	// Stdout is used to read the assigned TCP port.
+	stdout, err := tbStart.StdoutPipe()
+	if err != nil {
 		t.Fatal(err)
 	}
 
+	if err := tbStart.Start(); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		if err := tbStart.Process.Kill(); err != nil {
 			t.Fatal(err)
 		}
 	})
 
-	addresses := []string{"127.0.0.1:" + TIGERBEETLE_PORT}
+	reader := bufio.NewReader(stdout)
+	port, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	addresses := []string{strings.TrimSpace(port)}
 	client, err := NewClient(ToUint128(TIGERBEETLE_CLUSTER_ID), addresses)
 	if err != nil {
 		t.Fatal(err)

@@ -4,6 +4,10 @@ const assert = std.debug.assert;
 const maybe = stdx.maybe;
 const log = std.log.scoped(.vsr);
 
+test {
+    _ = @import("unit_tests.zig");
+}
+
 // vsr.zig is the root of a zig package, reexport all public APIs.
 //
 // Note that we don't promise any stability of these interfaces yet.
@@ -19,9 +23,9 @@ pub const state_machine = @import("state_machine.zig");
 pub const storage = @import("storage.zig");
 pub const tb_client = @import("clients/c/tb_client.zig");
 pub const tigerbeetle = @import("tigerbeetle.zig");
-pub const time = @import("time.zig");
 pub const trace = @import("trace.zig");
 pub const stdx = @import("stdx");
+pub const abi = @import("abi");
 pub const grid = @import("vsr/grid.zig");
 pub const superblock = @import("vsr/superblock.zig");
 pub const aof = @import("aof.zig");
@@ -196,6 +200,23 @@ pub const Zone = enum {
         };
     }
 
+    pub fn dsync(zone: Zone) bool {
+        return switch (zone) {
+            .grid => false,
+            else => true,
+        };
+    }
+
+    // Ensuring only the grid can be written without dsync is critical to safety, given the other
+    // assumptions in storage.zig.
+    comptime {
+        for (std.enums.values(Zone)) |zone| {
+            if (!zone.dsync()) {
+                assert(zone == .grid);
+            }
+        }
+    }
+
     /// Ensures that the read or write is aligned correctly for Direct I/O.
     /// If this is not the case, then the underlying syscall will return EINVAL.
     /// We check this only at the start of a read or write because the physical sector size may be
@@ -270,7 +291,7 @@ pub const Command = enum(u8) {
 
     comptime {
         for (std.enums.values(Command)) |command| {
-            assert(@intFromEnum(command) < std.enums.values(Command).len);
+            assert(@backingInt(command) < std.enums.values(Command).len);
         }
     }
 };
@@ -303,14 +324,14 @@ pub const Operation = enum(u8) {
 
     pub fn from(comptime StateMachineOperation: type, operation: StateMachineOperation) Operation {
         comptime check_state_machine_operations(StateMachineOperation);
-        return @as(Operation, @enumFromInt(@intFromEnum(operation)));
+        return @as(Operation, @fromBackingInt(@intCast(@backingInt(operation))));
     }
 
     pub fn to(comptime StateMachineOperation: type, operation: Operation) StateMachineOperation {
         comptime check_state_machine_operations(StateMachineOperation);
         assert(operation.valid(StateMachineOperation));
         assert(!operation.vsr_reserved());
-        return @as(StateMachineOperation, @enumFromInt(@intFromEnum(operation)));
+        return @as(StateMachineOperation, @fromBackingInt(@intCast(@backingInt(operation))));
     }
 
     pub fn cast(self: Operation, comptime StateMachineOperation: type) StateMachineOperation {
@@ -324,7 +345,7 @@ pub const Operation = enum(u8) {
         inline for (.{ Operation, StateMachineOperation }) |Enum| {
             const ops = comptime std.enums.values(Enum);
             inline for (ops) |op| {
-                if (@intFromEnum(self) == @intFromEnum(op)) {
+                if (@backingInt(self) == @backingInt(op)) {
                     return true;
                 }
             }
@@ -334,7 +355,7 @@ pub const Operation = enum(u8) {
     }
 
     pub fn vsr_reserved(self: Operation) bool {
-        return @intFromEnum(self) < constants.vsr_operations_reserved;
+        return @backingInt(self) < constants.vsr_operations_reserved;
     }
 
     pub fn tag_name(self: Operation, comptime StateMachineOperation: type) []const u8 {
@@ -342,7 +363,7 @@ pub const Operation = enum(u8) {
         inline for (.{ Operation, StateMachineOperation }) |Enum| {
             inline for (@typeInfo(Enum).@"enum".fields) |field| {
                 const op = @field(Enum, field.name);
-                if (@intFromEnum(self) == @intFromEnum(op)) {
+                if (@backingInt(self) == @backingInt(op)) {
                     return field.name;
                 }
             }
@@ -359,7 +380,7 @@ pub const Operation = enum(u8) {
                 @typeInfo(Operation).@"enum".tag_type);
             for (@typeInfo(StateMachineOperation).@"enum".fields) |field| {
                 const operation = @field(StateMachineOperation, field.name);
-                if (@intFromEnum(operation) < constants.vsr_operations_reserved) {
+                if (@backingInt(operation) < constants.vsr_operations_reserved) {
                     @compileError("StateMachine Operation is reserved");
                 }
             }
@@ -549,7 +570,7 @@ pub const ReconfigurationResult = enum(u32) {
 
     comptime {
         for (std.enums.values(ReconfigurationResult), 0..) |result, index| {
-            assert(@intFromEnum(result) == index);
+            assert(@backingInt(result) == index);
         }
     }
 };
@@ -687,7 +708,7 @@ pub const FatalReason = enum(u8) {
     unknown_vsr_command = 7,
 
     pub fn exit_status(reason: FatalReason) u8 {
-        return @intFromEnum(reason);
+        return @backingInt(reason);
     }
 };
 
@@ -1472,7 +1493,7 @@ test "Headers.ViewChangeSlice.view_for_op" {
             .request = 7,
             .command = .prepare,
             .release = Release.minimum,
-            .operation = @as(Operation, @enumFromInt(constants.vsr_operations_reserved + 8)),
+            .operation = @as(Operation, @fromBackingInt(@intCast(constants.vsr_operations_reserved + 8))),
             .op = 9,
             .view = 10,
             .timestamp = 11,
@@ -1485,7 +1506,7 @@ test "Headers.ViewChangeSlice.view_for_op" {
             .request = 4,
             .command = .prepare,
             .release = Release.minimum,
-            .operation = @as(Operation, @enumFromInt(constants.vsr_operations_reserved + 5)),
+            .operation = @as(Operation, @fromBackingInt(@intCast(constants.vsr_operations_reserved + 5))),
             .op = 6,
             .view = 7,
             .timestamp = 8,

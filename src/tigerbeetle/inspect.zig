@@ -1467,7 +1467,7 @@ fn print_value(output: *std.Io.Writer, value: anytype) !void {
         if (value.valid(StateMachine.Operation)) {
             return output.writeAll(value.tag_name(StateMachine.Operation));
         } else {
-            return output.print("{}!", .{@intFromEnum(value)});
+            return output.print("{}!", .{@backingInt(value)});
         }
     }
 
@@ -1475,7 +1475,7 @@ fn print_value(output: *std.Io.Writer, value: anytype) !void {
         if (std.enums.tagName(Type, value)) |value_string| {
             return output.print("{s}", .{value_string});
         } else {
-            return output.print("{}!", .{@intFromEnum(value)});
+            return output.print("{}!", .{@backingInt(value)});
         }
     }
     try output.print("{}", .{value});

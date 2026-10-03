@@ -104,7 +104,7 @@ const stdx = @import("stdx");
 const KiB = stdx.KiB;
 const Duration = stdx.Duration;
 const IO = @import("io.zig").IO;
-const Time = @import("time.zig").Time;
+const Time = stdx.Time;
 const StatsD = @import("trace/statsd.zig").StatsD;
 pub const Event = @import("trace/event.zig").Event;
 pub const EventMetric = @import("trace/event.zig").EventMetric;
@@ -488,7 +488,7 @@ test "trace json and statsd" {
 
     var time_sim = fixtures.init_time(.{});
 
-    var trace = try fixtures.init_tracer(gpa, time_sim.time(), .{
+    var trace = try fixtures.init_tracer(gpa, time_sim.interface(), .{
         .writer = &trace_buffer.writer,
         .process_id = .unknown,
     });
@@ -503,19 +503,19 @@ test "trace json and statsd" {
 
     trace.start(.{ .replica_commit = .{ .stage = .idle, .op = 123 } });
     time_sim.ticks += 1;
-    trace.start(.{ .compact_beat = .{ .tree = @enumFromInt(1), .level_b = 1 } });
+    trace.start(.{ .compact_beat = .{ .tree = @fromBackingInt(@intCast(1)), .level_b = 1 } });
     time_sim.ticks += 2;
-    trace.stop(.{ .compact_beat = .{ .tree = @enumFromInt(1), .level_b = 1 } });
+    trace.stop(.{ .compact_beat = .{ .tree = @fromBackingInt(@intCast(1)), .level_b = 1 } });
     time_sim.ticks += 3;
     trace.stop(.{ .replica_commit = .{ .stage = .idle, .op = 456 } });
 
     try snap(@src(),
         \\[
-        \\{"pid":0,"tid":136,"ph":"B","ts":0,"cat":"metrics_emit","name":"metrics_emit  ","args":""},
-        \\{"pid":0,"tid":136,"ph":"E","ts":100000},
+        \\{"pid":0,"tid":140,"ph":"B","ts":0,"cat":"metrics_emit","name":"metrics_emit  ","args":""},
+        \\{"pid":0,"tid":140,"ph":"E","ts":100000},
         \\{"pid":1,"tid":0,"ph":"B","ts":100000,"cat":"replica_commit","name":"replica_commit  stage=idle","args":{"stage":"idle","op":123}},
-        \\{"pid":1,"tid":8,"ph":"B","ts":110000,"cat":"compact_beat","name":"compact_beat  tree=Account.id","args":{"tree":"Account.id","level_b":1}},
-        \\{"pid":1,"tid":8,"ph":"E","ts":130000},
+        \\{"pid":1,"tid":12,"ph":"B","ts":110000,"cat":"compact_beat","name":"compact_beat  tree=Account.id","args":{"tree":"Account.id","level_b":1}},
+        \\{"pid":1,"tid":12,"ph":"E","ts":130000},
         \\{"pid":1,"tid":0,"ph":"E","ts":160000},
         \\
     ).diff(trace_buffer.written());
@@ -554,7 +554,7 @@ test "timing overflow" {
     const gpa = std.testing.allocator;
 
     var time_sim = fixtures.init_time(.{});
-    var trace = try fixtures.init_tracer(gpa, time_sim.time(), .{});
+    var trace = try fixtures.init_tracer(gpa, time_sim.interface(), .{});
     defer trace.deinit(gpa);
 
     trace.set_replica(.{ .cluster = 0, .replica = 0 });

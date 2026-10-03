@@ -7,14 +7,17 @@ const stdx = @import("stdx");
 const Shell = stdx.Shell;
 const TmpTigerBeetle = @import("../../testing/tmp_tigerbeetle.zig");
 
-pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
+pub fn tests(shell: *Shell, gpa: std.mem.Allocator, options: struct {
+    tigerbeetle: []const u8,
+}) !void {
     assert(shell.file_exists("TigerBeetle.sln"));
 
     try shell.exec_zig("build clients:dotnet -Drelease", .{});
-    try shell.exec_zig("build -Drelease", .{});
 
     try shell.exec("dotnet restore", .{});
     try shell.exec("dotnet format --no-restore --verify-no-changes", .{});
+
+    try shell.env.put("TIGERBEETLE_BINARY", options.tigerbeetle);
 
     // Unit tests.
     try shell.exec("dotnet build --no-restore  --configuration Release", .{});
@@ -42,6 +45,7 @@ pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
 
         var tmp_beetle = try TmpTigerBeetle.init(gpa, .{
             .development = true,
+            .prebuilt = options.tigerbeetle,
         });
         defer tmp_beetle.deinit(gpa);
         errdefer tmp_beetle.log_stderr();
@@ -64,6 +68,7 @@ pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
         try shell.exec("dotnet pack --configuration Release", .{});
 
         const image_tags = .{
+            // Not entirely clear if docker dependency is in scope for our CI...
             "8.0", "8.0-alpine",
         };
 
@@ -73,13 +78,13 @@ pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
 
             for (0..5) |attempt| {
                 if (attempt > 0) std.time.sleep(1 * std.time.ns_per_min);
-                if (shell.exec("docker image pull {image}", .{ .image = image })) {
+                if (shell.exec("podman image pull {image}", .{ .image = image })) {
                     break;
                 } else |_| {}
             }
 
             try shell.exec(
-                \\docker run
+                \\podman run
                 \\--security-opt seccomp=unconfined
                 \\--volume ./TigerBeetle/bin/Release:/host
                 \\{image}

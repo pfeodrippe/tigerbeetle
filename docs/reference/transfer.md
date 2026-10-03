@@ -60,8 +60,8 @@ Fields used by each mode of transfer:
 | `flags.void_pending_transfer` | false        | false    | false        | true         |
 | `flags.balancing_debit`       | optional     | optional | false        | false        |
 | `flags.balancing_credit`      | optional     | optional | false        | false        |
-| `flags.closing_debit`         | optional     | true     | false        | false        |
-| `flags.closing_credit`        | optional     | true     | false        | false        |
+| `flags.closing_debit`         | false        | true     | false        | false        |
+| `flags.closing_credit`        | false        | true     | false        | false        |
 | `flags.imported`              | optional     | optional | optional     | optional     |
 | `timestamp`                   | none²        | none²    | none²        | none²        |
 
@@ -178,7 +178,7 @@ Additional constraints:
 
 #### Examples
 
-- For representing fractional amounts (e.g. `$12.34`), see
+- For representing fractional amounts (e.g. `12.34 USD`), see
   [Fractional Amounts](../coding/data-modeling.md#fractional-amounts-and-asset-scale).
 - For balancing transfers, see [Close Account](../coding/recipes/close-account.md).
 

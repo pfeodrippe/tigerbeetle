@@ -123,10 +123,10 @@ fn emit_enum(
             try buffer.writer.print("\t{s} {s} = {s}\n", .{
                 enum_name,
                 name,
-                if (@intFromEnum(@field(Type, field.name)) == 1) "true" else "false",
+                if (@backingInt(@field(Type, field.name)) == 1) "true" else "false",
             });
         } else {
-            const int_value = @intFromEnum(@field(Type, field.name));
+            const int_value = @backingInt(@field(Type, field.name));
             try buffer.writer.print("\t{s} {s} = {s}\n", .{
                 enum_name,
                 name,
@@ -145,11 +145,11 @@ fn emit_enum(
 
     if (type_info.tag_type == u1) {
         const enum_zero_name = prefix ++ comptime to_pascal_case(
-            @tagName(@as(Type, @enumFromInt(0))),
+            @tagName(@as(Type, @fromBackingInt(@intCast(0)))),
             null,
         );
         const enum_one_name = prefix ++ comptime to_pascal_case(
-            @tagName(@as(Type, @enumFromInt(1))),
+            @tagName(@as(Type, @fromBackingInt(@intCast(1)))),
             null,
         );
 

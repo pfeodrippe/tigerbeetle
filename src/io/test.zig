@@ -10,8 +10,8 @@ const MiB = stdx.MiB;
 const Instant = stdx.Instant;
 const Duration = stdx.Duration;
 
-const TimeOS = @import("../time.zig").TimeOS;
-const Time = @import("../time.zig").Time;
+const TimeOS = stdx.TimeOS;
+const Time = stdx.Time;
 const IO = @import("../io.zig").IO;
 const io_common = @import("common.zig");
 
@@ -22,6 +22,18 @@ pub const tcp_options: IO.TCPOptions = .{
     .user_timeout_ms = 0,
     .nodelay = false,
 };
+
+test "TCP socket buffer options" {
+    var io = try IO.init(32, 0);
+    defer io.deinit();
+
+    var options = tcp_options;
+    options.rcvbuf = 1;
+    options.sndbuf = 1;
+
+    const socket = try io.open_socket_tcp(.IPv4, options);
+    defer io.close_socket(socket);
+}
 
 test "open/write/read/close/statx" {
     try struct {
@@ -96,6 +108,7 @@ test "open/write/read/close/statx" {
                 self.fd.?,
                 &self.write_buf,
                 10,
+                .{ .dsync = true },
             );
         }
 
@@ -289,7 +302,7 @@ test "timeout" {
         fn run_test() !void {
             var time_os: TimeOS = .{};
             var self: Context = .{
-                .time = time_os.time(),
+                .time = time_os.interface(),
                 .io = try IO.init(32, 0),
             };
             defer self.io.deinit();

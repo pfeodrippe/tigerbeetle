@@ -61,7 +61,7 @@ pub fn deinit(flags: *Flags, gpa: Allocator) void {
 }
 
 /// Format and print an error message to stderr, then exit with an exit code of 1.
-fn fatal(comptime fmt_string: []const u8, args: anytype) noreturn {
+pub fn fatal(comptime fmt_string: []const u8, args: anytype) noreturn {
     var buffer: [4096]u8 = undefined;
     var stderr_writer = std.Io.File.stderr().writer(stdx.process_io, &buffer);
     stderr_writer.interface.print("error: " ++ fmt_string ++ "\n", args) catch {};

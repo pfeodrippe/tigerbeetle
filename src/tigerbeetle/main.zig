@@ -15,8 +15,8 @@ const cli = @import("cli.zig");
 const inspect = @import("inspect.zig");
 
 const IO = vsr.io.IO;
-const Time = vsr.time.Time;
-const TimeOS = vsr.time.TimeOS;
+const Time = stdx.Time;
+const TimeOS = stdx.TimeOS;
 const Tracer = vsr.trace.Tracer;
 pub const Storage = vsr.storage.StorageType(IO);
 const AOF = vsr.aof.AOFType(IO);
@@ -104,7 +104,7 @@ pub fn main(process_init: std.process.Init) !void {
     defer io.deinit();
 
     var time_os: TimeOS = .{};
-    const time = time_os.time();
+    const time = time_os.interface();
 
     var trace_file: ?std.Io.File = null;
     defer if (trace_file) |file| file.close(stdx.process_io);
@@ -284,8 +284,11 @@ fn command_start(
     } else null;
     defer if (aof != null) aof.?.close();
 
-    const grid_cache_size = @as(u64, args.cache_grid_blocks) * constants.block_size;
     const grid_cache_size_min = constants.block_size * Grid.Cache.value_count_max_multiple;
+    const grid_cache_size = if (args.development)
+        grid_cache_size_min
+    else
+        @as(u64, args.cache_grid_blocks) * constants.block_size;
 
     // The amount of bytes in `--cache-grid` must be a multiple of
     // `constants.block_size` and `SetAssociativeCache.value_count_max_multiple`,
@@ -310,7 +313,7 @@ fn command_start(
         });
     }
 
-    const nonce = stdx.unique_u128();
+    const random_nonce = stdx.crypto_u128();
 
     var self_exe_path: ?[:0]const u8 = null;
     defer if (self_exe_path) |path| gpa.free(path);
@@ -373,7 +376,7 @@ fn command_start(
             .storage_size_limit = args.storage_size_limit,
             .aof = if (aof != null) &aof.? else null,
             .aof_recovery = args.aof_recovery,
-            .nonce = nonce,
+            .random_nonce = random_nonce,
             .timeout_prepare_ticks = args.timeout_prepare_ticks,
             .timeout_grid_repair_message_ticks = args.timeout_grid_repair_message_ticks,
             .commit_stall_probability = args.commit_stall_probability,
@@ -553,7 +556,7 @@ fn command_reformat(
         time,
         &message_pool,
         .{
-            .id = stdx.unique_u128(),
+            .id = stdx.crypto_u128(),
             .cluster = args.cluster,
             .replica_count = args.replica_count,
             .aof_recovery = false,

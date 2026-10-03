@@ -1,9 +1,9 @@
 const std = @import("std");
+const stdx = @import("stdx");
 const assert = std.debug.assert;
 
 const vsr = @import("../tb_client.zig").vsr;
-const stdx = vsr.stdx;
-const TimeOS = vsr.time.TimeOS;
+const TimeOS = stdx.TimeOS;
 const IO = vsr.io.IO;
 
 const Atomic = std.atomic.Value;

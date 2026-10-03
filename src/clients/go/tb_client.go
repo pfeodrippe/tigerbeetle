@@ -145,31 +145,6 @@ func getEventSize(op C.TB_OPERATION) uintptr {
 	}
 }
 
-func getResultSize(op C.TB_OPERATION) uintptr {
-	switch op {
-	case C.TB_OPERATION_CREATE_ACCOUNTS:
-		return unsafe.Sizeof(CreateAccountResult{})
-	case C.TB_OPERATION_CREATE_TRANSFERS:
-		return unsafe.Sizeof(CreateTransferResult{})
-	case C.TB_OPERATION_LOOKUP_ACCOUNTS:
-		return unsafe.Sizeof(Account{})
-	case C.TB_OPERATION_LOOKUP_TRANSFERS:
-		return unsafe.Sizeof(Transfer{})
-	case C.TB_OPERATION_GET_ACCOUNT_TRANSFERS:
-		return unsafe.Sizeof(Transfer{})
-	case C.TB_OPERATION_GET_ACCOUNT_BALANCES:
-		return unsafe.Sizeof(AccountBalance{})
-	case C.TB_OPERATION_QUERY_ACCOUNTS:
-		return unsafe.Sizeof(Account{})
-	case C.TB_OPERATION_QUERY_TRANSFERS:
-		return unsafe.Sizeof(Transfer{})
-	case C.TB_OPERATION_GET_CHANGE_EVENTS:
-		return unsafe.Sizeof(ChangeEvent{})
-	default:
-		return 0
-	}
-}
-
 func (c *c_client) doRequest(
 	op C.TB_OPERATION,
 	count int,
@@ -197,40 +172,48 @@ func (c *c_client) doRequest(
 	}
 
 	client_status := C.tb_client_submit(c.tb_client, packet)
-	if client_status == C.TB_CLIENT_INVALID {
-		return nil, ErrClientClosed
-	}
+	switch client_status {
+	case C.TB_CLIENT_SUCCESS:
+		// Wait for the request to complete.
+		reply := <-req.ready
+		packet_status := C.TB_PACKET_STATUS(packet.status)
 
-	// Wait for the request to complete.
-	reply := <-req.ready
-	packet_status := C.TB_PACKET_STATUS(packet.status)
-
-	// Handle packet error
-	if packet_status != C.TB_PACKET_OK {
-		switch packet_status {
-		case C.TB_PACKET_TOO_MUCH_DATA:
-			return nil, ErrTooMuchData
-		case C.TB_PACKET_CLIENT_EVICTED:
-			return nil, ErrClientEvicted
-		case C.TB_PACKET_CLIENT_RELEASE_TOO_LOW:
-			return nil, ErrClientReleaseTooLow
-		case C.TB_PACKET_CLIENT_RELEASE_TOO_HIGH:
-			return nil, ErrClientReleaseTooHigh
-		case C.TB_PACKET_CLIENT_SHUTDOWN:
-			return nil, ErrClientClosed
-		case C.TB_PACKET_INVALID_OPERATION:
-			// We control what C.TB_OPERATION is given
-			// but allow an invalid opcode to be passed to emulate a client nop.
-			return nil, ErrInvalidOperation
-		case C.TB_PACKET_INVALID_DATA_SIZE:
-			// We control what type of data is given.
-			panic("unreachable")
-		default:
-			panic("tb_client_submit(): returned packet with invalid status")
+		// Handle packet error
+		if packet_status != C.TB_PACKET_OK {
+			switch packet_status {
+			case C.TB_PACKET_TOO_MUCH_DATA:
+				return nil, ErrTooMuchData
+			case C.TB_PACKET_CLIENT_EVICTED:
+				return nil, ErrClientEvicted
+			case C.TB_PACKET_CLIENT_RELEASE_TOO_LOW:
+				return nil, ErrClientReleaseTooLow
+			case C.TB_PACKET_CLIENT_RELEASE_TOO_HIGH:
+				return nil, ErrClientReleaseTooHigh
+			case C.TB_PACKET_CLIENT_CLOSED:
+				return nil, ErrClientClosed
+			case C.TB_PACKET_INVALID_OPERATION:
+				// We control what C.TB_OPERATION is given
+				// but allow an invalid opcode to be passed to emulate a client nop.
+				return nil, ErrInvalidOperation
+			case C.TB_PACKET_INVALID_DATA_SIZE:
+				// We control what type of data is given.
+				panic("unreachable")
+			default:
+				panic("tb_client_submit(): returned packet with invalid status")
+			}
 		}
-	}
 
-	return reply, nil
+		return reply, nil
+
+	case C.TB_CLIENT_CLOSED:
+		return nil, ErrClientClosed
+
+	case C.TB_CLIENT_NOT_INITIALIZED:
+		panic("tb_client_submit(): client interface not initialized")
+
+	default:
+		panic("tb_client_submit(): invalid tb_client_status")
+	}
 }
 
 //export onGoPacketCompletion
@@ -248,28 +231,8 @@ func onGoPacketCompletion(
 	req := (*request)(unsafe.Pointer(packet.user_data))
 	var reply []uint8 = nil
 	if result_size > 0 && result != nil {
-		op := C.TB_OPERATION(packet.operation)
-
-		// Make sure the completion handler is giving us valid data.
-		resultSize := C.uint32_t(getResultSize(op))
-		if result_size%resultSize != 0 {
-			panic("invalid result_size:  misaligned for the event")
-		}
-
-		//TODO(batiati): Refine the way we handle events with asymmetric results.
-		if op != C.TB_OPERATION_GET_ACCOUNT_TRANSFERS &&
-			op != C.TB_OPERATION_GET_ACCOUNT_BALANCES &&
-			op != C.TB_OPERATION_QUERY_ACCOUNTS &&
-			op != C.TB_OPERATION_QUERY_TRANSFERS &&
-			op != C.TB_OPERATION_GET_CHANGE_EVENTS {
-			// Make sure the amount of results at least matches the amount of requests.
-			count := packet.data_size / C.uint32_t(getEventSize(op))
-			if count*resultSize < result_size {
-				panic("invalid result_size: implied multiple results per event")
-			}
-		}
-
-		// Copy the result data into a new buffer.
+		// Copy the result data into a new buffer. The reply's size, alignment, and
+		// result count are validated by the C client; see `tb_client/context.zig`.
 		reply = make([]uint8, result_size)
 		C.memcpy(unsafe.Pointer(&reply[0]), unsafe.Pointer(result), C.size_t(result_size))
 	}

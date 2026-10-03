@@ -8,7 +8,7 @@ const constants = @import("../constants.zig");
 const common = @import("./common.zig");
 
 const QueueType = @import("../queue.zig").QueueType;
-const TimeOS = @import("../time.zig").TimeOS;
+const TimeOS = stdx.TimeOS;
 const buffer_limit = @import("../io.zig").buffer_limit;
 const DirectIO = @import("../io.zig").DirectIO;
 
@@ -17,6 +17,8 @@ pub const IO = struct {
     pub const ListenOptions = common.ListenOptions;
     pub const Stats = common.Stats;
     pub const NextTickSource = common.NextTickSource;
+
+    pub const dsync_all = true;
 
     iocp: os.windows.HANDLE,
     time: TimeOS = .{},
@@ -728,7 +730,7 @@ pub const IO = struct {
                                 os.windows.BOOL,
                                 .FALSE,
                             ),
-                            0 => @as(os.windows.BOOL, @enumFromInt(1)),
+                            0 => @as(os.windows.BOOL, @fromBackingInt(@intCast(1))),
                             else => unreachable,
                         };
                     };
@@ -845,7 +847,7 @@ pub const IO = struct {
                                 os.windows.BOOL,
                                 .FALSE,
                             ),
-                            0 => @as(os.windows.BOOL, @enumFromInt(1)),
+                            0 => @as(os.windows.BOOL, @fromBackingInt(@intCast(1))),
                             else => unreachable,
                         };
                     };
@@ -992,7 +994,12 @@ pub const IO = struct {
         fd: fd_t,
         buffer: []const u8,
         offset: u64,
+        options: struct { dsync: bool },
     ) void {
+        // Windows dsync is efficient - it's used on every write.
+        assert(dsync_all);
+        _ = options;
+
         self.submit(
             context,
             callback,
@@ -1323,7 +1330,7 @@ pub const IO = struct {
         attributes |= os.windows.FILE_WRITE_THROUGH;
 
         // This is critical as we rely on O_DSYNC for fsync() whenever we write to the file:
-        assert((attributes & os.windows.FILE_WRITE_THROUGH) > 0);
+        assert((attributes & os.windows.FILE_WRITE_THROUGH) > 0 and dsync_all);
 
         // It's a little confusing, but with NtCreateFile, which is what windows_open_file uses
         // under the hood, not specifying anything gets you a file capable of overlapped IO.
@@ -1579,7 +1586,7 @@ fn getsockoptError(socket: posix.socket_t) IO.ConnectError!void {
     if (err_code == 0)
         return;
 
-    const ws_err: stdx.windows.WinsockError = @enumFromInt(@as(i32, @intCast(err_code)));
+    const ws_err: stdx.windows.WinsockError = @fromBackingInt(@intCast(@as(i32, @intCast(err_code))));
     return switch (ws_err) {
         .WSAEACCES => error.PermissionDenied,
         .WSAEADDRINUSE => error.AddressInUse,

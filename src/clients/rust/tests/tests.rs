@@ -79,7 +79,7 @@ impl TestDb {
             assert!(status.success());
         }
 
-        let server = Self::start(&["--addresses=0", "--cache-grid=128MiB", database_name])?;
+        let server = Self::start(&["--addresses=0", "--cache-grid=32MiB", database_name])?;
 
         Ok(server)
     }
@@ -365,7 +365,7 @@ fn smoke() -> Result<()> {
 fn ctor_fail() -> Result<()> {
     let client = tb::Client::new(0, "hey");
 
-    assert!(matches!(client, Err(tb::InitStatus::AddressInvalid)));
+    assert!(matches!(client, Err(tb::InitError::AddressInvalid)));
 
     Ok(())
 }
@@ -438,7 +438,7 @@ fn client_drop_before_future_awaited() -> Result<()> {
 
     match result {
         Ok(_) => {}
-        Err(tb::PacketStatus::ClientShutdown) => {}
+        Err(tb::PacketError::ClientClosed) => {}
         Err(_) => panic!(),
     }
 
@@ -470,7 +470,7 @@ fn client_drop_causes_shutdown_status() -> Result<()> {
     for future in futures {
         match block_on(async { future.await }) {
             Ok(_) => {}
-            Err(tb::PacketStatus::ClientShutdown) => shutdown_count += 1,
+            Err(tb::PacketError::ClientClosed) => shutdown_count += 1,
             Err(_) => panic!(),
         }
     }
@@ -488,7 +488,7 @@ fn too_many_events() -> Result<()> {
         let accounts = lots_of_accounts();
         let result = client.create_accounts(&accounts)?.await;
 
-        assert_eq!(result, Err(tb::PacketStatus::TooMuchData));
+        assert!(matches!(result, Err(tb::PacketError::TooMuchData)));
 
         Ok(())
     })
@@ -736,7 +736,7 @@ fn client_drop_loses_pending_transactions() -> Result<()> {
 fn get_account_transfers_paged(
     client: &tb::Client,
     event: tb::AccountFilter,
-) -> impl Stream<Item = std::result::Result<Vec<tb::Transfer>, tb::PacketStatus>> + '_ {
+) -> impl Stream<Item = std::result::Result<Vec<tb::Transfer>, tb::PacketError>> + '_ {
     assert!(
         event.limit > 1,
         "paged queries should use an explicit limit"
@@ -1416,17 +1416,16 @@ fn client_evicted() -> Result<()> {
 
     // The original client should now be evicted.
     let result = block_on(client_evict.lookup_accounts(&[tb::id()])?);
-    assert_eq!(result, Err(tb::PacketStatus::ClientEvicted));
+    assert_eq!(result, Err(tb::PacketError::ClientEvicted));
 
-    // After eviction, the client handle is invalidated. Subsequent
-    // submissions are rejected.
-    let result = client_evict.lookup_accounts(&[tb::id()]);
-    assert_eq!(result.err(), Some(tb::ClientClosed));
+    // After eviction, the client is still running.
+    // Subsequent submissions fail with the same eviction reason.
+    let result = block_on(client_evict.lookup_accounts(&[tb::id()])?);
+    assert_eq!(result, Err(tb::PacketError::ClientEvicted));
 
-    // After eviction, close completes with ClientClosed because the eviction
-    // callback nulls the context pointer that deinit also checks.
+    // Closing the client.
     let result = block_on(client_evict.close());
-    assert_eq!(result, Err(tb::ClientClosed));
+    assert_eq!(result, Ok(()));
 
     Ok(())
 }

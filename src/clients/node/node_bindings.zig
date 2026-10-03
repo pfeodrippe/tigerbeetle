@@ -136,7 +136,7 @@ fn emit_enum(
 
         try emit_docs(buffer, mapping, 1, field.name);
 
-        const int_value = @intFromEnum(@field(Type, field.name));
+        const int_value = @backingInt(@field(Type, field.name));
         try buffer.writer.print("  {s} = {s},\n", .{
             field.name,
             if (int_value == std.math.maxInt(@TypeOf(int_value)))

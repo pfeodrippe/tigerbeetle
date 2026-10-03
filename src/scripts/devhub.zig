@@ -1,4 +1,4 @@
-//! Runs a set of macro-benchmarks whose result is displayed at <https://devhub.tigerbeetle.com/>.
+//! Runs a set of macro-benchmarks whose result is displayed on the devhub.
 //!
 //! Specifically:
 //!
@@ -486,6 +486,6 @@ fn upload_nyrkio(shell: *Shell, batch: *const MetricBatch) !void {
     );
     _ = try shell.http_post(url, payload, .{
         .content_type = .json,
-        .authorization = try shell.fmt("Bearer {s}", .{token}),
+        .authorization = .{ .raw = try shell.fmt("Bearer {s}", .{token}) },
     });
 }

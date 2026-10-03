@@ -44,6 +44,7 @@ pub fn GridType(comptime Storage: type) type {
 
         // Grid just reuses the Storage's NextTick abstraction for simplicity.
         pub const NextTick = Storage.NextTick;
+        pub const Flush = Storage.Flush;
 
         pub const Write = struct {
             callback: *const fn (*Grid.Write) void,
@@ -685,8 +686,6 @@ pub fn GridType(comptime Storage: type) type {
         ///
         /// This does not remove the blocks from the cache — the blocks can be read until the next
         /// checkpoint.
-        ///
-        /// Asserts that the addresses are not currently being read from or written to.
         pub fn release(grid: *Grid, addresses: []const u64) void {
             assert(grid.callback == .none);
             for (addresses) |address| {
@@ -1502,13 +1501,6 @@ pub fn GridType(comptime Storage: type) type {
 
                 read_remote_head.resolves = read_remote_resolves;
                 grid.read_global_queue.push(read_remote_head);
-
-                if (grid.blocks_missing.repair_blocks_available() > 0) {
-                    grid.blocks_missing.repair_block(
-                        read_remote_head.address,
-                        read_remote_head.checksum,
-                    );
-                }
             }
         }
 

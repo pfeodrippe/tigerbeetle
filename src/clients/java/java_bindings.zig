@@ -141,6 +141,11 @@ const type_mappings = .{
         .visibility = .internal,
         .private_fields = &.{"reserved"},
     } },
+    .{ exports.tb_operation, TypeMapping{
+        .name = "TBOperation",
+        .visibility = .internal,
+        .private_fields = &.{"pulse"},
+    } },
     .{ exports.tb_init_status, TypeMapping{
         .name = "InitializationStatus",
     } },
@@ -244,7 +249,7 @@ fn emit_enum(
             });
         }
 
-        const int_value = @intFromEnum(@field(Type, field.name));
+        const int_value = @backingInt(@field(Type, field.name));
         try buffer.writer.print(
             \\    {[enum_name]s}(({[int_type]s}) {[value]s}){[separator]c}
             \\
@@ -276,12 +281,14 @@ fn emit_enum(
     });
 
     inline for (fields) |field| {
-        const int_value = @intFromEnum(@field(Type, field.name));
+        const int_value = @backingInt(@field(Type, field.name));
         try buffer.writer.print(
-            \\            case {[value]s}: return {[enum_name]s};
+            \\            case {[int_cast]s}{[value]s}: return {[enum_name]s};
             \\
         , .{
             .enum_name = stdx.to_case(field.name, .PascalCase),
+            // Explicitly cast numeric literals to types other than `int`.
+            .int_cast = if (std.mem.eql(u8, int_type, "int")) "" else "(" ++ int_type ++ ")",
             .value = if (int_value == std.math.maxInt(@TypeOf(int_value)))
                 std.fmt.comptimePrint("0x{X}", .{int_value})
             else

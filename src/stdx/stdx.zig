@@ -34,35 +34,6 @@ pub fn set_process_context(init: std.process.Init) void {
     process_environ = init.minimal.environ;
 }
 
-/// Compatibility timer for Zig 0.16's explicit `std.Io` clocks.
-pub const Timer = struct {
-    started_ns: i96,
-
-    pub fn start() !Timer {
-        return .{ .started_ns = now() };
-    }
-
-    pub fn reset(timer: *Timer) void {
-        timer.started_ns = now();
-    }
-
-    pub fn read(timer: *const Timer) u64 {
-        const elapsed = now() - timer.started_ns;
-        assert(elapsed >= 0);
-        return @intCast(elapsed);
-    }
-
-    pub fn lap(timer: *Timer) u64 {
-        const elapsed = timer.read();
-        timer.reset();
-        return elapsed;
-    }
-
-    fn now() i96 {
-        return std.Io.Clock.awake.now(process_io).nanoseconds;
-    }
-};
-
 /// Zig 0.16 split the old `@Type(TypeInfo)` reification builtin into focused
 /// builtins. Keep TigerBeetle's existing metaprogramming readable while the
 /// upstream source is pinned to Zig 0.14.1.
@@ -163,7 +134,9 @@ pub const IOPSType = @import("iops.zig").IOPSType;
 pub const BoundedArrayType = @import("bounded_array.zig").BoundedArrayType;
 pub const PRNG = @import("prng.zig");
 pub const RingBufferType = @import("ring_buffer.zig").RingBufferType;
-pub const Bench = @import("testing/bench.zig");
+pub const Bench = @import("benchmark/bench.zig");
+pub const perf = @import("benchmark/perf.zig");
+pub const timeit = @import("benchmark/timeit.zig").timeit;
 pub const Snap = @import("testing/snaptest.zig").Snap;
 pub const ZipfianGenerator = @import("zipfian.zig").ZipfianGenerator;
 pub const ZipfianShuffled = @import("zipfian.zig").ZipfianShuffled;
@@ -171,11 +144,9 @@ pub const ZipfianShuffled = @import("zipfian.zig").ZipfianShuffled;
 pub const huge_page_allocator = @import("huge_page_allocator.zig").huge_page_allocator;
 
 pub const aegis = @import("vendored/aegis.zig");
-pub const dbg = @import("debug.zig").dbg;
 pub const Flags = @import("flags.zig");
 pub const memory_lock_allocated = @import("mlock.zig").memory_lock_allocated;
 pub const Shell = @import("shell.zig");
-pub const timeit = @import("debug.zig").timeit;
 pub const unshare = @import("unshare.zig");
 pub const windows = @import("windows.zig");
 pub const radix_sort = @import("radix.zig").sort;
@@ -183,6 +154,11 @@ pub const radix_sort = @import("radix.zig").sort;
 pub const Instant = @import("time_units.zig").Instant;
 pub const Duration = @import("time_units.zig").Duration;
 pub const InstantUnix = @import("time_units.zig").InstantUnix;
+
+pub const Time = @import("time.zig").Time;
+pub const TimeOS = @import("time.zig").TimeOS;
+pub const TimeSim = @import("time.zig").TimeSim;
+pub const Timer = @import("time.zig").Timer;
 
 const net = @import("./net.zig");
 pub const IPAddress = net.IPAddress;
@@ -347,20 +323,32 @@ test "disjoint_slices" {
     const b = try std.testing.allocator.alloc(u32, 8);
     defer std.testing.allocator.free(b);
 
-    try std.testing.expectEqual(true, disjoint_slices(u8, u32, a, b));
-    try std.testing.expectEqual(true, disjoint_slices(u32, u8, b, a));
+    try std.testing.expect(disjoint_slices(u8, u32, a, b));
+    try std.testing.expect(disjoint_slices(u32, u8, b, a));
 
-    try std.testing.expectEqual(true, disjoint_slices(u8, u8, a, a[0..0]));
-    try std.testing.expectEqual(true, disjoint_slices(u32, u32, b, b[0..0]));
+    try std.testing.expect(disjoint_slices(u8, u8, a, a[0..0]));
+    try std.testing.expect(disjoint_slices(u32, u32, b, b[0..0]));
 
-    try std.testing.expectEqual(false, disjoint_slices(u8, u8, a, a[0..1]));
-    try std.testing.expectEqual(false, disjoint_slices(u8, u8, a, a[a.len - 1 .. a.len]));
+    try std.testing.expect(!disjoint_slices(u8, u8, a, a[0..1]));
+    try std.testing.expect(!disjoint_slices(u8, u8, a, a[a.len - 1 .. a.len]));
 
-    try std.testing.expectEqual(false, disjoint_slices(u32, u32, b, b[0..1]));
-    try std.testing.expectEqual(false, disjoint_slices(u32, u32, b, b[b.len - 1 .. b.len]));
+    try std.testing.expect(!disjoint_slices(u32, u32, b, b[0..1]));
+    try std.testing.expect(!disjoint_slices(u32, u32, b, b[b.len - 1 .. b.len]));
 
-    try std.testing.expectEqual(false, disjoint_slices(u8, u32, a, std.mem.bytesAsSlice(u32, a)));
-    try std.testing.expectEqual(false, disjoint_slices(u32, u8, b, std.mem.sliceAsBytes(b)));
+    try std.testing.expect(!disjoint_slices(u8, u32, a, std.mem.bytesAsSlice(u32, a)));
+    try std.testing.expect(!disjoint_slices(u32, u8, b, std.mem.sliceAsBytes(b)));
+
+    // Adjacent slices are disjoint in either order, including different element sizes.
+    const prefix = std.mem.bytesAsSlice(u32, a[0 .. 4 * @sizeOf(u32)]);
+    const suffix = a[4 * @sizeOf(u32) ..];
+
+    try std.testing.expect(disjoint_slices(u32, u8, prefix, suffix));
+    try std.testing.expect(disjoint_slices(u8, u32, suffix, prefix));
+
+    const overlapping = a[4 * @sizeOf(u32) - 1 ..];
+
+    try std.testing.expect(!disjoint_slices(u32, u8, prefix, overlapping));
+    try std.testing.expect(!disjoint_slices(u8, u32, overlapping, prefix));
 }
 
 /// Checks that a byteslice is zeroed.
@@ -548,12 +536,12 @@ pub fn log_with_timestamp(
 ) void {
     const level_text = comptime message_level.asText();
     const scope_prefix = if (scope == .default) ": " else "(" ++ @tagName(scope) ++ "): ";
-    const instant_unix = InstantUnix.now();
 
     var buffer: [4096]u8 = undefined;
     var stderr_writer = std.Io.File.stderr().writer(process_io, &buffer);
     const writer = &stderr_writer.interface;
-    writer.print("{f} " ++ level_text ++ scope_prefix, .{instant_unix}) catch return;
+    var log_time: TimeOS = .{};
+    writer.print("{f} " ++ level_text ++ scope_prefix, .{log_time.realtime().date_time()}) catch return;
     writer.print(format, args) catch return;
     writer.writeByte('\n') catch return;
     writer.flush() catch return;
@@ -704,7 +692,7 @@ pub inline fn hash_inline(value: anytype) u64 {
 }
 
 /// Inline version of Google Abseil "LowLevelHash" (inspired by wyhash).
-/// https://github.com/abseil/abseil-cpp/blob/master/absl/hash/internal/low_level_hash.cc
+/// https://github.com/abseil/abseil-cpp/blob/20211102.0/absl/hash/internal/low_level_hash.cc#L42
 inline fn low_level_hash(seed: u64, input: anytype) u64 {
     const salt = [_]u64{
         0xa0761d6478bd642f,
@@ -1183,7 +1171,7 @@ pub fn array_print(
 pub fn unexpected_errno(label: []const u8, err: std.posix.system.E) std.posix.UnexpectedError {
     log.scoped(.stdx).err("unexpected errno: {s}: code={d} name={?s}", .{
         label,
-        @intFromEnum(err),
+        @backingInt(err),
         std.enums.tagName(std.posix.system.E, err),
     });
 
@@ -1193,7 +1181,7 @@ pub fn unexpected_errno(label: []const u8, err: std.posix.system.E) std.posix.Un
     return error.Unexpected;
 }
 
-pub fn unique_u128() u128 {
+pub fn crypto_u128() u128 {
     var value: u128 = undefined;
     process_io.random(std.mem.asBytes(&value));
 
@@ -1370,7 +1358,7 @@ pub const ByteSize = struct {
             return error.InvalidFlagValue;
         };
 
-        _ = std.math.mul(u64, amount, @intFromEnum(unit)) catch {
+        _ = std.math.mul(u64, amount, @backingInt(unit)) catch {
             static_diagnostic.* = "size in bytes exceeds 64-bit unsigned integer:";
             return error.InvalidFlagValue;
         };
@@ -1382,7 +1370,7 @@ pub const ByteSize = struct {
         return std.math.mul(
             u64,
             size.value,
-            @intFromEnum(size.unit),
+            @backingInt(size.unit),
         ) catch unreachable;
     }
 
@@ -1529,7 +1517,23 @@ test "to_case" {
     );
 }
 
+/// Utility for print-if debugging, a-la Rust's dbg! macro.
+///
+/// dbg prints the value with the prefix, while also returning the value, which makes it convenient
+/// to drop it in the middle of a complex expression.
+pub fn dbg(prefix: []const u8, value: anytype) @TypeOf(value) {
+    std.debug.print("{s} = {any}\n", .{
+        prefix,
+        std.json.fmt(value, .{ .whitespace = .indent_2 }),
+    });
+    return value;
+}
+
 comptime {
+    _ = @import("benchmark/bench.zig");
+    _ = @import("benchmark/perf.zig");
+    _ = @import("benchmark/time.zig");
+    _ = @import("benchmark/timeit.zig");
     _ = @import("bit_set.zig");
     _ = @import("bounded_array.zig");
     _ = @import("flags.zig");
@@ -1543,8 +1547,8 @@ comptime {
     _ = @import("shell.zig");
     _ = @import("sort_test.zig");
     _ = @import("stdx.zig");
-    _ = @import("testing/bench.zig");
     _ = @import("testing/snaptest.zig");
+    _ = @import("time.zig");
     _ = @import("time_units.zig");
     _ = @import("unshare.zig");
     _ = @import("vendored/aegis.zig");

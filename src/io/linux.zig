@@ -10,7 +10,7 @@ const log = std.log.scoped(.io);
 
 const constants = @import("../constants.zig");
 const stdx = @import("stdx");
-const TimeOS = @import("../time.zig").TimeOS;
+const TimeOS = stdx.TimeOS;
 const common = @import("./common.zig");
 const QueueType = @import("../queue.zig").QueueType;
 const buffer_limit = @import("../io.zig").buffer_limit;
@@ -22,6 +22,8 @@ pub const IO = struct {
     pub const ListenOptions = common.ListenOptions;
     pub const Stats = common.Stats;
     pub const NextTickSource = common.NextTickSource;
+
+    pub const dsync_all = true;
 
     ring: IO_Uring,
 
@@ -41,16 +43,16 @@ pub const IO = struct {
     pub fn init(entries: u12, flags: u32) !IO {
         var ring = IO_Uring.init(entries, flags) catch |err| {
             switch (err) {
-            error.SystemOutdated => {
-                log.err("io_uring is not available", .{});
-                log.err("likely cause: the syscall is disabled by seccomp", .{});
-            },
-            error.PermissionDenied => {
-                log.err("io_uring is not available", .{});
-                log.err("likely cause: the syscall is disabled by sysctl, " ++
-                    "try 'sysctl -w kernel.io_uring_disabled=0'", .{});
-            },
-            else => {},
+                error.SystemOutdated => {
+                    log.err("io_uring is not available", .{});
+                    log.err("likely cause: the syscall is disabled by seccomp", .{});
+                },
+                error.PermissionDenied => {
+                    log.err("io_uring is not available", .{});
+                    log.err("likely cause: the syscall is disabled by sysctl, " ++
+                        "try 'sysctl -w kernel.io_uring_disabled=0'", .{});
+                },
+                else => {},
             }
             return err;
         };
@@ -452,7 +454,7 @@ pub const IO = struct {
                 .accept => {
                     const result: AcceptError!socket_t = blk: {
                         if (completion.result < 0) {
-                            const err = switch (@as(posix.E, @enumFromInt(-completion.result))) {
+                            const err = switch (@as(posix.E, @fromBackingInt(@intCast(-completion.result)))) {
                                 .INTR => {
                                     completion.io.enqueue(completion);
                                     return;
@@ -482,7 +484,7 @@ pub const IO = struct {
                 .close => {
                     const result: CloseError!void = blk: {
                         if (completion.result < 0) {
-                            const err = switch (@as(posix.E, @enumFromInt(-completion.result))) {
+                            const err = switch (@as(posix.E, @fromBackingInt(@intCast(-completion.result)))) {
                                 // A success, see https://github.com/ziglang/zig/issues/2425.
                                 .INTR => {},
                                 .BADF => error.FileDescriptorInvalid,
@@ -501,7 +503,7 @@ pub const IO = struct {
                 .connect => {
                     const result: ConnectError!void = blk: {
                         if (completion.result < 0) {
-                            const err = switch (@as(posix.E, @enumFromInt(-completion.result))) {
+                            const err = switch (@as(posix.E, @fromBackingInt(@intCast(-completion.result)))) {
                                 .INTR => {
                                     completion.io.enqueue(completion);
                                     return;
@@ -537,7 +539,7 @@ pub const IO = struct {
                 .fsync => {
                     const result: anyerror!void = blk: {
                         if (completion.result < 0) {
-                            const err = switch (@as(posix.E, @enumFromInt(-completion.result))) {
+                            const err = switch (@as(posix.E, @fromBackingInt(@intCast(-completion.result)))) {
                                 .INTR => {
                                     completion.io.enqueue(completion);
                                     return;
@@ -557,7 +559,7 @@ pub const IO = struct {
                 .openat => {
                     const result: OpenatError!fd_t = blk: {
                         if (completion.result < 0) {
-                            const err = switch (@as(posix.E, @enumFromInt(-completion.result))) {
+                            const err = switch (@as(posix.E, @fromBackingInt(@intCast(-completion.result)))) {
                                 .INTR => {
                                     completion.io.enqueue(completion);
                                     return;
@@ -596,7 +598,7 @@ pub const IO = struct {
                 .read => {
                     const result: ReadError!usize = blk: {
                         if (completion.result < 0) {
-                            const err = switch (@as(posix.E, @enumFromInt(-completion.result))) {
+                            const err = switch (@as(posix.E, @fromBackingInt(@intCast(-completion.result)))) {
                                 .INTR, .AGAIN => {
                                     // Some file systems, like XFS, can return EAGAIN even when
                                     // reading from a blocking file without flags like RWF_NOWAIT.
@@ -627,7 +629,7 @@ pub const IO = struct {
                 .recv => {
                     const result: RecvError!usize = blk: {
                         if (completion.result < 0) {
-                            const err = switch (@as(posix.E, @enumFromInt(-completion.result))) {
+                            const err = switch (@as(posix.E, @fromBackingInt(@intCast(-completion.result)))) {
                                 .INTR => {
                                     completion.io.enqueue(completion);
                                     return;
@@ -656,7 +658,7 @@ pub const IO = struct {
                 .send => {
                     const result: SendError!usize = blk: {
                         if (completion.result < 0) {
-                            const err = switch (@as(posix.E, @enumFromInt(-completion.result))) {
+                            const err = switch (@as(posix.E, @fromBackingInt(@intCast(-completion.result)))) {
                                 .INTR => {
                                     completion.io.enqueue(completion);
                                     return;
@@ -694,7 +696,7 @@ pub const IO = struct {
                 .statx => {
                     const result: StatxError!void = blk: {
                         if (completion.result < 0) {
-                            const err = switch (@as(posix.E, @enumFromInt(-completion.result))) {
+                            const err = switch (@as(posix.E, @fromBackingInt(@intCast(-completion.result)))) {
                                 .INTR => {
                                     completion.io.enqueue(completion);
                                     return;
@@ -719,7 +721,7 @@ pub const IO = struct {
                 },
                 .timeout => {
                     assert(completion.result < 0);
-                    const err = switch (@as(posix.E, @enumFromInt(-completion.result))) {
+                    const err = switch (@as(posix.E, @fromBackingInt(@intCast(-completion.result)))) {
                         .INTR => {
                             completion.io.enqueue(completion);
                             return;
@@ -734,7 +736,7 @@ pub const IO = struct {
                 .write => {
                     const result: WriteError!usize = blk: {
                         if (completion.result < 0) {
-                            const err = switch (@as(posix.E, @enumFromInt(-completion.result))) {
+                            const err = switch (@as(posix.E, @fromBackingInt(@intCast(-completion.result)))) {
                                 .INTR => {
                                     completion.io.enqueue(completion);
                                     return;
@@ -1264,7 +1266,12 @@ pub const IO = struct {
         fd: fd_t,
         buffer: []const u8,
         offset: u64,
+        options: struct { dsync: bool },
     ) void {
+        // Linux dsync is efficient - it's used on every write.
+        assert(dsync_all);
+        _ = options;
+
         completion.* = .{
             .io = self,
             .context = context,
@@ -1591,7 +1598,7 @@ pub const IO = struct {
         }
 
         // This is critical as we rely on O_DSYNC for fsync() whenever we write to the file:
-        assert(flags.DSYNC);
+        assert(flags.DSYNC and dsync_all);
 
         const fd = try posix.openat(dir_fd, relative_path, flags, mode);
         // TODO Return a proper error message when the path exists or does not exist (init/start).

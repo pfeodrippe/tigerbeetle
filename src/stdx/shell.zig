@@ -64,39 +64,38 @@ ci: bool,
 zig_exe: ?[]const u8,
 
 pub fn create(gpa: std.mem.Allocator) !*Shell {
-    if (builtin.is_test) {
-        stdx.process_io = std.testing.io;
-    }
+    if (builtin.is_test) stdx.process_io = std.testing.io;
+    const project_root = try discover_project_root();
+    defer project_root.close(stdx.process_io);
+    return create_with_project_root(gpa, project_root);
+}
+
+pub fn create_with_project_root(gpa: std.mem.Allocator, project_root: std.Io.Dir) !*Shell {
+    if (builtin.is_test) stdx.process_io = std.testing.io;
 
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
 
-    var project_root = try discover_project_root();
-    errdefer project_root.close(stdx.process_io);
-
     const cwd = try project_root.openDir(stdx.process_io, ".", .{});
     errdefer cwd.close(stdx.process_io);
+    const root_copy = try project_root.openDir(stdx.process_io, ".", .{});
+    errdefer root_copy.close(stdx.process_io);
 
     var env = try stdx.current_process_environ().createMap(gpa);
     errdefer env.deinit();
 
-    const ci = env.get("CI") != null;
-
     const result = try gpa.create(Shell);
-    errdefer gpa.destroy(result);
-
-    result.* = Shell{
+    result.* = .{
         .gpa = gpa,
         .arena = arena,
-        .project_root = project_root,
+        .project_root = root_copy,
         .cwd = cwd,
         .cwd_stack = undefined,
         .cwd_stack_count = 0,
         .env = env,
-        .ci = ci,
+        .ci = env.get("CI") != null,
         .zig_exe = env.get("ZIG_EXE"),
     };
-
     return result;
 }
 
@@ -504,6 +503,39 @@ pub fn exec_stdout_options(
     return captured_stdout;
 }
 
+/// Run the given command and return its status code if it returned normally via an exit syscall.
+/// Returns an error if the program failed to spawn or was killed by a signal.
+pub fn exec_status(shell: *Shell, comptime cmd: []const u8, cmd_args: anytype) !u32 {
+    var argv = try Argv.expand(shell.gpa, cmd, cmd_args);
+    defer argv.deinit();
+
+    return shell.exec_status_inner(argv.slice()) catch |err| {
+        const argv_formatted = std.mem.join(shell.gpa, " ", argv.slice()) catch @panic("OOM");
+        defer shell.gpa.free(argv_formatted);
+
+        log.err("process failed with {s}: {s}", .{ @errorName(err), argv_formatted });
+        return err;
+    };
+}
+
+fn exec_status_inner(shell: *Shell, argv: []const []const u8) !u32 {
+    var child = try std.process.spawn(stdx.process_io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+        .cwd = .{ .dir = shell.cwd },
+        .environ_map = &shell.env,
+    });
+    const term = try child.wait(stdx.process_io);
+    errdefer log.err("term={}", .{term});
+
+    switch (term) {
+        .exited => |status| return status,
+        else => return error.ExecFailed,
+    }
+}
+
 /// Runs the zig compiler.
 pub fn exec_zig(shell: *Shell, comptime cmd: []const u8, cmd_args: anytype) !void {
     return shell.exec_zig_options(.{}, cmd, cmd_args);
@@ -765,7 +797,7 @@ pub fn git_commit_timestamp(shell: *Shell, sha: []const u8) !stdx.InstantUnix {
     assert(sha.len == 40);
 
     const timestamp_s = try shell.exec_stdout("git show -s --format=%ct {sha}", .{ .sha = sha });
-    return stdx.InstantUnix.from_timestamp_s(
+    return stdx.InstantUnix.from_seconds(
         try stdx.parse_int(u64, timestamp_s, .{}),
     );
 }
@@ -1013,21 +1045,41 @@ fn detect_project_root(dir: std.Io.Dir) !void {
 }
 
 pub const HttpOptions = struct {
-    pub const ContentType = enum {
+    pub const ContentType = union(enum) {
         json,
+        multipart: struct { boundary: []const u8 },
 
-        fn string(content_type: ContentType) []const u8 {
-            return switch (content_type) {
-                .json => "application/json",
+        pub fn format(
+            self: @This(),
+            writer: *std.Io.Writer,
+        ) std.Io.Writer.Error!void {
+            return switch (self) {
+                .json => writer.print("application/json", .{}),
+                .multipart => |multipart| writer.print(
+                    "multipart/form-data; boundary={s}",
+                    .{multipart.boundary},
+                ),
             };
         }
     };
 
+    pub const MultipartField = struct {
+        name: []const u8,
+        value: []const u8,
+        content_type: ?[]const u8 = null,
+        filename: ?[]const u8 = null,
+    };
+
     content_type: ?ContentType = null,
-    authorization: ?[]const u8 = null,
+    authorization: ?union(enum) {
+        basic: struct { username: []const u8, password: []const u8 },
+        raw: []const u8,
+    } = null,
+    extra_headers: ?[]const std.http.Header = null,
 
     response_body_size_max: u32 = 512 * stdx.KiB,
     expected_response_code: std.http.Status = .ok,
+    log_errors: bool = true,
 };
 
 pub fn http_get(shell: *Shell, url: []const u8, options: HttpOptions) ![]const u8 {
@@ -1043,12 +1095,69 @@ pub fn http_post(
     return shell.http_request(.{ .post = body }, url, options);
 }
 
+pub fn http_put(
+    shell: *Shell,
+    url: []const u8,
+    body: []const u8,
+    options: HttpOptions,
+) ![]const u8 {
+    return shell.http_request(.{ .put = body }, url, options);
+}
+
+pub fn http_post_multipart(
+    shell: *Shell,
+    url: []const u8,
+    fields: []const HttpOptions.MultipartField,
+    options: HttpOptions,
+) ![]const u8 {
+    assert(options.content_type.? == .multipart);
+    const boundary = options.content_type.?.multipart.boundary;
+
+    const capacity = b: {
+        var capacity: u64 = 0;
+        for (fields) |field| {
+            capacity += field.name.len;
+            capacity += field.value.len;
+            if (field.filename) |filename| capacity += filename.len;
+
+            capacity += 256;
+        }
+        break :b capacity;
+    };
+
+    var body_multipart = try std.ArrayListUnmanaged(u8).initCapacity(
+        shell.arena.allocator(),
+        capacity,
+    );
+    const body_writer = body_multipart.fixedWriter();
+
+    for (fields) |field| {
+        assert(std.mem.indexOf(u8, field.value, boundary) == null);
+
+        try body_writer.print("--{s}\r\n", .{boundary});
+        try body_writer.print("Content-Disposition: form-data; name=\"{s}\"", .{field.name});
+        if (field.filename) |filename| try body_writer.print("; filename=\"{s}\"", .{filename});
+        try body_writer.writeAll("\r\n");
+        try body_writer.print("Content-Type: {s}\r\n\r\n", .{
+            field.content_type orelse "text/plain",
+        });
+        body_multipart.appendSliceAssumeCapacity(field.value);
+        body_multipart.appendSliceAssumeCapacity("\r\n");
+    }
+    body_multipart.appendSliceAssumeCapacity("--");
+    body_multipart.appendSliceAssumeCapacity(boundary);
+    body_multipart.appendSliceAssumeCapacity("--");
+    body_multipart.appendSliceAssumeCapacity("\r\n");
+
+    return shell.http_request(.{ .post = body_multipart.items }, url, options);
+}
+
+const HttpMethod = union(enum) { get, post: []const u8, put: []const u8 };
+
 /// Issues an HTTP request to the given `url` and returns the response.
 ///
 /// The returned body is owned by the shell arena and doesn't need to be freed.
-/// If the response is not 200 OK, the response body is logged and an error is returned.
-const HttpMethod = union(enum) { get, post: []const u8 };
-
+/// Unexpected response codes are reported according to `options.log_errors`.
 fn http_request(
     shell: *Shell,
     method: HttpMethod,
@@ -1056,7 +1165,9 @@ fn http_request(
     options: HttpOptions,
 ) anyerror![]const u8 {
     return http_request_impl(shell, method, url, options) catch |err| {
-        log.err("failed to HTTP {s} to \"{s}\": {s}", .{ @tagName(method), url, @errorName(err) });
+        if (options.log_errors) {
+            log.err("failed to HTTP {s} to \"{s}\": {s}", .{ @tagName(method), url, @errorName(err) });
+        }
         return err;
     };
 }
@@ -1067,16 +1178,25 @@ fn http_request_impl(
     url: []const u8,
     options: HttpOptions,
 ) anyerror![]const u8 {
-
     var client = std.http.Client{ .allocator = shell.gpa, .io = stdx.process_io };
     defer client.deinit();
 
     var headers: std.http.Client.Request.Headers = .{};
     if (options.content_type) |content_type| {
-        headers.content_type = .{ .override = content_type.string() };
+        headers.content_type = .{ .override = try shell.fmt("{f}", .{content_type}) };
     }
     if (options.authorization) |authorization| {
-        headers.authorization = .{ .override = authorization };
+        headers.authorization = .{ .override = switch (authorization) {
+            .raw => |raw| raw,
+            .basic => |basic| value: {
+                var buffer: [1024]u8 = undefined;
+                const contents = std.base64.url_safe.Encoder.encode(
+                    &buffer,
+                    try shell.fmt("{s}:{s}", .{ basic.username, basic.password }),
+                );
+                break :value try shell.fmt("Basic {s}", .{contents});
+            },
+        } };
     }
 
     const response_body_buffer = try shell.arena.allocator().alloc(
@@ -1087,30 +1207,26 @@ fn http_request_impl(
     const response = client.fetch(.{
         .location = .{ .url = url },
         .method = switch (method) {
-            .post => .POST,
             .get => .GET,
+            .post => .POST,
+            .put => .PUT,
         },
         .payload = switch (method) {
-            .post => |body| body,
             .get => null,
+            .post, .put => |body| body,
         },
         .headers = headers,
+        .extra_headers = options.extra_headers orelse &.{},
         .response_writer = &response_writer,
-    }) catch |err| {
-        switch (err) {
-            error.WriteFailed => return error.ResponseTooLarge,
-            else => {},
-        }
-        log.err("HTTP transport failed: {s}", .{@errorName(err)});
-        return error.HttpRequestFailed;
+    }) catch |err| switch (err) {
+        error.WriteFailed => return error.ResponseTooLarge,
+        else => return err,
     };
     const response_body = response_writer.buffered();
-
     if (response.status != options.expected_response_code) {
-        log.err("response: {s}", .{response_body});
+        if (options.log_errors) log.err("response: {s}", .{response_body});
         return error.ResponseWrongStatus;
     }
-
     return response_body;
 }
 

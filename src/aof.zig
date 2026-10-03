@@ -336,7 +336,7 @@ pub fn AOFType(comptime IO: type) type {
             pub fn init(
                 io: *IO,
                 allocator: std.mem.Allocator,
-                time: vsr.time.Time,
+                time: stdx.Time,
                 cluster: u128,
                 addresses: []stdx.SocketAddress,
             ) !ReplayClient {
@@ -938,8 +938,8 @@ pub fn main() !void {
     var gpa_instance: std.heap.DebugAllocator(.{}) = .init;
     const gpa = gpa_instance.allocator();
 
-    var time_os: vsr.time.TimeOS = .{};
-    const time = time_os.time();
+    var time_os: stdx.TimeOS = .{};
+    const time = time_os.interface();
 
     var flags = stdx.Flags.init(gpa);
     defer flags.deinit(gpa);

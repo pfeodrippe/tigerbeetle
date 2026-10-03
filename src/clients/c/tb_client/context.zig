@@ -12,10 +12,9 @@ const maybe = stdx.maybe;
 const Header = vsr.Header;
 
 const MultiBatchDecoder = vsr.multi_batch.MultiBatchDecoder;
-const MultiBatchEncoder = vsr.multi_batch.MultiBatchEncoder;
 
 const IO = vsr.io.IO;
-const TimeOS = vsr.time.TimeOS;
+const TimeOS = stdx.TimeOS;
 const message_pool = vsr.message_pool;
 
 const MessagePool = message_pool.MessagePool;
@@ -34,12 +33,47 @@ pub const InitParameters = extern struct {
     addresses_len: u64,
 };
 
+pub const InitError = std.mem.Allocator.Error || error{
+    /// Invalid IP addresses, or malformed string.
+    AddressInvalid,
+    /// Too many IP addresses.
+    AddressLimitExceeded,
+    /// Insuficient systems resources to initialize the client.
+    SystemResources,
+    /// Network failure.
+    NetworkSubsystemFailed,
+    Unexpected,
+};
+
+pub const ClientError = error{
+    /// The client was closed.
+    Closed,
+    /// Client interface not initialized.
+    /// This is a bug in the application code.
+    NotInitialized,
+};
+
+/// Completion errors encompass any kind of failure that
+/// can prevent a submitted batch from completing.
+/// For example, validation failures (`Packet.Error`), client shutdown,
+/// and cluster eviction.
+pub const CompletionError = Packet.Error || error{
+    /// The client was closed.
+    Closed,
+    /// The client session was evicted by the cluster,
+    /// usually due to too many clients being connected.
+    Evicted,
+    /// Client release is too low.
+    ReleaseTooLow,
+    /// Client release is too high.
+    ReleaseTooHigh,
+};
+
 /// Thread-safe client interface allocated by the user.
 /// Contains the `VTable` with function pointers to the StateMachine-specific implementation
 /// and the synchronization status.
 /// Safe to call from multiple threads, even after `deinit` is called.
 pub const ClientInterface = extern struct {
-    pub const Error = error{ClientInvalid};
     pub const VTable = struct {
         submit_fn: *const fn (*anyopaque, *Packet.Extern) void,
         completion_context_fn: *const fn (*anyopaque) usize,
@@ -77,55 +111,56 @@ pub const ClientInterface = extern struct {
         };
     }
 
-    pub fn submit(interface: *ClientInterface, packet: *Packet.Extern) Error!void {
-        if (interface.magic_number != beetle) return Error.ClientInvalid;
+    pub fn submit(interface: *ClientInterface, packet: *Packet.Extern) ClientError!void {
+        if (interface.magic_number != beetle) return ClientError.NotInitialized;
         assert(interface.reserved == 0);
 
         interface.locker.lock();
         defer interface.locker.unlock();
 
-        const context = interface.context.ptr orelse return Error.ClientInvalid;
+        const context: *anyopaque = interface.context.ptr orelse return ClientError.Closed;
         interface.vtable.ptr.submit_fn(context, packet);
     }
 
-    pub fn completion_context(interface: *ClientInterface) Error!usize {
-        if (interface.magic_number != beetle) return Error.ClientInvalid;
+    pub fn completion_context(interface: *ClientInterface) ClientError!usize {
+        if (interface.magic_number != beetle) return ClientError.NotInitialized;
         assert(interface.reserved == 0);
 
         interface.locker.lock();
         defer interface.locker.unlock();
 
-        const context = interface.context.ptr orelse return Error.ClientInvalid;
+        const context: *anyopaque = interface.context.ptr orelse return ClientError.Closed;
         return interface.vtable.ptr.completion_context_fn(context);
     }
 
-    pub fn deinit(interface: *ClientInterface) Error!void {
-        if (interface.magic_number != beetle) return Error.ClientInvalid;
+    pub fn deinit(interface: *ClientInterface) ClientError!void {
+        if (interface.magic_number != beetle) return ClientError.NotInitialized;
         assert(interface.reserved == 0);
 
         const context: *anyopaque = context: {
             interface.locker.lock();
             defer interface.locker.unlock();
 
-            const context = interface.context.ptr orelse return Error.ClientInvalid;
+            const context: *anyopaque = interface.context.ptr orelse return ClientError.Closed;
             interface.context = .{ .ptr = null };
 
             break :context context;
         };
+
         interface.vtable.ptr.deinit_fn(context);
     }
 
     pub fn init_parameters(
         interface: *ClientInterface,
         out_parameters: *InitParameters,
-    ) Error!void {
-        if (interface.magic_number != beetle) return Error.ClientInvalid;
+    ) ClientError!void {
+        if (interface.magic_number != beetle) return ClientError.NotInitialized;
         assert(interface.reserved == 0);
 
         interface.locker.lock();
         defer interface.locker.unlock();
 
-        const context = interface.context.ptr orelse return Error.ClientInvalid;
+        const context: *anyopaque = interface.context.ptr orelse return ClientError.Closed;
         return interface.vtable.ptr.init_parameters_fn(context, out_parameters);
     }
 
@@ -146,56 +181,13 @@ pub const CompletionCallback = *const fn (
     result_size: u32,
 ) callconv(.c) void;
 
-pub const InitError = std.mem.Allocator.Error || error{
-    Unexpected,
-    AddressInvalid,
-    AddressLimitExceeded,
-    SystemResources,
-    NetworkSubsystemFailed,
-};
-
-/// Implements a `ClientInterface` with specialized `vsr.Client` and `StateMachine` types.
+/// Implements a `ClientInterface` with specialized `vsr.Client` and
+/// `StateMachine.Operation` types.
 pub fn ContextType(
     comptime Client: type,
+    comptime operations_allowed: []const Client.Operation,
 ) type {
     return struct {
-        const Context = @This();
-        const GPA = std.heap.DebugAllocator(.{
-            .thread_safe = true,
-        });
-
-        const Operation = Client.Operation;
-        const allowed_operations = [_]Operation{
-            .create_accounts,
-            .create_transfers,
-            .lookup_accounts,
-            .lookup_transfers,
-            .get_account_transfers,
-            .get_account_balances,
-            .query_accounts,
-            .query_transfers,
-            .get_change_events,
-        };
-
-        const UserData = extern struct {
-            self: *Context,
-            packet: *Packet,
-
-            comptime {
-                assert(@sizeOf(UserData) == @sizeOf(u128));
-            }
-        };
-
-        const PacketError = error{
-            TooMuchData,
-            ClientShutdown,
-            ClientEvicted,
-            ClientReleaseTooLow,
-            ClientReleaseTooHigh,
-            InvalidOperation,
-            InvalidDataSize,
-        };
-
         /// Thread-local variable to track whether the current thread is
         /// the IO thread or a user thread.
         /// Used to assert that certain functions are only called from the
@@ -215,7 +207,8 @@ pub fn ContextType(
         io: IO,
         message_pool: MessagePool,
         client: Client,
-        batch_size_limit: ?u32 = null,
+        batch_size_limit: ?u32,
+        eviction_reason: ?vsr.Header.Eviction.Reason,
 
         completion_callback: CompletionCallback,
         completion_context: usize,
@@ -225,11 +218,26 @@ pub fn ContextType(
         pending: Packet.Queue,
 
         signal: Signal,
-        eviction_reason: ?vsr.Header.Eviction.Reason = null,
         thread: std.Thread,
 
         request_timer: stdx.Instant,
-        request_latency: ?stdx.Duration = null,
+        request_latency: ?stdx.Duration,
+
+        const Context = @This();
+        const GPA = std.heap.GeneralPurposeAllocator(.{
+            .thread_safe = true,
+        });
+
+        const Operation = Client.Operation;
+
+        const UserData = extern struct {
+            self: *Context,
+            packet: *Packet,
+
+            comptime {
+                assert(@sizeOf(UserData) == @sizeOf(u128));
+            }
+        };
 
         pub fn init(
             root_allocator: std.mem.Allocator,
@@ -267,7 +275,7 @@ pub fn ContextType(
             context.* = .{
                 .gpa = context.gpa,
 
-                .client_id = stdx.unique_u128(),
+                .client_id = stdx.crypto_u128(),
                 .cluster_id = cluster_id,
 
                 .completion_callback = completion_callback,
@@ -287,14 +295,17 @@ pub fn ContextType(
                 .io = undefined,
                 .message_pool = undefined,
                 .client = undefined,
+                .batch_size_limit = null,
+                .eviction_reason = null,
                 .signal = undefined,
                 .thread = undefined,
                 .request_timer = undefined,
+                .request_latency = null,
             };
             context.addresses_owned = try allocator.dupe(u8, addresses);
             errdefer allocator.free(context.addresses_owned);
 
-            const time = context.time_os.time();
+            const time = context.time_os.interface();
 
             log.debug("{}: init: parsing vsr addresses: {s}", .{ context.client_id, addresses });
             context.addresses = .{};
@@ -405,13 +416,13 @@ pub fn ContextType(
         }
 
         fn deinit(self: *Context) void {
-            assert(thread_caller == .io);
+            assert(thread_caller == .user);
             assert(self.signal.status() == .shutdown_completed);
             assert(self.submitted.pop() == null);
             assert(self.pending.pop() == null);
+            assert(self.client.shutdown_complete());
             maybe(self.eviction_reason != null);
 
-            assert(self.client.shutdown_complete());
             self.signal.deinit();
             self.client.deinit(self.gpa.allocator());
             self.message_pool.deinit(self.gpa.allocator());
@@ -426,9 +437,13 @@ pub fn ContextType(
         }
 
         fn tick(self: *Context) void {
-            if (self.eviction_reason == null) {
-                self.client.tick();
+            if (self.client.evicted) {
+                assert(self.eviction_reason != null);
+                return;
             }
+
+            assert(self.eviction_reason == null);
+            self.client.tick();
         }
 
         fn io_thread(self: *Context) void {
@@ -474,16 +489,19 @@ pub fn ContextType(
                     @panic("IO.run() failed");
                 };
             }
-
-            self.deinit();
         }
 
         /// Cancel the current inflight request (and the entire batched linked list of packets),
         /// as it won't be replied anymore.
         fn cancel_request_inflight(self: *Context) void {
             assert(thread_caller == .io);
-            if (self.client.request_inflight) |*inflight| {
-                if (inflight.message.header.operation != .register) {
+            if (self.client.request_inflight) |inflight| {
+                const operation = inflight.message.header.operation;
+
+                self.client.request_inflight = null;
+                self.client.release_message(inflight.message.base());
+
+                if (operation != .register) {
                     const packet: *Packet = @as(UserData, @bitCast(inflight.user_data)).packet;
                     packet.assert_phase(.sent);
                     self.packet_cancel(packet);
@@ -499,14 +517,44 @@ pub fn ContextType(
             assert(packet_list.phase != .complete);
             packet_list.assert_phase(packet_list.phase);
 
-            const result = if (self.eviction_reason) |reason| switch (reason) {
-                .reserved => unreachable,
-                .client_release_too_low => error.ClientReleaseTooLow,
-                .client_release_too_high => error.ClientReleaseTooHigh,
-                else => error.ClientEvicted,
-            } else result: {
-                assert(self.signal.status() != .running);
-                break :result error.ClientShutdown;
+            const result: CompletionError = result: {
+                // When the client is explicitly closed by the user, submitted batches
+                // are canceled with `Closed` regardless of any previous eviction reason.
+                if (self.signal.status() != .running) {
+                    maybe(self.eviction_reason != null);
+
+                    break :result CompletionError.Closed;
+                }
+                assert(self.eviction_reason != null);
+
+                // While eviction reasons are very detailed, the surfaced error codes
+                // are limited to those that are the client's responsibility.
+                break :result switch (self.eviction_reason.?) {
+                    .reserved => unreachable,
+
+                    // Client evicted due to an invalid session.
+                    // The application has no option other than to try reconnecting.
+                    .no_session,
+                    .session_too_low,
+                    .session_release_mismatch,
+                    => CompletionError.Evicted,
+
+                    // Invalid client release.
+                    // The application should resolve the version mismatch.
+                    .client_release_too_low => CompletionError.ReleaseTooLow,
+                    .client_release_too_high => CompletionError.ReleaseTooHigh,
+
+                    // Invalid operation or malformed request.
+                    // Language clients and applications using the `tb_client`
+                    // library directly should never encounter these eviction
+                    // reasons (it would indicate a bug in `vsr.Client`).
+                    // However, network messages could be corrupted, so these
+                    // reasons are grouped as `Evicted`.
+                    .invalid_request_operation,
+                    .invalid_request_body,
+                    .invalid_request_body_size,
+                    => CompletionError.Evicted,
+                };
             };
 
             var it: ?*Packet = packet_list;
@@ -522,63 +570,24 @@ pub fn ContextType(
             assert(self.batch_size_limit != null);
             packet.assert_phase(.submitted);
 
-            const operation: Operation = operation_from_int(packet.operation) orelse {
-                return self.notify_completion(packet, error.InvalidOperation);
-            };
-
-            // Make sure the packet.data wouldn't overflow a request,
-            // and that the corresponding results won't overflow a reply.
-            const batch: struct {
-                event_size: u32,
-                result_size: u32,
-                event_count: u32,
-                result_count_expected: u32,
-            } = batch: {
-                const event_size: u32 = operation.event_size();
-                assert(event_size > 0);
-
-                const result_size: u32 = operation.result_size();
-                assert(result_size > 0);
-
-                const slice: []const u8 = packet.slice();
-                assert(slice.len == packet.data_size);
-                maybe(slice.len == 0);
-                if (slice.len % event_size != 0) {
-                    return self.notify_completion(packet, error.InvalidDataSize);
-                }
-
-                const event_count: u32 = @intCast(@divExact(slice.len, event_size));
-                const event_max: u32 = operation.event_max(self.batch_size_limit.?);
-                if (event_count > event_max) {
-                    return self.notify_completion(packet, error.TooMuchData);
-                }
-                const result_max: u32 = operation.result_max(self.batch_size_limit.?);
-                const result_count_expected: u32 = operation.result_count_expected(slice);
-                if (result_count_expected > result_max) {
-                    return self.notify_completion(packet, error.TooMuchData);
-                }
-
-                break :batch .{
-                    .event_size = event_size,
-                    .result_size = result_size,
-                    .event_count = @intCast(@divExact(slice.len, event_size)),
-                    .result_count_expected = result_count_expected,
-                };
-            };
-            assert(packet.data_size == batch.event_count * batch.event_size);
-            maybe(batch.event_count == 0);
-            maybe(batch.result_count_expected == 0);
-
-            // Avoid making a packet inflight by cancelling it if the client was shutdown.
-            if (self.signal.status() != .running) {
-                maybe(self.eviction_reason != null);
-                self.packet_cancel(packet);
-                return;
-            }
-
             // Nothing inflight means the packet should be submitted right now.
             if (self.client.request_inflight == null) {
-                assert(self.pending.count() == 0);
+                assert(self.pending.empty());
+
+                // The client might have been evicted, but we don't return early,
+                // so that batch validation errors are surfaced first.
+                maybe(self.eviction_reason != null);
+
+                const batch = packet.batch_validate(
+                    Operation,
+                    operations_allowed,
+                    .{
+                        .batch_size_limit = self.batch_size_limit.?,
+                    },
+                ) catch |err| {
+                    return self.notify_completion(packet, err);
+                };
+
                 packet.phase = .pending;
                 packet.multi_batch_time_monotonic = self.client.time.monotonic().ns;
                 packet.multi_batch_count = 1;
@@ -587,62 +596,22 @@ pub fn ContextType(
                 self.packet_send(packet);
                 return;
             }
+            assert(self.client.request_inflight != null);
+            // Upon eviction, `request_inflight` is cleaned up.
+            assert(self.eviction_reason == null);
+            maybe(self.pending.empty());
 
-            var it = self.pending.iterate();
-            while (it.next()) |root| {
-                root.assert_phase(.pending);
-
-                if (root.operation != packet.operation) continue;
-
-                // Check if the message has enough space for the submitted number of events:
-                const request_size: u32 = size: {
-                    const trailer_size = vsr.multi_batch.trailer_total_size(.{
-                        .element_size = batch.event_size,
-                        .batch_count = root.multi_batch_count + 1,
-                    });
-                    const event_count: u32 = batch.event_count +
-                        root.multi_batch_event_count;
-                    break :size (event_count * batch.event_size) + trailer_size;
-                };
-                if (request_size > self.batch_size_limit.?) continue;
-
-                // Check if the reply has enough space for the maximum expected number of results:
-                const reply_size_expected: u32 = size: {
-                    const trailer_size = vsr.multi_batch.trailer_total_size(.{
-                        .element_size = batch.result_size,
-                        .batch_count = root.multi_batch_count + 1,
-                    });
-                    const event_count: u32 = batch.result_count_expected +
-                        root.multi_batch_result_count_expected;
-                    break :size (event_count * batch.result_size) + trailer_size;
-                };
-                if (reply_size_expected > constants.message_body_size_max) continue;
-
-                packet.phase = .batched;
-                if (root.multi_batch_next == null) {
-                    assert(root.multi_batch_tail == null);
-                    assert(root.multi_batch_count == 1);
-                    root.multi_batch_next = packet;
-                    root.multi_batch_tail = packet;
-                } else {
-                    assert(root.multi_batch_tail != null);
-                    assert(root.multi_batch_count > 1);
-                    root.multi_batch_tail.?.multi_batch_next = packet;
-                    root.multi_batch_tail = packet;
-                }
-                root.multi_batch_count += 1;
-                root.multi_batch_event_count += @intCast(batch.event_count);
-                root.multi_batch_result_count_expected += @intCast(batch.result_count_expected);
-                return;
-            }
-
-            // Couldn't batch with existing packet so push to pending directly.
-            packet.phase = .pending;
-            packet.multi_batch_time_monotonic = self.client.time.monotonic().ns;
-            packet.multi_batch_count = 1;
-            packet.multi_batch_event_count = @intCast(batch.event_count);
-            packet.multi_batch_result_count_expected = @intCast(batch.result_count_expected);
-            self.pending.push(packet);
+            packet.batch_enqueue(
+                Operation,
+                operations_allowed,
+                .{
+                    .target = &self.pending,
+                    .batch_size_limit = self.batch_size_limit.?,
+                    .time = self.client.time,
+                },
+            ) catch |err| {
+                return self.notify_completion(packet, err);
+            };
         }
 
         /// Sends the packet (the entire batched linked list of packets) through the vsr client.
@@ -653,8 +622,9 @@ pub fn ContextType(
             assert(self.client.request_inflight == null);
             packet_list.assert_phase(.pending);
 
-            // On shutdown, cancel this packet as well as any others batched onto it.
-            if (self.signal.status() != .running) {
+            // Avoid making a packet inflight by cancelling it
+            // if the client was closed or evicted.
+            if (self.signal.status() != .running or self.eviction_reason != null) {
                 return self.packet_cancel(packet_list);
             }
             assert(self.eviction_reason == null);
@@ -665,64 +635,14 @@ pub fn ContextType(
                 packet_list.assert_phase(.sent);
             }
 
-            const operation: Operation = operation_from_int(packet_list.operation).?;
-            const event_size: u32 = operation.event_size();
-            const request_size: u32 = request_size: {
-                if (!operation.is_multi_batch()) {
-                    assert(packet_list.multi_batch_next == null);
-                    const source: []const u8 = packet_list.slice();
-                    stdx.copy_disjoint(
-                        .inexact,
-                        u8,
-                        message.buffer[@sizeOf(Header)..],
-                        source,
-                    );
-                    break :request_size @intCast(source.len);
-                }
-                assert(operation.is_multi_batch());
-
-                var message_encoder = MultiBatchEncoder.init(message.buffer[@sizeOf(Header)..], .{
-                    .element_size = event_size,
-                });
-
-                var it: ?*Packet = packet_list;
-                var multi_batch_events_count: u16 = 0;
-                while (it) |batched| {
-                    if (batched != packet_list) batched.assert_phase(.batched);
-                    it = batched.multi_batch_next;
-
-                    const source: []const u8 = batched.slice();
-                    const target = message_encoder.writable().?;
-                    assert(target.len >= source.len);
-                    stdx.copy_disjoint(
-                        .exact,
-                        u8,
-                        target[0..source.len],
-                        source,
-                    );
-                    message_encoder.add(@intCast(source.len));
-
-                    const events_count: u16 = @intCast(@divExact(source.len, event_size));
-                    multi_batch_events_count += events_count;
-                }
-                assert(multi_batch_events_count == packet_list.multi_batch_event_count);
-                assert(message_encoder.batch_count == packet_list.multi_batch_count);
-
-                // Check if the reply has enough space for the maximum expected number of results.
-                const result_size: u32 = operation.result_size();
-                const trailer_size = vsr.multi_batch.trailer_total_size(.{
-                    .element_size = result_size,
-                    .batch_count = packet_list.multi_batch_count,
-                });
-                const reply_size_max: u32 = (result_size *
-                    packet_list.multi_batch_result_count_expected) + trailer_size;
-                assert(reply_size_max % result_size == 0);
-                assert(reply_size_max <= constants.message_body_size_max);
-
-                break :request_size message_encoder.finish();
-            };
-            assert(request_size % event_size == 0);
-            assert(request_size <= self.batch_size_limit.?);
+            const batch = packet_list.batch_write(
+                Operation,
+                operations_allowed,
+                .{
+                    .output_buffer = message.buffer[@sizeOf(Header)..],
+                    .batch_size_limit = self.batch_size_limit.?,
+                },
+            );
 
             // Sending the request.
             const previous_request_latency =
@@ -733,8 +653,8 @@ pub fn ContextType(
                 .request = 0, // Set by client.raw_request.
                 .cluster = self.client.cluster,
                 .command = .request,
-                .operation = operation.to_vsr(),
-                .size = @sizeOf(vsr.Header) + request_size,
+                .operation = batch.operation.to_vsr(),
+                .size = @sizeOf(vsr.Header) + batch.request_size,
                 .previous_request_latency = @intCast(@min(
                     previous_request_latency.to_us(),
                     std.math.maxInt(u32),
@@ -827,28 +747,22 @@ pub fn ContextType(
         fn client_eviction_callback(client: *Client, eviction: *const Message.Eviction) void {
             assert(thread_caller == .io);
 
+            assert(eviction.header.command == .eviction);
+            assert(eviction.header.reason != .reserved);
+
             const self: *Context = @fieldParentPtr("client", client);
             assert(self.eviction_reason == null);
+            assert(self.client.evicted);
+            self.eviction_reason = eviction.header.reason;
 
             log.debug("{}: client_eviction_callback: reason={?s} reason_int={}", .{
                 self.client_id,
                 std.enums.tagName(vsr.Header.Eviction.Reason, eviction.header.reason),
-                @intFromEnum(eviction.header.reason),
+                @backingInt(eviction.header.reason),
             });
 
-            // The client was evicted, clearing the interface context so no more
-            // requests can be submitted.
-            // In-flight requests fail with the eviction reason; subsequent ones fail
-            // with "shutdown".
-            self.interface.locker.lock();
-            defer self.interface.locker.unlock();
-
-            self.interface.context = .{ .ptr = null };
-
-            // Stops the IO thread, which then deinitializes the client before
-            // it exits (see `io_thread`).
-            self.eviction_reason = eviction.header.reason;
-            self.signal.stop();
+            self.cancel_request_inflight();
+            signal_notify_callback(&self.signal);
         }
 
         fn client_result_callback(
@@ -864,7 +778,7 @@ pub fn ContextType(
             const packet_list: *Packet = user_data.packet;
             const operation = operation_vsr.cast(Client.Operation);
             assert(self.eviction_reason == null);
-            assert(packet_list.operation == @intFromEnum(operation));
+            assert(packet_list.operation == @backingInt(operation));
             assert(timestamp > 0);
             packet_list.assert_phase(.sent);
 
@@ -879,56 +793,61 @@ pub fn ContextType(
                 if (self.client.request_inflight != null) break;
             }
 
-            // The callback should never be called with an operation not in `allowed_operations`.
-            // This also guards from sending an unsupported operation.
-            assert(operation_from_int(@intFromEnum(operation)) != null);
+            const batch = packet_list.batch_validate(
+                Operation,
+                operations_allowed,
+                .{
+                    .batch_size_limit = self.batch_size_limit.?,
+                },
+            ) catch unreachable; // The callback should never be called with an invalid packet.
+            assert(batch.result_size > 0);
 
-            if (!operation.is_multi_batch()) {
+            if (!batch.operation.is_multi_batch()) {
                 assert(packet_list.multi_batch_next == null);
+                assert(reply.len % batch.result_size == 0);
                 return self.notify_completion(packet_list, .{
                     .timestamp = timestamp,
                     .reply = reply,
                 });
             }
-            assert(operation.is_multi_batch());
+            assert(batch.operation.is_multi_batch());
 
-            const result_size: u32 = operation.result_size();
-            assert(result_size > 0);
             var reply_decoder = MultiBatchDecoder.init(reply, .{
-                .element_size = result_size,
+                .element_size = batch.result_size,
             }) catch unreachable;
             assert(packet_list.multi_batch_count == reply_decoder.batch_count());
 
             // Copying it because `packet` is no longer valid after the callback.
-            const multi_batch_results_expected: u16 =
+            const multi_batch_result_count_expected: u32 =
                 packet_list.multi_batch_result_count_expected;
+
             var multi_batch_results_actual: u16 = 0;
             var it: ?*Packet = packet_list;
-            while (it) |batched| {
-                if (batched != packet_list) batched.assert_phase(.batched);
-                assert(batched.operation == @intFromEnum(operation));
+            while (it) |packet_next| {
+                if (packet_next != packet_list) packet_next.assert_phase(.batched);
+                assert(packet_next.operation == @backingInt(batch.operation));
 
-                // NB: The reference to `batched` isn't valid after `notify_completion`.
-                it = batched.multi_batch_next;
+                // NB: The reference to `packet` isn't valid after `notify_completion`.
+                it = packet_next.multi_batch_next;
 
                 const batched_reply: []const u8 = reply_decoder.pop().?;
                 multi_batch_results_actual += @intCast(@divExact(
                     batched_reply.len,
-                    result_size,
+                    batch.result_size,
                 ));
-                self.notify_completion(batched, .{
+                self.notify_completion(packet_next, .{
                     .timestamp = timestamp,
                     .reply = batched_reply,
                 });
             }
             assert(reply_decoder.pop() == null);
-            assert(multi_batch_results_actual <= multi_batch_results_expected);
+            assert(multi_batch_results_actual <= multi_batch_result_count_expected);
         }
 
         fn notify_completion(
             self: *Context,
             packet: *Packet,
-            completion: PacketError!struct {
+            completion: CompletionError!struct {
                 timestamp: u64,
                 reply: []const u8,
             },
@@ -937,13 +856,13 @@ pub fn ContextType(
 
             const result = completion catch |err| {
                 packet.status = switch (err) {
-                    error.TooMuchData => .too_much_data,
-                    error.ClientEvicted => .client_evicted,
-                    error.ClientReleaseTooLow => .client_release_too_low,
-                    error.ClientReleaseTooHigh => .client_release_too_high,
-                    error.ClientShutdown => .client_shutdown,
-                    error.InvalidOperation => .invalid_operation,
-                    error.InvalidDataSize => .invalid_data_size,
+                    CompletionError.Closed => .client_closed,
+                    CompletionError.Evicted => .client_evicted,
+                    CompletionError.ReleaseTooLow => .client_release_too_low,
+                    CompletionError.ReleaseTooHigh => .client_release_too_high,
+                    CompletionError.InvalidOperation => .invalid_operation,
+                    CompletionError.InvalidDataSize => .invalid_data_size,
+                    CompletionError.TooMuchData => .too_much_data,
                 };
                 assert(packet.status != .ok);
                 packet.phase = .complete;
@@ -982,24 +901,11 @@ pub fn ContextType(
             // memory management. However, some of Packet's fields are essentially private.
             // Initialize them here to avoid threading default fields through FFI boundary.
             const packet: *Packet = packet_extern.cast();
-            packet.* = .{
-                .user_data = packet_extern.user_data,
-                .operation = packet_extern.operation,
-                .data_size = packet_extern.data_size,
-                .data = packet_extern.data,
-                .user_tag = packet_extern.user_tag,
-                .status = .ok,
-                .link = .{},
-                .multi_batch_time_monotonic = 0,
-                .multi_batch_next = null,
-                .multi_batch_tail = null,
-                .multi_batch_count = 0,
-                .multi_batch_event_count = 0,
-                .multi_batch_result_count_expected = 0,
-                .phase = .submitted,
-            };
+            packet.* = .init(packet_extern);
 
             // Enqueue the packet and notify the IO thread to process it asynchronously.
+            // The mutex is locked during this operation, so it's guaranteed
+            // that the I/O thread hasn't been canceled.
             assert(self.signal.status() == .running);
             self.submitted.push(packet);
             self.signal.notify();
@@ -1014,13 +920,9 @@ pub fn ContextType(
             assert(thread_caller == .user);
 
             const self: *Context = @ptrCast(@alignCast(context));
-
-            // Copy the thread handle here, since stopping the I/O thread deinitializes
-            // the context and invalidates the `self` pointer.
-            const thread = self.thread;
-            defer thread.join();
-
             self.signal.stop();
+            self.thread.join();
+            self.deinit();
         }
 
         fn vtable_init_parameters_fn(context: *anyopaque, out_parameters: *InitParameters) void {
@@ -1033,15 +935,6 @@ pub fn ContextType(
             out_parameters.client_id = self.client_id;
             out_parameters.addresses_ptr = self.addresses_owned.ptr;
             out_parameters.addresses_len = self.addresses_owned.len;
-        }
-
-        fn operation_from_int(op: u8) ?Operation {
-            inline for (allowed_operations) |operation| {
-                if (op == @intFromEnum(operation)) {
-                    return operation;
-                }
-            }
-            return null;
         }
     };
 }
@@ -1120,6 +1013,7 @@ const Locker = extern struct {
 };
 
 const testing = std.testing;
+
 test "Locker: smoke test" {
     var locker = Locker{};
 

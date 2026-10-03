@@ -47,7 +47,7 @@ pub fn main(process_init: std.process.Init) !void {
     try client_init(&tb_client, args);
     defer {
         const client_status = c.tb_client_deinit(&tb_client);
-        assert(client_status == c.TB_CLIENT_OK);
+        assert(client_status == c.TB_CLIENT_SUCCESS);
     }
 
     var stdin_buffer: [4096]u8 = undefined;
@@ -79,7 +79,7 @@ pub fn main(process_init: std.process.Init) !void {
             packet.status = c.TB_PACKET_OK;
 
             const client_status = c.tb_client_submit(&tb_client, &packet);
-            assert(client_status == c.TB_CLIENT_OK);
+            assert(client_status == c.TB_CLIENT_SUCCESS);
 
             while (!context.completed) {
                 context.condition.waitUncancelable(stdx.process_io, &context.lock);
