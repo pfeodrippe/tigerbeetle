@@ -338,32 +338,34 @@ fn inspect_metrics(output: *std.Io.Writer) !void {
     const EventMetricTag = std.meta.Tag(EventMetric);
     const EventTimingTag = std.meta.Tag(EventTiming);
 
-    const stats_per_gauge = std.meta.fields(EventMetricAggregate).len - 1; // -1 to ignore `event`.
-    const stats_per_timing = std.meta.fields(@FieldType(EventTimingAggregate, "values")).len;
+    const stats_per_gauge = @typeInfo(EventMetricAggregate).@"struct".field_names.len - 1; // -1 to ignore `event`.
+    const stats_per_timing = @typeInfo(@FieldType(EventTimingAggregate, "values")).@"struct".field_names.len;
     var stats_total: usize = 0;
 
     log.info("Format: [metric type]: [metric name]([metric tags])=[metric cardinality]", .{});
 
-    inline for (std.meta.fields(EventMetric)) |field| {
-        const metric_tag = std.meta.stringToEnum(EventMetricTag, field.name).?;
-        try output.print("gauge: {s}(", .{field.name});
-        if (field.type != void) {
-            inline for (std.meta.fields(field.type), 0..) |data_field, i| {
+    const metric_info = @typeInfo(EventMetric).@"union";
+    inline for (metric_info.field_names, metric_info.field_types) |name, T| {
+        const metric_tag = std.meta.stringToEnum(EventMetricTag, name).?;
+        try output.print("gauge: {s}(", .{name});
+        if (T != void) {
+            inline for (@typeInfo(T).@"struct".field_names, 0..) |data_name, i| {
                 if (i != 0) try output.print(", ", .{});
-                try output.print("{s}", .{data_field.name});
+                try output.print("{s}", .{data_name});
             }
         }
         const metric_stats = EventMetric.slot_limits.get(metric_tag) * stats_per_gauge;
         try output.print(")={}\n", .{metric_stats});
         stats_total += metric_stats;
     }
-    inline for (std.meta.fields(EventTiming)) |field| {
-        const timing_tag = std.meta.stringToEnum(EventTimingTag, field.name).?;
-        try output.print("timing: {s}(", .{field.name});
-        if (field.type != void) {
-            inline for (std.meta.fields(field.type), 0..) |data_field, i| {
+    const timing_info = @typeInfo(EventTiming).@"union";
+    inline for (timing_info.field_names, timing_info.field_types) |name, T| {
+        const timing_tag = std.meta.stringToEnum(EventTimingTag, name).?;
+        try output.print("timing: {s}(", .{name});
+        if (T != void) {
+            inline for (@typeInfo(T).@"struct".field_names, 0..) |data_name, i| {
                 if (i != 0) try output.print(", ", .{});
-                try output.print("{s}", .{data_field.name});
+                try output.print("{s}", .{data_name});
             }
         }
         const timing_stats = EventTiming.slot_limits.get(timing_tag) * stats_per_timing;
@@ -406,11 +408,12 @@ fn inspect_op(output: *std.Io.Writer, op: u64) !void {
         }
     };
 
-    var entries: [std.meta.fields(Points).len]Entry = undefined;
-    inline for (std.meta.fields(Points), 0..) |field, index| {
+    const names = @typeInfo(Points).@"struct".field_names;
+    var entries: [names.len]Entry = undefined;
+    inline for (names, 0..) |name, index| {
         entries[index] = .{
-            .label = field.name,
-            .op = @field(points, field.name),
+            .label = name,
+            .op = @field(points, name),
         };
     }
     std.sort.insertion(Entry, &entries, {}, Entry.less_than);
@@ -464,16 +467,14 @@ fn print_size_counts(
 
 fn print_objects(output: *std.Io.Writer) !void {
     const Grooves = StateMachine.Forest.Grooves;
-    inline for (std.meta.fields(Grooves)) |groove_field| {
-        const Groove = groove_field.type;
+    inline for (@typeInfo(Grooves).@"struct".field_types) |Groove| {
         const ObjectTree = Groove.ObjectTree;
 
         const object_size = @sizeOf(ObjectTree.Table.Value);
         comptime var size_total: usize = 0;
         size_total += object_size;
         comptime {
-            for (std.meta.fields(Groove.IndexTrees)) |index_field| {
-                const IndexTree = index_field.type;
+            for (@typeInfo(Groove.IndexTrees).@"struct".field_types) |IndexTree| {
                 const index_size = @sizeOf(IndexTree.Table.Value);
                 size_total += index_size;
             }
@@ -494,13 +495,13 @@ fn print_objects(output: *std.Io.Writer) !void {
             ObjectTree,
         );
 
-        inline for (std.meta.fields(Groove.IndexTrees)) |index_field| {
-            const IndexTree = index_field.type;
+        inline for (@typeInfo(Groove.IndexTrees).@"struct".field_names) |name| {
+            const IndexTree = @FieldType(Groove.IndexTrees, name);
 
-            try print_header(output, 1, index_field.name);
+            try print_header(output, 1, name);
             try print_tree_schema(
                 output,
-                @field(Groove.config.ids, index_field.name),
+                @field(Groove.config.ids, name),
                 IndexTree,
             );
         }
@@ -665,10 +666,10 @@ const Inspector = struct {
             header_valid[i] = header.valid_checksum();
         }
 
-        inline for (std.meta.fields(SuperBlockHeader)) |field| {
+        inline for (@typeInfo(SuperBlockHeader).@"struct".field_names) |name| {
             var group_by = GroupByType(constants.superblock_copies){};
             for (inspector.superblock_headers) |header| {
-                group_by.compare(std.mem.asBytes(&@field(header, field.name)));
+                group_by.compare(std.mem.asBytes(&@field(header, name)));
             }
 
             var label_buffer: [128]u8 = undefined;
@@ -682,9 +683,9 @@ const Inspector = struct {
                     try label_writer.writeByte(if (group.is_set(j)) header_mark else '_');
                 }
                 try label_writer.writeByte(' ');
-                try label_writer.writeAll(field.name);
+                try label_writer.writeAll(name);
 
-                try print_struct(output, label_writer.buffered(), &@field(header.*, field.name));
+                try print_struct(output, label_writer.buffered(), &@field(header.*, name));
             }
         }
     }
@@ -1403,25 +1404,26 @@ fn print_struct(
         if (@typeInfo(Type).@"struct".is_tuple) {
             try output.writeAll(label);
             // Print tuples as a single line.
-            inline for (std.meta.fields(Type), 0..) |field, i| {
-                if (@typeInfo(field.type) == .pointer and
-                    @typeInfo(@typeInfo(field.type).pointer.child) == .array)
+            const info = @typeInfo(Type).@"struct";
+            inline for (info.field_names, info.field_types, 0..) |name, T, i| {
+                if (@typeInfo(T) == .pointer and
+                    @typeInfo(@typeInfo(T).pointer.child) == .array)
                 {
                     // Allow inline labels.
-                    try output.writeAll(@field(value, field.name));
+                    try output.writeAll(@field(value, name));
                 } else {
-                    try print_value(output, @field(value, field.name));
-                    if (i != std.meta.fields(Type).len) try output.writeAll(" ");
+                    try print_value(output, @field(value, name));
+                    if (i != info.field_names.len) try output.writeAll(" ");
                 }
             }
             try output.writeAll("\n");
             return;
         } else {
             var label_buffer: [1024]u8 = undefined;
-            inline for (std.meta.fields(Type)) |field| {
+            inline for (@typeInfo(Type).@"struct".field_names) |name| {
                 var label_writer = std.Io.Writer.fixed(&label_buffer);
-                try label_writer.print("{s}.{s}", .{ label, field.name });
-                try print_struct(output, label_writer.buffered(), &@field(value, field.name));
+                try label_writer.print("{s}.{s}", .{ label, name });
+                try print_struct(output, label_writer.buffered(), &@field(value, name));
             }
             return;
         }

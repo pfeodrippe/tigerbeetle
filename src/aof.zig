@@ -41,7 +41,7 @@ pub const AOFEntry = extern struct {
 
         // Ensure the message is the last field in the struct. When writing, the struct is truncated
         // based on the message length, so any fields after it would be truncated.
-        assert(std.meta.fieldIndex(AOFEntry, "message").? == std.meta.fields(AOFEntry).len - 1);
+        assert(std.meta.fieldIndex(AOFEntry, "message").? == @typeInfo(AOFEntry).@"struct".field_names.len - 1);
     }
 
     /// Calculate the actual length of the AOFEntry that needs to be written to disk.
@@ -838,7 +838,7 @@ test "aof write / read" {
         .checkpoint_id = 0,
         .release = vsr.Release.minimum,
         .command = .prepare,
-        .operation = @enumFromInt(4),
+        .operation = @fromBackingInt(@intCast(4)),
         .size = @intCast(@sizeOf(Header) + demo_payload.len),
     };
 
@@ -935,7 +935,7 @@ const CLIArgs = union(enum) {
 };
 
 pub fn main() !void {
-    var gpa_instance: std.heap.DebugAllocator(.{}) = .init;
+    var gpa_instance: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
     const gpa = gpa_instance.allocator();
 
     var time_os: stdx.TimeOS = .{};

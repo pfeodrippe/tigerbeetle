@@ -148,7 +148,7 @@ const transfer_templates = table: {
     }.template;
 
     // [valid:bool][limit:bool][method]
-    var templates: [2][2][std.meta.fields(TransferPlan.Method).len]TransferTemplate = undefined;
+    var templates: [2][2][@typeInfo(TransferPlan.Method).@"enum".field_names.len]TransferTemplate = undefined;
 
     // template(ledger, result)
     templates[0][0][SNGL] = template(0, result(.{ .ledger_must_not_be_zero = true }));

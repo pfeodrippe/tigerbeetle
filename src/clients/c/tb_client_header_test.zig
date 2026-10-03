@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const exports = @import("tb_client.zig").exports;
-const c = @cImport(@cInclude("tb_client.h"));
+const c = @import("tb_client_c");
 const stdx = @import("stdx");
 
 fn to_snakecase(comptime input: []const u8) []const u8 {
@@ -61,12 +61,12 @@ test "valid tb_client.h" {
                 }
 
                 // Compare the enum int values in C to the enum int values in Zig.
-                for (std.meta.fields(ty)) |field| {
-                    if (std.mem.startsWith(u8, field.name, "deprecated_")) continue;
-                    const c_enum_field = stdx.to_case(to_snakecase(field.name), .UPPER_CASE);
+                for (@typeInfo(ty).@"enum".field_names) |name| {
+                    if (std.mem.startsWith(u8, name, "deprecated_")) continue;
+                    const c_enum_field = stdx.to_case(to_snakecase(name), .UPPER_CASE);
                     const c_value = @field(c, c_enum_prefix ++ c_enum_field);
 
-                    const zig_value = @intFromEnum(@field(ty, field.name));
+                    const zig_value = @backingInt(@field(ty, name));
                     assert(zig_value == c_value);
                 }
             },
@@ -77,16 +77,16 @@ test "valid tb_client.h" {
                     const c_enum_prefix = c_type_name[0 .. prefix_offset + 1];
                     assert(c_type == c_uint);
 
-                    for (std.meta.fields(ty)) |field| {
-                        if (!std.mem.eql(u8, field.name, "padding")) {
+                    for (type_info.field_names) |name| {
+                        if (!std.mem.eql(u8, name, "padding")) {
                             // Get the bit value in the C enum.
                             const c_enum_field =
-                                stdx.to_case(to_snakecase(field.name), .UPPER_CASE);
+                                stdx.to_case(to_snakecase(name), .UPPER_CASE);
                             const c_value = @field(c, c_enum_prefix ++ c_enum_field);
 
                             // Compare the bit value to the packed struct's field.
                             var instance = std.mem.zeroes(ty);
-                            @field(instance, field.name) = true;
+                            @field(instance, name) = true;
                             assert(@as(type_info.backing_integer.?, @bitCast(instance)) == c_value);
                         }
                     }
@@ -99,14 +99,14 @@ test "valid tb_client.h" {
                     }
                     assert(@alignOf(ty) == @alignOf(c_type));
 
-                    for (std.meta.fields(ty)) |field| {
+                    for (type_info.field_names, type_info.field_types) |name, Field| {
                         // In C, packed structs and enums are replaced with integers.
-                        var field_type = field.type;
+                        var field_type = Field;
                         switch (@typeInfo(field_type)) {
                             .@"struct" => |info| {
                                 assert(info.layout == .@"packed");
                                 assert(@sizeOf(field_type) <= @sizeOf(u128));
-                                field_type = std.meta.Int(.unsigned, @bitSizeOf(field_type));
+                                field_type = @Int(.unsigned, @bitSizeOf(field_type));
                             },
                             .@"enum" => |info| field_type = info.tag_type,
                             .bool => field_type = u8,
@@ -114,7 +114,7 @@ test "valid tb_client.h" {
                         }
 
                         // In C, pointers are opaque so we compare only the field sizes,
-                        const c_field_type = @TypeOf(@field(@as(c_type, undefined), field.name));
+                        const c_field_type = @TypeOf(@field(@as(c_type, undefined), name));
                         switch (@typeInfo(c_field_type)) {
                             .pointer => |info| {
                                 assert(info.size == .c);

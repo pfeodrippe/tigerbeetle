@@ -461,7 +461,7 @@ pub fn timing(tracer: *Tracer, event_timing: EventTiming, duration: Duration) vo
 /// Log warnings for slow timings, to have redundancy with metrics.
 /// Perhaps thresholds should be runtime-configurable in main, but let's simply hard-code for now.
 pub fn timing_warn(tracer: *Tracer, event_timing: EventTiming, duration: Duration) void {
-    const fast = comptime builtin.target.os.tag == .linux and builtin.mode != .Debug;
+    const fast = comptime builtin.target.os.tag == .linux and builtin.mode != .debug;
     const threshold: Duration = switch (event_timing) {
         .loop_run_for_ns => if (fast) .ms(50) else .ms(500),
         else => return,

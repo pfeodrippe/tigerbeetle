@@ -1087,7 +1087,12 @@ fn build_test_integration(
     integration_tests.root_module.addOptions("vsr_options", options.vsr_options_test);
     integration_tests.root_module.addOptions("test_options", integration_tests_options);
     integration_tests.root_module.addOptions("vortex_options", options.vortex_options);
-    integration_tests.root_module.addIncludePath(options.tb_client_header.dirname());
+    const tb_client_c = b.addTranslateC(.{
+        .root_source_file = options.tb_client_header,
+        .target = options.target,
+        .optimize = options.mode,
+    });
+    integration_tests.root_module.addImport("tb_client_c", tb_client_c.createModule());
     steps.test_integration_build.dependOn(&b.addInstallArtifact(integration_tests, .{}).step);
 
     const run_integration_tests = b.addRunArtifact(integration_tests);
@@ -1475,7 +1480,12 @@ fn build_vortex_driver_zig(
     });
     vortex_driver.root_module.link_libc = true;
     vortex_driver.root_module.linkLibrary(tb_client);
-    vortex_driver.root_module.addIncludePath(options.tb_client_header.dirname());
+    const tb_client_c = b.addTranslateC(.{
+        .root_source_file = options.tb_client_header,
+        .target = options.target,
+        .optimize = options.mode,
+    });
+    vortex_driver.root_module.addImport("tb_client_c", tb_client_c.createModule());
     vortex_driver.root_module.addImport("stdx", options.stdx_module);
     vortex_driver.root_module.addImport("vsr", options.vsr_module);
 
@@ -1963,9 +1973,15 @@ fn build_node_client(
         lib.root_module.link_libc = true;
 
         lib.step.dependOn(&npm_install.step);
-        lib.root_module.addSystemIncludePath(b.path(
-            "src/clients/node/node_modules/node-api-headers/include",
-        ));
+        const node_api = b.addTranslateC(.{
+            .root_source_file = b.path(
+                "src/clients/node/node_modules/node-api-headers/include/node_api.h",
+            ),
+            .target = resolved_target,
+            .optimize = options.mode,
+        });
+        node_api.step.dependOn(&npm_install.step);
+        lib.root_module.addImport("node_api", node_api.createModule());
         lib.linker_allow_shlib_undefined = true;
 
         if (resolved_target.result.os.tag == .windows) {
@@ -2210,7 +2226,11 @@ fn strip_root_module(root_module: *std.Build.Module) void {
     root_module.strip = true;
     // Ensure that we get stack traces even in release builds.
     root_module.omit_frame_pointer = false;
-    root_module.unwind_tables = .none;
+    // Windows system libraries use SEH; retain the target's unwind-table default.
+    root_module.unwind_tables = if (root_module.resolved_target.?.result.os.tag == .windows)
+        null
+    else
+        .none;
 }
 
 /// Set the JVM DLL directory on Windows.
@@ -2262,7 +2282,9 @@ const Generated = struct {
         generator: *std.Build.Step.Compile,
         path: []const u8,
     }) *Generated {
-        const source = b.addRunArtifact(options.generator).captureStdOut(.{});
+        const source = b.addRunArtifact(options.generator).captureStdOut(.{
+            .basename = std.fs.path.basename(options.path),
+        });
         return create(b, source, options.path, "file");
     }
 

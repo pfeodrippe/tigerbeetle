@@ -719,7 +719,7 @@ pub const main =
         fn main(process_init: std.process.Init) !void {
             stdx.set_process_context(process_init);
 
-            var gpa_allocator: std.heap.DebugAllocator(.{}) = .init;
+            var gpa_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
             defer _ = gpa_allocator.deinit();
 
             const gpa = gpa_allocator.allocator();

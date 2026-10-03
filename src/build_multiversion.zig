@@ -51,9 +51,9 @@ const vsr_options = @import("vsr_options");
 
 pub fn main(process_init: std.process.Init) !void {
     stdx.set_process_context(process_init);
-    var allocator = std.heap.DebugAllocator(.{}).init;
+    var allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
     defer {
-        if (allocator.deinit() != .ok) {
+        if (allocator.deinit() != 0) {
             @panic("memory leaked");
         }
     }
@@ -307,22 +307,22 @@ fn build_multiversion_universal(shell: *Shell, options: struct {
                 .path = options.tigerbeetle_current_x86_64,
             },
             .{
-                .cpu_type = @intFromEnum(section_to_macho_cpu.tb_mvb_aarch64),
+                .cpu_type = @backingInt(section_to_macho_cpu.tb_mvb_aarch64),
                 .cpu_subtype = 0x00000000,
                 .path = sections.aarch64.body,
             },
             .{
-                .cpu_type = @intFromEnum(section_to_macho_cpu.tb_mvh_aarch64),
+                .cpu_type = @backingInt(section_to_macho_cpu.tb_mvh_aarch64),
                 .cpu_subtype = 0x00000000,
                 .path = sections.header_zero,
             },
             .{
-                .cpu_type = @intFromEnum(section_to_macho_cpu.tb_mvb_x86_64),
+                .cpu_type = @backingInt(section_to_macho_cpu.tb_mvb_x86_64),
                 .cpu_subtype = 0x00000000,
                 .path = sections.x86_64.body,
             },
             .{
-                .cpu_type = @intFromEnum(section_to_macho_cpu.tb_mvh_x86_64),
+                .cpu_type = @backingInt(section_to_macho_cpu.tb_mvh_x86_64),
                 .cpu_subtype = 0x00000000,
                 .path = sections.header_zero,
             },
@@ -381,22 +381,22 @@ fn build_multiversion_universal(shell: *Shell, options: struct {
             .path = options.tigerbeetle_current_x86_64,
         },
         .{
-            .cpu_type = @intFromEnum(section_to_macho_cpu.tb_mvb_aarch64),
+            .cpu_type = @backingInt(section_to_macho_cpu.tb_mvb_aarch64),
             .cpu_subtype = 0x00000000,
             .path = sections.aarch64.body,
         },
         .{
-            .cpu_type = @intFromEnum(section_to_macho_cpu.tb_mvh_aarch64),
+            .cpu_type = @backingInt(section_to_macho_cpu.tb_mvh_aarch64),
             .cpu_subtype = 0x00000000,
             .path = sections.aarch64.header,
         },
         .{
-            .cpu_type = @intFromEnum(section_to_macho_cpu.tb_mvb_x86_64),
+            .cpu_type = @backingInt(section_to_macho_cpu.tb_mvb_x86_64),
             .cpu_subtype = 0x00000000,
             .path = sections.x86_64.body,
         },
         .{
-            .cpu_type = @intFromEnum(section_to_macho_cpu.tb_mvh_x86_64),
+            .cpu_type = @backingInt(section_to_macho_cpu.tb_mvh_x86_64),
             .cpu_subtype = 0x00000000,
             .path = sections.x86_64.header,
         },

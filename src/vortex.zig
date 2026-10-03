@@ -58,11 +58,8 @@ pub fn main() !void {
     }
     assert(builtin.os.tag == .linux);
 
-    var gpa_allocator: std.heap.DebugAllocator(.{}) = .init;
-    defer switch (gpa_allocator.deinit()) {
-        .ok => {},
-        .leak => @panic("memory leak"),
-    };
+    var gpa_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
+    defer if (gpa_allocator.deinit() != 0) @panic("memory leak");
 
     const gpa = gpa_allocator.allocator();
 
@@ -142,8 +139,9 @@ fn scenario_default(gpa: std.mem.Allocator, prng: *stdx.PRNG, args: CLIArgs) !vo
         .{ .transfer_count = std.math.maxInt(u32) },
     );
 
-    var timer = try stdx.Timer.start();
-    while (timer.read() < args.test_duration.ns) {
+    var time_source: stdx.TimeOS = .{};
+    var timer = stdx.Timer.init(time_source.interface());
+    while (timer.read().ns < args.test_duration.ns) {
         try supervisor.tick();
     }
 

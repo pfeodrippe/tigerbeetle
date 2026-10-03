@@ -124,7 +124,7 @@ pub const TransferPendingStatus = enum(u8) {
 
     comptime {
         for (std.enums.values(TransferPendingStatus), 0..) |result, index| {
-            assert(@intFromEnum(result) == index);
+            assert(@backingInt(result) == index);
         }
     }
 };
@@ -195,7 +195,7 @@ pub const CreateAccountStatus = enum(u32) {
         const BitSet = stdx.BitSetType(values.len - 1);
         var set: BitSet = .{};
         for (0..values.len - 1) |index| {
-            const result: CreateAccountStatus = @enumFromInt(index);
+            const result: CreateAccountStatus = @fromBackingInt(@intCast(index));
             stdx.maybe(result == values[index]);
 
             assert(!set.is_set(index));
@@ -207,9 +207,9 @@ pub const CreateAccountStatus = enum(u32) {
         assert(set.full());
 
         // Except by the "created" result, which is represented as `maxInt`.
-        const max: CreateAccountStatus = @enumFromInt(
+        const max: CreateAccountStatus = @fromBackingInt(@intCast(
             std.math.maxInt(std.meta.Tag(CreateAccountStatus)),
-        );
+        ));
         assert(max == .created);
     }
 };
@@ -404,7 +404,7 @@ pub const CreateTransferStatus = enum(u32) {
         const BitSet = stdx.BitSetType(values.len - 1);
         var set: BitSet = .{};
         for (0..values.len - 1) |index| {
-            const result: CreateTransferStatus = @enumFromInt(index);
+            const result: CreateTransferStatus = @fromBackingInt(@intCast(index));
             stdx.maybe(result == values[index]);
 
             assert(!set.is_set(index));
@@ -416,9 +416,9 @@ pub const CreateTransferStatus = enum(u32) {
         assert(set.full());
 
         // Except by the "created" result, which is represented as `maxInt`.
-        const max: CreateTransferStatus = @enumFromInt(
+        const max: CreateTransferStatus = @fromBackingInt(@intCast(
             std.math.maxInt(std.meta.Tag(CreateTransferStatus)),
-        );
+        ));
         assert(max == .created);
     }
 
@@ -431,40 +431,33 @@ pub const CreateTransferStatus = enum(u32) {
     /// As a workaround we generate a new Ordered enum to be used in this case.
     pub const Ordered = type: {
         const values = std.enums.values(CreateTransferStatus);
-        var fields: [values.len]std.builtin.Type.EnumField = undefined;
+        var names: [values.len][:0]const u8 = undefined;
+        var ordered_values: [values.len]std.meta.Tag(CreateTransferStatus) = undefined;
         for (0..values.len - 1) |index| {
-            const result: CreateTransferStatus = @enumFromInt(index);
-            fields[index] = .{
-                .name = @tagName(result),
-                .value = index,
-            };
+            const result: CreateTransferStatus = @fromBackingInt(@intCast(index));
+            names[index] = @tagName(result);
+            ordered_values[index] = index;
         }
-        fields[values.len - 1] = .{
-            .name = @tagName(CreateTransferStatus.created),
-            .value = @intFromEnum(CreateTransferStatus.created),
-        };
-
-        var type_info = @typeInfo(enum {});
-        type_info.@"enum".tag_type = std.meta.Tag(CreateTransferStatus);
-        type_info.@"enum".fields = &fields;
-        break :type stdx.type_from_info(type_info);
+        names[values.len - 1] = @tagName(CreateTransferStatus.created);
+        ordered_values[values.len - 1] = @backingInt(CreateTransferStatus.created);
+        break :type @Enum(std.meta.Tag(CreateTransferStatus), .exhaustive, &names, &ordered_values);
     };
 
     pub fn to_ordered(value: CreateTransferStatus) Ordered {
-        return @enumFromInt(@intFromEnum(value));
+        return @fromBackingInt(@intCast(@backingInt(value)));
     }
 
     comptime {
         const values = std.enums.values(Ordered);
         assert(values.len == std.enums.values(CreateTransferStatus).len);
         for (0..values.len - 1) |index| {
-            const value: Ordered = @enumFromInt(index);
+            const value: Ordered = @fromBackingInt(@intCast(index));
             assert(value == values[index]);
 
-            const value_source: CreateTransferStatus = @enumFromInt(index);
+            const value_source: CreateTransferStatus = @fromBackingInt(@intCast(index));
             assert(std.mem.eql(u8, @tagName(value_source), @tagName(value)));
         }
-        assert(@intFromEnum(Ordered.created) == @intFromEnum(CreateTransferStatus.created));
+        assert(@backingInt(Ordered.created) == @backingInt(CreateTransferStatus.created));
     }
 };
 
@@ -948,7 +941,7 @@ comptime {
     }
 
     switch (builtin.mode) {
-        .Debug, .ReleaseSafe => {},
-        .ReleaseFast, .ReleaseSmall => @compileError("safety checks are required for correctness"),
+        .debug, .safe => {},
+        .fast, .small => @compileError("safety checks are required for correctness"),
     }
 }

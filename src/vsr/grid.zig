@@ -39,7 +39,6 @@ pub fn GridType(comptime Storage: type) type {
         pub const write_iops_max = constants.grid_iops_write_max;
 
         pub const RepairTable = GridBlocksMissing.RepairTable;
-        pub const RepairTableResult = GridBlocksMissing.RepairTableResult;
         pub const Reservation = @import("./free_set.zig").Reservation;
 
         // Grid just reuses the Storage's NextTick abstraction for simplicity.

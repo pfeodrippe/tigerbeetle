@@ -54,7 +54,7 @@ pub fn ManifestLevelType(
         );
 
         pub const KeyMaxSnapshotMin = packed struct(KeyMaxSnapshotMin.Int) {
-            pub const Int = std.meta.Int(
+            pub const Int = @Int(
                 .unsigned,
                 @bitSizeOf(u64) + @bitSizeOf(Key),
             );

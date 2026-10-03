@@ -502,32 +502,33 @@ fn decode_array(comptime Event: type, env: c.napi_env, array: c.napi_value, even
             AccountBalance,
             QueryFilter,
             => {
-                inline for (std.meta.fields(Event)) |field| {
-                    const value: field.type = switch (@typeInfo(field.type)) {
-                        .@"struct" => |info| @bitCast(try @field(
+                const info = @typeInfo(Event).@"struct";
+                inline for (info.field_names, info.field_types, info.field_attrs) |field, Field, attrs| {
+                    const value: Field = switch (@typeInfo(Field)) {
+                        .@"struct" => |field_info| @bitCast(try @field(
                             translate,
-                            @typeName(info.backing_integer.?) ++ "_from_object",
+                            @typeName(field_info.backing_integer.?) ++ "_from_object",
                         )(
                             env,
                             object,
-                            add_trailing_null(field.name),
+                            add_trailing_null(field),
                         )),
-                        .int => try @field(translate, @typeName(field.type) ++ "_from_object")(
+                        .int => try @field(translate, @typeName(Field) ++ "_from_object")(
                             env,
                             object,
-                            add_trailing_null(field.name),
+                            add_trailing_null(field),
                         ),
                         // Arrays are only used for padding/reserved fields,
                         // instead of requiring the user to explicitly set an empty buffer,
                         // we just hide those fields and preserve their default value.
                         .array => @as(
-                            *const field.type,
-                            @ptrCast(@alignCast(field.default_value_ptr.?)),
+                            *const Field,
+                            @ptrCast(@alignCast(attrs.default_value_ptr.?)),
                         ).*,
                         else => unreachable,
                     };
 
-                    @field(event, field.name) = value;
+                    @field(event, field) = value;
                 }
             },
             u128 => event.* = try translate.u128_from_value(env, object, "lookup"),
@@ -549,27 +550,28 @@ fn encode_array(comptime Result: type, env: c.napi_env, results: []const Result)
             "Failed to create " ++ @typeName(Result) ++ " object.",
         );
 
-        inline for (std.meta.fields(Result)) |field| {
-            const FieldInt = switch (@typeInfo(field.type)) {
-                .@"struct" => |info| info.backing_integer.?,
-                .@"enum" => |info| info.tag_type,
+        const info = @typeInfo(Result).@"struct";
+        inline for (info.field_names, info.field_types) |field, Field| {
+            const FieldInt = switch (@typeInfo(Field)) {
+                .@"struct" => |field_info| field_info.backing_integer.?,
+                .@"enum" => |field_info| field_info.tag_type,
                 // Arrays are only used for padding/reserved fields.
                 .array => continue,
-                else => field.type,
+                else => Field,
             };
 
-            const value: FieldInt = switch (@typeInfo(field.type)) {
-                .@"struct" => @bitCast(@field(result, field.name)),
-                .@"enum" => @intFromEnum(@field(result, field.name)),
-                else => @field(result, field.name),
+            const value: FieldInt = switch (@typeInfo(Field)) {
+                .@"struct" => @bitCast(@field(result, field)),
+                .@"enum" => @backingInt(@field(result, field)),
+                else => @field(result, field),
             };
 
             try @field(translate, @typeName(FieldInt) ++ "_into_object")(
                 env,
                 object,
-                add_trailing_null(field.name),
+                add_trailing_null(field),
                 value,
-                "Failed to set property \"" ++ field.name ++
+                "Failed to set property \"" ++ field ++
                     "\" of " ++ @typeName(Result) ++ " object",
             );
 

@@ -13,7 +13,6 @@ pub const tb_client_t = extern struct {
 
     comptime {
         assert(@sizeOf(tb_client_t) == @sizeOf(tb.ClientInterface));
-        assert(@bitSizeOf(tb_client_t) == @bitSizeOf(tb.ClientInterface));
         assert(@alignOf(tb_client_t) == @alignOf(tb.ClientInterface));
     }
 };
@@ -43,15 +42,15 @@ pub const tb_register_log_callback_status = enum(c_int) {
 };
 
 pub const tb_log_level = enum(c_int) {
-    err = @intFromEnum(std.log.Level.err),
-    warn = @intFromEnum(std.log.Level.warn),
-    info = @intFromEnum(std.log.Level.info),
-    debug = @intFromEnum(std.log.Level.debug),
+    err = @backingInt(std.log.Level.err),
+    warn = @backingInt(std.log.Level.warn),
+    info = @backingInt(std.log.Level.info),
+    debug = @backingInt(std.log.Level.debug),
 
     comptime {
         assert(std.enums.values(std.log.Level).len == std.enums.values(tb_log_level).len);
         for (std.enums.values(std.log.Level)) |std_level| {
-            const level: tb_log_level = @enumFromInt(@intFromEnum(std_level));
+            const level: tb_log_level = @fromBackingInt(@intCast(@backingInt(std_level)));
             assert(std.mem.eql(u8, @tagName(std_level), @tagName(level)));
         }
     }
@@ -232,7 +231,7 @@ pub const Logging = struct {
 
         const callback = Logging.global.callback orelse return;
 
-        const tb_message_level: tb_log_level = @enumFromInt(@intFromEnum(message_level));
+        const tb_message_level: tb_log_level = @fromBackingInt(@intCast(@backingInt(message_level)));
         const prefix = if (scope == .default) ": " else "(" ++ @tagName(scope) ++ "): ";
         const output = std.fmt.bufPrint(
             &Logging.global.buffer,

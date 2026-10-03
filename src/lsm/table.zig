@@ -311,7 +311,7 @@ pub fn TableType(
                 const header = mem.bytesAsValue(vsr.Header.Block, block[0..@sizeOf(vsr.Header)]);
                 header.* = .{
                     .cluster = options.cluster,
-                    .metadata_bytes = @bitCast(schema.TableValue.Metadata{
+                    .metadata_bytes = std.mem.toBytes(schema.TableValue.Metadata{
                         .value_count_max = data.value_count_max,
                         .value_count = builder.value_count,
                         .value_size = value_size,
@@ -418,7 +418,7 @@ pub fn TableType(
                     mem.bytesAsValue(vsr.Header.Block, index_block[0..@sizeOf(vsr.Header)]);
                 header.* = .{
                     .cluster = options.cluster,
-                    .metadata_bytes = @bitCast(schema.TableIndex.Metadata{
+                    .metadata_bytes = std.mem.toBytes(schema.TableIndex.Metadata{
                         .value_block_count = builder.value_block_count,
                         .value_block_count_max = index.value_block_count_max,
                         .tree_id = options.tree_id,

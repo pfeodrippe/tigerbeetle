@@ -28,7 +28,7 @@ pub fn main(gpa: std.mem.Allocator, args: fuzz.FuzzArgs) !void {
 
     var prng = stdx.PRNG.from_seed(args.seed);
     for (0..iterations) |_| {
-        var fault_map = std.bit_set.ArrayBitSet(u8, sector_count).initEmpty();
+        var fault_map: std.bit_set.ArrayBitSet(u8, sector_count) = .empty;
 
         const failed_sector_cluster_count = prng.range_inclusive(usize, 1, 10);
         const failed_sector_cluster_minimum_length = prng.range_inclusive(usize, 1, 3);

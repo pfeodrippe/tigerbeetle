@@ -152,7 +152,7 @@ pub const Network = struct {
                     // The Simulator doesn't use link_drop_packet_fn(), and replica_test.zig doesn't
                     // use transition_to_liveness_mode().
                     assert(network.link_drop_packet_fn(path).* == null);
-                    network.link_filter(path).* = LinkFilter.initFull();
+                    network.link_filter(path).* = .full;
                 }
             }
         }

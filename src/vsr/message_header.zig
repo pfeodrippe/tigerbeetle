@@ -672,7 +672,7 @@ pub const Header = extern struct {
                         }
                     } else if (self.operation == .noop) {
                         if (self.size != @sizeOf(Header)) return "size != @sizeOf(Header)";
-                    } else if (@intFromEnum(self.operation) < constants.vsr_operations_reserved) {
+                    } else if (@backingInt(self.operation) < constants.vsr_operations_reserved) {
                         return "operation is reserved";
                     }
                     if (self.replica != 0) return "replica != 0";
@@ -1496,7 +1496,7 @@ pub const Header = extern struct {
 
             const reasons = comptime std.enums.values(Reason);
             inline for (reasons) |reason| {
-                if (@intFromEnum(self.reason) == @intFromEnum(reason)) break;
+                if (@backingInt(self.reason) == @backingInt(reason)) break;
             } else return "reason invalid";
             if (self.reason == .reserved) return "reason == reserved";
             return null;
@@ -1515,7 +1515,7 @@ pub const Header = extern struct {
 
             comptime {
                 for (std.enums.values(Reason), 0..) |reason, index| {
-                    assert(@intFromEnum(reason) == index);
+                    assert(@backingInt(reason) == index);
                 }
             }
         };
@@ -1629,9 +1629,9 @@ fn format_header(T: type, header: *const T, writer: anytype) !void {
     };
 
     try writer.writeAll(simple_type_name ++ "{");
-    inline for (@typeInfo(T).@"struct".fields, 0..) |field, field_index| {
-        comptime assert((field_index == 0) == std.mem.eql(u8, field.name, "checksum"));
-        try format_header_field(field.name, field.type, &@field(header, field.name), writer);
+    inline for (@typeInfo(T).@"struct".field_names, 0..) |name, field_index| {
+        comptime assert((field_index == 0) == std.mem.eql(u8, name, "checksum"));
+        try format_header_field(name, @FieldType(T, name), &@field(header, name), writer);
     }
     try writer.writeAll(" }");
 }
@@ -1690,7 +1690,7 @@ fn format_header_field(
             // Protocol enums are deliberately non-exhaustive so state machines can use the
             // remaining numeric values. Zig 0.16 makes `@tagName` panic for those valid unnamed
             // values, so preserve them numerically in diagnostic output.
-            try writer.print("{s}({d})", .{ @typeName(T), @intFromEnum(field_value.*) });
+            try writer.print("{s}({d})", .{ @typeName(T), @backingInt(field_value.*) });
         }
     } else {
         try writer.print("{any}", .{field_value.*});
@@ -1725,26 +1725,27 @@ comptime {
         assert(stdx.no_padding(CommandHeader));
 
         // Verify that the command's header's frame is identical to Header's.
-        for (std.meta.fields(Header)) |header_field| {
-            if (std.mem.eql(u8, header_field.name, "reserved_command")) {
-                assert(std.meta.fieldIndex(CommandHeader, header_field.name) == null);
+        const header_info = @typeInfo(Header).@"struct";
+        const command_info = @typeInfo(CommandHeader).@"struct";
+        for (header_info.field_names, 0..) |field_name, header_index| {
+            if (std.mem.eql(u8, field_name, "reserved_command")) {
+                assert(!@hasField(CommandHeader, field_name));
             } else {
-                const command_field_index = std.meta.fieldIndex(CommandHeader, header_field.name).?;
-                const command_field = std.meta.fields(CommandHeader)[command_field_index];
-                assert(command_field.type == header_field.type);
-                assert(command_field.alignment == header_field.alignment);
-                assert(@offsetOf(CommandHeader, command_field.name) ==
-                    @offsetOf(Header, header_field.name));
+                const command_index = std.meta.fieldIndex(CommandHeader, field_name).?;
+                assert(command_info.field_types[command_index] == header_info.field_types[header_index]);
+                assert(command_info.field_attrs[command_index].@"align" ==
+                    header_info.field_attrs[header_index].@"align");
+                assert(@offsetOf(CommandHeader, field_name) == @offsetOf(Header, field_name));
             }
         }
 
         // Verify that the command's header's re-exports all Header's functions.
         const HeaderFunctions = Header.HeaderFunctionsType(CommandHeader);
-        for (@typeInfo(HeaderFunctions).@"struct".decls) |decl| {
-            assert(@hasDecl(CommandHeader, decl.name));
+        for (@typeInfo(HeaderFunctions).@"struct".decl_names) |decl_name| {
+            assert(@hasDecl(CommandHeader, decl_name));
 
-            const a = @field(CommandHeader, decl.name);
-            const b = @field(HeaderFunctions, decl.name);
+            const a = @field(CommandHeader, decl_name);
+            const b = @field(HeaderFunctions, decl_name);
             assert(a == b);
         }
     }
@@ -1789,7 +1790,7 @@ test format_header {
 }
 
 test "format non-exhaustive enum header field" {
-    const operation: Operation = @enumFromInt(140);
+    const operation: Operation = @fromBackingInt(@intCast(140));
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
 

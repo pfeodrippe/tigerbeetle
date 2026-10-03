@@ -167,8 +167,8 @@ const Pipe = struct {
             ) * std.time.ns_per_ms + 1;
             assert(timeout_duration_ns > 0);
 
-            log.debug("delaying {} ({d},{d})", .{
-                std.fmt.fmtDuration(timeout_duration_ns),
+            log.debug("delaying {f} ({d},{d})", .{
+                std.Io.Duration.fromNanoseconds(timeout_duration_ns),
                 pipe.connection.replica_index,
                 pipe.connection.connection_index,
             });

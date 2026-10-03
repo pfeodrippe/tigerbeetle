@@ -502,7 +502,10 @@ pub fn ClusterType(comptime StateMachineType: anytype) type {
             cluster.allocator.free(cluster.aof_ios);
 
             for (cluster.aof_io_files) |*io_file| {
-                for (io_file) |file| cluster.allocator.free(file.buffer);
+                for (io_file) |file| {
+                    const buffer: []align(constants.sector_size) u8 = @alignCast(file.buffer);
+                    cluster.allocator.free(buffer);
+                }
             }
             cluster.allocator.free(cluster.aof_io_files);
 

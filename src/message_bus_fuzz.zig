@@ -72,8 +72,8 @@ pub fn main(gpa: std.mem.Allocator, args: fuzz.FuzzArgs) !void {
         break :weights command_weights;
     };
 
-    inline for (std.meta.fields(@TypeOf(command_weights))) |field| {
-        log.info("command weight: {s} = {}", .{ field.name, @field(command_weights, field.name) });
+    inline for (@typeInfo(@TypeOf(command_weights)).@"struct".field_names) |field| {
+        log.info("command weight: {s} = {}", .{ field, @field(command_weights, field) });
     }
 
     var message_pool = try MessagePool.init_capacity(gpa, 128);

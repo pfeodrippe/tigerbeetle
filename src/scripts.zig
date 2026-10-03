@@ -78,11 +78,8 @@ const CLIArgs = union(enum) {
 pub fn main(process_init: std.process.Init) !void {
     stdx.set_process_context(process_init);
 
-    var gpa_allocator = std.heap.DebugAllocator(.{}).init;
-    defer switch (gpa_allocator.deinit()) {
-        .ok => {},
-        .leak => @panic("memory leak"),
-    };
+    var gpa_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
+    defer if (gpa_allocator.deinit() != 0) @panic("memory leak");
 
     const gpa = gpa_allocator.allocator();
 

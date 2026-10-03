@@ -548,8 +548,6 @@ const Environment = struct {
         log: Log,
         gpa: std.mem.Allocator,
 
-        gpa: std.mem.Allocator,
-
         pub fn init(gpa: std.mem.Allocator) Model {
             return .{
                 .transfers_mutable = Indexes.init(gpa),
@@ -617,13 +615,13 @@ const Environment = struct {
         }
 
         pub fn scan(model: *const Model, params: ScanParams) ![]tb.Transfer {
-            var matches = std.ArrayList(tb.Transfer).init(model.gpa);
-            errdefer matches.deinit();
+            var matches: std.ArrayList(tb.Transfer) = .empty;
+            errdefer matches.deinit(model.gpa);
 
             var iterator = model.transfers_mutable.transfers_by_id.valueIterator();
             while (iterator.next()) |transfer| {
                 const key = scan_key(params.index, transfer) orelse continue;
-                if (key >= params.min and key <= params.max) try matches.append(transfer.*);
+                if (key >= params.min and key <= params.max) try matches.append(model.gpa, transfer.*);
             }
             std.mem.sort(tb.Transfer, matches.items, params, struct {
                 fn less_than(context: ScanParams, a: tb.Transfer, b: tb.Transfer) bool {
@@ -639,7 +637,7 @@ const Environment = struct {
                     };
                 }
             }.less_than);
-            return matches.toOwnedSlice();
+            return matches.toOwnedSlice(model.gpa);
         }
 
         fn scan_key(index: @FieldType(ScanParams, "index"), object: *const tb.Transfer) ?u128 {
@@ -736,8 +734,8 @@ const Environment = struct {
                     .transfers.objects_cache.options.stash_value_count_max;
                 var index: u32 = 0;
 
-                while (index < model.log.readableLength()) : (index += 1) {
-                    const entry = model.log.peekItem(index);
+                while (index < model.log.items.len) : (index += 1) {
+                    const entry = model.log.items[index];
                     const id = entry.id;
                     _ = try env.check_lookup(
                         .{ .id = id },

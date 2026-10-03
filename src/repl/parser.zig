@@ -182,15 +182,15 @@ pub const Parser = struct {
             while (flags_strings.next()) |flag_string| {
                 const flag_to_validate_trimmed =
                     std.mem.trim(u8, flag_string, std.ascii.whitespace[0..]);
-                inline for (@typeInfo(Value).@"struct".fields) |known_flag_field| {
-                    if (std.mem.eql(u8, known_flag_field.name, flag_to_validate_trimmed)) {
-                        if (comptime !std.mem.eql(u8, known_flag_field.name, "padding")) {
-                            const flag_value = &@field(validated_flags, known_flag_field.name);
+                inline for (@typeInfo(Value).@"struct".field_names) |known_flag_name| {
+                    if (std.mem.eql(u8, known_flag_name, flag_to_validate_trimmed)) {
+                        if (comptime !std.mem.eql(u8, known_flag_name, "padding")) {
+                            const flag_value = &@field(validated_flags, known_flag_name);
                             if (flag_value.*) {
                                 try parser.print_current_position();
                                 try parser.print_error(
                                     "Duplicate flag set: \"{s}\".\n",
-                                    .{known_flag_field.name},
+                                    .{known_flag_name},
                                 );
                                 return error.ParseError;
                             }
@@ -255,7 +255,7 @@ pub const Parser = struct {
         var object = default;
 
         const ObjectField = std.meta.FieldEnum(@TypeOf(object));
-        var object_fields = std.enums.EnumSet(ObjectField).initEmpty();
+        var object_fields: std.enums.EnumSet(ObjectField) = .empty;
 
         while (parser.offset < parser.input.len) {
             const offset_start = parser.offset;
@@ -277,7 +277,7 @@ pub const Parser = struct {
 
                 // Reset object.
                 object = default;
-                object_fields = .initEmpty();
+                object_fields = .empty;
             }
 
             const field_string = parser.parse_identifier();
@@ -595,29 +595,29 @@ test "Parser: snap" {
             const Object = ObjectType(operation);
             for (objects, 0..) |*object, i| {
                 if (i > 0) try body_formatted_writer.writeByte('\n');
-                inline for (std.meta.fields(Object)) |field| {
-                    const value = @field(object, field.name);
+                inline for (@typeInfo(Object).@"struct".field_names) |field| {
+                    const value = @field(object, field);
 
                     if (stdx.zeroed(std.mem.asBytes(&value))) {
                         // Omit zeroed fields for readability.
                     } else {
-                        if (comptime std.mem.eql(u8, field.name, "flags")) {
+                        if (comptime std.mem.eql(u8, field, "flags")) {
                             try body_formatted_writer.print(" flags=", .{});
                             var separate = false;
-                            inline for (std.meta.fields(field.type)) |flag| {
-                                const flag_value = @field(value, flag.name);
-                                if (comptime std.mem.eql(u8, flag.name, "padding")) {
+                            inline for (@typeInfo(@TypeOf(value)).@"struct".field_names) |flag| {
+                                const flag_value = @field(value, flag);
+                                if (comptime std.mem.eql(u8, flag, "padding")) {
                                     assert(flag_value == 0);
                                 } else {
                                     if (flag_value) {
                                         if (separate) try body_formatted_writer.print("|", .{});
                                         separate = true;
-                                        try body_formatted_writer.print("{s}", .{flag.name});
+                                        try body_formatted_writer.print("{s}", .{flag});
                                     }
                                 }
                             }
                         } else {
-                            try body_formatted_writer.print(" {s}={any}", .{ field.name, value });
+                            try body_formatted_writer.print(" {s}={any}", .{ field, value });
                         }
                     }
                 }

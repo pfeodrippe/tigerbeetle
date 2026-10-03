@@ -384,7 +384,7 @@ pub fn bytes_as_slice(
         else => unreachable,
     }
 
-    break :type if (type_info.pointer.is_const) []const T else []T;
+    break :type if (type_info.pointer.attrs.@"const") []const T else []T;
 } {
     switch (precision) {
         .exact => {
@@ -556,7 +556,6 @@ pub fn log_with_timestamp(
 pub fn equal_bytes(comptime T: type, a: *const T, b: *const T) bool {
     comptime assert(has_unique_representation(T));
     comptime assert(!has_pointers(T));
-    comptime assert(@sizeOf(T) * 8 == @bitSizeOf(T));
 
     // Pick the biggest "word" for word-wise comparison, and don't try to early-return on the first
     // mismatch, so that a compiler can vectorize the loop.
@@ -958,43 +957,31 @@ pub fn EnumUnionType(
     comptime Enum: type,
     comptime TypeForVariant: fn (comptime variant: Enum) type,
 ) type {
-    const UnionField = std.builtin.Type.UnionField;
-
-    var fields: [std.enums.values(Enum).len]UnionField = undefined;
+    const count = std.enums.values(Enum).len;
+    var names: [count][:0]const u8 = undefined;
+    var types: [count]type = undefined;
+    var attrs: [count]std.builtin.Type.Union.FieldAttributes = undefined;
     for (std.enums.values(Enum), 0..) |enum_variant, i| {
-        fields[i] = .{
-            .name = @tagName(enum_variant),
-            .type = TypeForVariant(enum_variant),
-            .alignment = @alignOf(TypeForVariant(enum_variant)),
-        };
+        names[i] = @tagName(enum_variant);
+        types[i] = TypeForVariant(enum_variant);
+        attrs[i] = .{ .@"align" = @alignOf(types[i]) };
     }
 
-    return type_from_info(.{ .@"union" = .{
-        .layout = .auto,
-        .fields = &fields,
-        .decls = &.{},
-        .tag_type = Enum,
-    } });
+    return @Union(.auto, Enum, &names, &types, &attrs);
 }
 
 /// Constructs an `enum` type from names.
 pub fn EnumType(comptime names: anytype) type {
     comptime assert(names.len > 0);
-    const EnumField = std.builtin.Type.EnumField;
-    var fields: [names.len]EnumField = undefined;
+    const Tag = std.math.IntFittingRange(0, names.len);
+    var field_names: [names.len][:0]const u8 = undefined;
+    var values: [names.len]Tag = undefined;
     for (names, 0..) |name, i| {
-        fields[i] = .{
-            .name = name,
-            .value = i,
-        };
+        field_names[i] = name;
+        values[i] = i;
     }
 
-    return type_from_info(.{ .@"enum" = .{
-        .fields = &fields,
-        .decls = &.{},
-        .tag_type = std.math.IntFittingRange(0, names.len),
-        .is_exhaustive = true,
-    } });
+    return @Enum(Tag, .exhaustive, &field_names, &values);
 }
 
 /// Creates a slice to a comptime slice without triggering
@@ -1175,7 +1162,7 @@ pub fn unexpected_errno(label: []const u8, err: std.posix.system.E) std.posix.Un
         std.enums.tagName(std.posix.system.E, err),
     });
 
-    if (builtin.mode == .Debug) {
+    if (builtin.mode == .debug) {
         std.debug.dumpCurrentStackTrace(.{});
     }
     return error.Unexpected;

@@ -1,4 +1,5 @@
 const std = @import("std");
+const stdx = @import("stdx");
 const assert = std.debug.assert;
 
 const testing = std.testing;
@@ -18,8 +19,8 @@ const TmpTigerBeetle = @import("../testing/tmp_tigerbeetle.zig");
 pub const CLIArgs = struct {};
 
 const TestingContext = struct {
-    mutex: std.Thread.Mutex = .{},
-    cond: std.Thread.Condition = .{},
+    mutex: std.Io.Mutex = .init,
+    cond: std.Io.Condition = .init,
     reply: ?struct {
         tb_context: usize,
         tb_packet: *Packet,
@@ -28,11 +29,11 @@ const TestingContext = struct {
     } = null,
 
     pub fn wait_pending(self: *TestingContext) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(stdx.process_io);
+        defer self.mutex.unlock(stdx.process_io);
 
         while (self.reply == null) {
-            self.cond.wait(&self.mutex);
+            self.cond.waitUncancelable(stdx.process_io, &self.mutex);
         }
     }
 
@@ -46,8 +47,8 @@ const TestingContext = struct {
         _ = result;
         var self: *TestingContext = @ptrCast(@alignCast(tb_packet.*.user_data.?));
 
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        self.mutex.lockUncancelable(stdx.process_io);
+        defer self.mutex.unlock(stdx.process_io);
 
         assert(self.reply == null);
         self.reply = .{
@@ -56,7 +57,7 @@ const TestingContext = struct {
             .timestamp = timestamp,
             .result_size = result_size,
         };
-        self.cond.signal();
+        self.cond.signal(stdx.process_io);
     }
 };
 

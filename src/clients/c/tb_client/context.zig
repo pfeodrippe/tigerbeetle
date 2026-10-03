@@ -224,9 +224,7 @@ pub fn ContextType(
         request_latency: ?stdx.Duration,
 
         const Context = @This();
-        const GPA = std.heap.GeneralPurposeAllocator(.{
-            .thread_safe = true,
-        });
+        const GPA = std.heap.SafeAllocator;
 
         const Operation = Client.Operation;
 
@@ -251,10 +249,8 @@ pub fn ContextType(
                 // Wrap the root allocator - usually heap.c_allocator when built as a library - in
                 // a GPA to keep maximum compatibility while gaining the extra safety. As a library,
                 // libtbclient is running inside another process's address space.
-                var gpa = GPA{
-                    .backing_allocator = root_allocator,
-                };
-                errdefer assert(gpa.deinit() == .ok);
+                var gpa = GPA.init(root_allocator, .{});
+                errdefer assert(gpa.deinit() == 0);
 
                 const context = try gpa.allocator().create(Context);
 
@@ -267,7 +263,7 @@ pub fn ContextType(
             errdefer {
                 var gpa: GPA = context.gpa;
                 gpa.allocator().destroy(context);
-                assert(gpa.deinit() == .ok);
+                assert(gpa.deinit() == 0);
             }
 
             const allocator = context.gpa.allocator();
@@ -433,7 +429,7 @@ pub fn ContextType(
             // NB: Copy the allocator back out before trying to destroy `self` with it!
             var gpa: GPA = self.gpa;
             gpa.allocator().destroy(self);
-            assert(gpa.deinit() == .ok);
+            assert(gpa.deinit() == 0);
         }
 
         fn tick(self: *Context) void {
@@ -502,7 +498,7 @@ pub fn ContextType(
                 self.client.release_message(inflight.message.base());
 
                 if (operation != .register) {
-                    const packet: *Packet = @as(UserData, @bitCast(inflight.user_data)).packet;
+                    const packet = std.mem.bytesToValue(UserData, std.mem.asBytes(&inflight.user_data)).packet;
                     packet.assert_phase(.sent);
                     self.packet_cancel(packet);
                 }
@@ -666,10 +662,10 @@ pub fn ContextType(
             packet_list.phase = .sent;
             self.client.raw_request(
                 Context.client_result_callback,
-                @bitCast(UserData{
+                std.mem.bytesToValue(u128, std.mem.asBytes(&UserData{
                     .self = self,
                     .packet = packet_list,
-                }),
+                })),
                 message.ref(),
             );
             assert(message.header.request != 0);
@@ -750,7 +746,7 @@ pub fn ContextType(
             assert(eviction.header.command == .eviction);
             assert(eviction.header.reason != .reserved);
 
-            const self: *Context = @fieldParentPtr("client", client);
+            const self: *Context = @alignCast(@fieldParentPtr("client", client));
             assert(self.eviction_reason == null);
             assert(self.client.evicted);
             self.eviction_reason = eviction.header.reason;
@@ -773,7 +769,7 @@ pub fn ContextType(
         ) void {
             assert(thread_caller == .io);
 
-            const user_data: UserData = @bitCast(raw_user_data);
+            const user_data = std.mem.bytesToValue(UserData, std.mem.asBytes(&raw_user_data));
             const self: *Context = user_data.self;
             const packet_list: *Packet = user_data.packet;
             const operation = operation_vsr.cast(Client.Operation);

@@ -30,27 +30,19 @@ const TableInfo = @import("./schema.zig").ManifestNode.TableInfo;
 pub fn ForestTableIteratorType(comptime Forest: type) type {
     // struct { (Tree.name) → TreeTableIteratorType(Tree) }
     const TreeTableIterators = iterator: {
-        const StructField = std.builtin.Type.StructField;
-
-        var fields: [Forest.tree_infos.len]StructField = undefined;
+        const count = Forest.tree_infos.len;
+        var names: [count][:0]const u8 = undefined;
+        var types: [count]type = undefined;
+        var attrs: [count]std.builtin.Type.Struct.FieldAttributes = undefined;
         for (Forest.tree_infos, 0..) |tree_info, i| {
-            fields[i] = .{
-                .name = @ptrCast(tree_info.tree_name),
-                .type = TreeTableIteratorType(tree_info.Tree),
-                .default_value_ptr = null,
-                .is_comptime = false,
-                .alignment = @alignOf(TreeTableIteratorType(tree_info.Tree)),
-            };
+            names[i] = @ptrCast(tree_info.tree_name);
+            types[i] = TreeTableIteratorType(tree_info.Tree);
+            attrs[i] = .{ .@"align" = @alignOf(types[i]) };
         }
 
-        break :iterator stdx.type_from_info(.{ .@"struct" = .{
-            .layout = .auto,
-            .fields = &fields,
-            .decls = &.{},
-            .is_tuple = false,
-        } });
+        break :iterator @Struct(.auto, null, &names, &types, &attrs);
     };
-    assert(std.meta.fields(TreeTableIterators).len > 0);
+    assert(@typeInfo(TreeTableIterators).@"struct".field_names.len > 0);
 
     return struct {
         const ForestTableIterator = @This();
@@ -62,7 +54,7 @@ pub fn ForestTableIteratorType(comptime Forest: type) type {
 
         trees: TreeTableIterators = default: {
             var iterators: TreeTableIterators = undefined;
-            for (std.meta.fields(TreeTableIterators)) |field| @field(iterators, field.name) = .{};
+            for (@typeInfo(TreeTableIterators).@"struct".field_names) |name| @field(iterators, name) = .{};
             break :default iterators;
         },
 

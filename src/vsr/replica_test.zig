@@ -2570,26 +2570,6 @@ const TestReplicas = struct {
         return @as(std.meta.Tag(vsr.SyncStage), t.sync_stage());
     }
 
-    fn sync_target(t: *const TestReplicas) ?vsr.SyncTarget {
-        return t.sync_stage().target();
-    }
-
-    pub fn sync_target_checkpoint_op(t: *const TestReplicas) ?u64 {
-        if (t.sync_target()) |target| {
-            return target.checkpoint_op;
-        } else {
-            return null;
-        }
-    }
-
-    pub fn sync_target_checkpoint_id(t: *const TestReplicas) ?u128 {
-        if (t.sync_target()) |target| {
-            return target.checkpoint_id;
-        } else {
-            return null;
-        }
-    }
-
     const Role = enum { primary, backup, standby };
 
     pub fn role(t: *const TestReplicas) Role {
@@ -2679,7 +2659,7 @@ const TestReplicas = struct {
     pub fn pass_all(t: *const TestReplicas, peer: ProcessSelector, direction: LinkDirection) void {
         const paths = t.peer_paths(peer, direction);
         for (paths.const_slice()) |path| {
-            t.cluster.network.link_filter(path).* = LinkFilter.initFull();
+            t.cluster.network.link_filter(path).* = .full;
         }
     }
 

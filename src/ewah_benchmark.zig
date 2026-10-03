@@ -33,6 +33,7 @@ const configs = [_]BitSetConfig{
 var prng = stdx.PRNG.from_seed(42);
 
 test "benchmark: ewah" {
+    var time_source: stdx.TimeOS = .{};
     for (configs) |config| {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
@@ -54,7 +55,7 @@ test "benchmark: ewah" {
         }
 
         // Benchmark encoding.
-        var encode_timer = try stdx.Timer.start();
+        var encode_timer = stdx.Timer.init(time_source.interface());
         i = 0;
         while (i < samples) : (i += 1) {
             var j: usize = 0;
@@ -64,9 +65,9 @@ test "benchmark: ewah" {
             }
             bitset_lengths[i] = size;
         }
-        const encode_time = encode_timer.read() / samples / repeats;
+        const encode_time = encode_timer.read().ns / samples / repeats;
 
-        var decode_timer = try stdx.Timer.start();
+        var decode_timer = stdx.Timer.init(time_source.interface());
         // Benchmark decoding.
         i = 0;
         while (i < samples) : (i += 1) {
@@ -76,7 +77,7 @@ test "benchmark: ewah" {
                 _ = ewah.decode_all(bitset_encoded, bitsets_decoded[i]);
             }
         }
-        const decode_time = decode_timer.read() / samples / repeats;
+        const decode_time = decode_timer.read().ns / samples / repeats;
 
         i = 0;
         while (i < samples) : (i += 1) {

@@ -108,14 +108,15 @@ fn devhub_metrics(shell: *Shell, cli_args: CLIArgs) !void {
 
     // Only build the TigerBeetle binary to test build speed and build size. Throw it away once
     // done, and use a release build from `zig-out/dist/` to run the benchmark.
-    var timer = try stdx.Timer.start();
+    var time_source: stdx.TimeOS = .{};
+    var timer = stdx.Timer.init(time_source.interface());
 
     const build_time_debug_ms = blk: {
         timer.reset();
         try shell.exec_zig("build install", .{});
         defer shell.project_root.deleteFile(stdx.process_io, "tigerbeetle") catch unreachable;
 
-        break :blk timer.read() / std.time.ns_per_ms;
+        break :blk timer.read().ns / std.time.ns_per_ms;
     };
 
     const build_time_ms, const executable_size_bytes = blk: {
@@ -125,7 +126,7 @@ fn devhub_metrics(shell: *Shell, cli_args: CLIArgs) !void {
         defer shell.project_root.deleteFile(stdx.process_io, "tigerbeetle") catch unreachable;
 
         break :blk .{
-            timer.lap() / std.time.ns_per_ms,
+            timer.read().ns / std.time.ns_per_ms,
             (try shell.cwd.statFile(stdx.process_io, "tigerbeetle", .{})).size,
         };
     };
@@ -193,7 +194,7 @@ fn devhub_metrics(shell: *Shell, cli_args: CLIArgs) !void {
             .{},
         );
 
-        break :blk timer.read() / std.time.ns_per_ms;
+        break :blk timer.read().ns / std.time.ns_per_ms;
     };
 
     shell.cwd.deleteFile(stdx.process_io, "datafile-devhub") catch unreachable;
@@ -218,7 +219,7 @@ fn devhub_metrics(shell: *Shell, cli_args: CLIArgs) !void {
             .{},
         );
 
-        break :blk timer.read() / std.time.ns_per_ms;
+        break :blk timer.read().ns / std.time.ns_per_ms;
     };
     defer shell.cwd.deleteFile(stdx.process_io, "datafile-devhub") catch unreachable;
 
@@ -307,7 +308,7 @@ fn devhub_metrics(shell: *Shell, cli_args: CLIArgs) !void {
         assert(eviction.valid_checksum());
         assert(eviction.valid_checksum_body(&[0]u8{}));
 
-        const startup_time_ms = timer.read() / std.time.ns_per_ms;
+        const startup_time_ms = timer.read().ns / std.time.ns_per_ms;
 
         // While there's a running instance, check how long the repl takes to connect and run a
         // command.
@@ -318,7 +319,7 @@ fn devhub_metrics(shell: *Shell, cli_args: CLIArgs) !void {
             .{ .port = port, .command = "create_accounts id=1 ledger=1 code=1" },
         );
 
-        const repl_single_command_ms = timer.read() / std.time.ns_per_ms;
+        const repl_single_command_ms = timer.read().ns / std.time.ns_per_ms;
 
         break :blk .{ startup_time_ms, repl_single_command_ms };
     };

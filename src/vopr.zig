@@ -98,13 +98,9 @@ pub fn main(process_init: std.process.Init) !void {
     log_writer = std.Io.File.stderr().writer(stdx.process_io, &log_buffer);
     fuzz.limit_ram();
 
-    var gpa_instance: std.heap.DebugAllocator(.{}) = .init;
+    var gpa_instance: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
     defer {
-        _ = gpa_instance.detectLeaks();
-        switch (gpa_instance.deinit()) {
-            .ok => {},
-            .leak => @panic("memory leaked"),
-        }
+        if (gpa_instance.deinit() != 0) @panic("memory leaked");
     }
 
     const gpa = gpa_instance.allocator();
@@ -132,10 +128,10 @@ pub fn main(process_init: std.process.Init) !void {
     };
 
     // We do not support ReleaseFast or ReleaseSmall because they disable assertions.
-    comptime assert(builtin.mode == .Debug or builtin.mode == .ReleaseSafe);
+    comptime assert(builtin.mode == .debug or builtin.mode == .safe);
 
     if (seed == seed_random) {
-        if (builtin.mode != .ReleaseSafe) {
+        if (builtin.mode != .safe) {
             // If no seed is provided, than Debug is too slow and ReleaseSafe is much faster.
             return vsr.fatal(
                 .cli,
@@ -1703,7 +1699,7 @@ pub const Simulator = struct {
 /// Print an error message and then exit with an exit code.
 fn fatal(failure: Failure, comptime fmt_string: []const u8, args: anytype) noreturn {
     log.err(fmt_string, args);
-    std.process.exit(@intFromEnum(failure));
+    std.process.exit(@backingInt(failure));
 }
 
 /// Signal that something is not yet fully implemented, and abort the process.

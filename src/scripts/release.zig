@@ -71,7 +71,7 @@ pub fn main(shell: *Shell, gpa: std.mem.Allocator, cli_args: CLIArgs) !void {
     const languages = if (cli_args.language) |language|
         LanguageSet.initOne(language)
     else
-        LanguageSet.initFull();
+        LanguageSet.full;
 
     if (cli_args.devhub) {
         if (cli_args.language == null or cli_args.language.? != .zig) {
@@ -1023,9 +1023,9 @@ fn publish_python(shell: *Shell, info: VersionInfo) !void {
     const arena = shell.arena.allocator();
 
     const wheel_name = try shell.fmt("tigerbeetle-{s}-py3-none-any.whl", .{info.tag});
-    const wheel = try std.fs.cwd().readFileAlloc(arena, try shell.fmt("zig-out/dist/python/{s}", .{
+    const wheel = try shell.cwd.readFileAlloc(stdx.process_io, try shell.fmt("zig-out/dist/python/{s}", .{
         wheel_name,
-    }), 10 * stdx.MiB);
+    }), arena, .limited(10 * stdx.MiB));
 
     const sha256 = b: {
         var hasher = std.crypto.hash.sha2.Sha256.init(.{});

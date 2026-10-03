@@ -294,7 +294,7 @@ const QuerySpec = struct {
 const QuerySpecFuzzer = struct {
     prng: *stdx.PRNG,
     index_cardinality: [thing_index_count]u64,
-    indexes_used: std.EnumSet(Index) = std.EnumSet(Index).initEmpty(),
+    indexes_used: std.EnumSet(Index) = .empty,
 
     fn generate_fuzz_query_specs(
         prng: *stdx.PRNG,
@@ -887,7 +887,7 @@ const Environment = struct {
         if (changeable == 0) return null;
 
         var new = old.*;
-        var used = std.EnumSet(Index).initEmpty();
+        var used: std.EnumSet(Index) = .empty;
         const changeable_u32: u32 = @intCast(changeable);
         const changes_max = @min(@as(u32, 3), changeable_u32);
         const changes = env.prng.range_inclusive(u32, 1, changes_max);

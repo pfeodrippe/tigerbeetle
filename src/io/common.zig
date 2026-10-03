@@ -189,12 +189,12 @@ fn getsockopt(
     fd: posix.socket_t,
     level: i32,
     option: u32,
-) posix.GetSockOptError!c_int {
+) error{ AccessDenied, InvalidProtocolOption, SystemResources, Unexpected }!c_int {
     var value: c_int = undefined;
 
     if (builtin.target.os.tag == .windows) {
         var value_size: i32 = @sizeOf(c_int);
-        const rc = std.os.windows.ws2_32.getsockopt(
+        const rc = stdx.windows.getsockopt(
             fd,
             level,
             @intCast(option),
@@ -202,7 +202,7 @@ fn getsockopt(
             &value_size,
         );
         if (rc != 0) {
-            switch (std.os.windows.ws2_32.WSAGetLastError()) {
+            switch (stdx.windows.wsa_get_last_error()) {
                 .WSAEACCES => return error.AccessDenied,
                 .WSAENOPROTOOPT => return error.InvalidProtocolOption,
                 .WSAENOBUFS => return error.SystemResources,
@@ -210,7 +210,7 @@ fn getsockopt(
                 .WSAEFAULT => unreachable,
                 .WSAEINVAL => unreachable,
                 .WSAENOTSOCK => unreachable,
-                else => |err| return std.os.windows.unexpectedWSAError(err),
+                else => |err| return stdx.windows.unexpected_wsa_error(err),
             }
         }
         assert(value_size == @sizeOf(c_int));

@@ -65,6 +65,7 @@ const configs = [_]Options{
 };
 
 test "benchmark: segmented array" {
+    var time_source: stdx.TimeOS = .{};
     var prng = stdx.PRNG.from_seed(42);
 
     inline for (configs) |options| {
@@ -116,7 +117,7 @@ test "benchmark: segmented array" {
         const queries = try alloc_shuffled_index(allocator, options.value_count, &prng);
         defer allocator.free(queries);
 
-        var timer = try stdx.Timer.start();
+        var timer = stdx.Timer.init(time_source.interface());
         const repetitions = @max(1, @divFloor(samples, queries.len));
         var j: usize = 0;
         while (j < repetitions) : (j += 1) {
@@ -124,7 +125,7 @@ test "benchmark: segmented array" {
                 std.mem.doNotOptimizeAway(array.absolute_index_for_cursor(array.search(query)));
             }
         }
-        const time = timer.read() / repetitions / queries.len;
+        const time = timer.read().ns / repetitions / queries.len;
 
         log.info(
             "KeyType={} ValueCount={:_>7} ValueSize={:_>2}B NodeSize={:_>6}B LookupTime={:_>6}ns",

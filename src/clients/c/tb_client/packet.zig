@@ -149,7 +149,7 @@ pub const Packet = extern struct {
             }
 
             inline for (operations_allowed) |operation| {
-                if (packet.operation == @intFromEnum(operation)) {
+                if (packet.operation == @backingInt(operation)) {
                     break :operation operation;
                 }
             }
@@ -448,18 +448,19 @@ pub const Packet = extern struct {
         assert(@alignOf(Packet) == @alignOf(Extern));
 
         // Asserting the fields are identical.
-        for (std.meta.fields(Extern)) |field_extern| {
-            if (std.mem.eql(u8, field_extern.name, "opaque")) continue;
-            const field_packet = std.meta.fields(Packet)[
-                std.meta.fieldIndex(
-                    Packet,
-                    field_extern.name,
-                ).?
-            ];
-            assert(field_packet.type == field_extern.type);
-            assert(field_packet.alignment == field_extern.alignment);
-            assert(@offsetOf(Packet, field_extern.name) ==
-                @offsetOf(Extern, field_extern.name));
+        const extern_info = @typeInfo(Extern).@"struct";
+        const packet_info = @typeInfo(Packet).@"struct";
+        for (extern_info.field_names, extern_info.field_types, extern_info.field_attrs) |
+            name,
+            Field,
+            attrs,
+        | {
+            if (std.mem.eql(u8, name, "opaque")) continue;
+            const index = std.meta.fieldIndex(Packet, name).?;
+            assert(packet_info.field_types[index] == Field);
+            assert((packet_info.field_attrs[index].@"align" orelse @alignOf(Field)) ==
+                (attrs.@"align" orelse @alignOf(Field)));
+            assert(@offsetOf(Packet, name) == @offsetOf(Extern, name));
         }
     }
 };
@@ -554,7 +555,7 @@ test "batch_validate" {
             .data = undefined,
             .data_size = TestOperation.create.event_size() * 1,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.create),
+            .operation = @backingInt(TestOperation.create),
             .status = .ok,
         });
 
@@ -578,7 +579,7 @@ test "batch_validate" {
             .data = undefined,
             .data_size = TestOperation.create.event_size() * 10,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.create),
+            .operation = @backingInt(TestOperation.create),
             .status = .ok,
         });
 
@@ -602,7 +603,7 @@ test "batch_validate" {
             .data = undefined,
             .data_size = 0,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.create),
+            .operation = @backingInt(TestOperation.create),
             .status = .ok,
         });
 
@@ -630,7 +631,7 @@ test "batch_validate" {
             .data = &filter,
             .data_size = @sizeOf(QueryFilter),
             .user_tag = 1,
-            .operation = @intFromEnum(TestOperation.query),
+            .operation = @backingInt(TestOperation.query),
             .status = .ok,
         });
 
@@ -654,7 +655,7 @@ test "batch_validate" {
             .data = undefined,
             .data_size = TestOperation.create.event_size() * 10,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.create),
+            .operation = @backingInt(TestOperation.create),
             .status = .ok,
         });
 
@@ -677,7 +678,7 @@ test "batch_validate" {
             .data = &filter,
             .data_size = @sizeOf(QueryFilter),
             .user_tag = 1,
-            .operation = @intFromEnum(TestOperation.query),
+            .operation = @backingInt(TestOperation.query),
             .status = .ok,
         });
 
@@ -695,7 +696,7 @@ test "batch_validate" {
             .data = undefined,
             .data_size = TestOperation.create.event_size() - 1,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.create),
+            .operation = @backingInt(TestOperation.create),
             .status = .ok,
         });
 
@@ -713,7 +714,7 @@ test "batch_validate" {
             .data = undefined,
             .data_size = TestOperation.query.event_size() - 1,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.query),
+            .operation = @backingInt(TestOperation.query),
             .status = .ok,
         });
 
@@ -732,7 +733,7 @@ test "batch_validate" {
             .data = undefined,
             .data_size = TestOperation.query.event_size() * 2,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.query),
+            .operation = @backingInt(TestOperation.query),
             .status = .ok,
         });
 
@@ -751,7 +752,7 @@ test "batch_validate" {
             .data = undefined,
             .data_size = 0,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.query),
+            .operation = @backingInt(TestOperation.query),
             .status = .ok,
         });
 
@@ -805,7 +806,7 @@ test "batch_validate" {
             .data = undefined,
             .data_size = 0,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.deprecated),
+            .operation = @backingInt(TestOperation.deprecated),
             .status = .ok,
         });
 
@@ -838,7 +839,7 @@ test "batch_enqueue: multibatch event_count" {
         .data = undefined,
         .data_size = TestOperation.create.event_size() * 1,
         .user_tag = 0,
-        .operation = @intFromEnum(TestOperation.create),
+        .operation = @backingInt(TestOperation.create),
         .status = .ok,
     });
 
@@ -866,7 +867,7 @@ test "batch_enqueue: multibatch event_count" {
         .data = undefined,
         .data_size = TestOperation.create.event_size() * 4,
         .user_tag = 0,
-        .operation = @intFromEnum(TestOperation.create),
+        .operation = @backingInt(TestOperation.create),
         .status = .ok,
     });
     try packet_2.batch_enqueue(
@@ -900,7 +901,7 @@ test "batch_enqueue: multibatch event_count" {
         .data = undefined,
         .data_size = TestOperation.create.event_size() * 5,
         .user_tag = 0,
-        .operation = @intFromEnum(TestOperation.create),
+        .operation = @backingInt(TestOperation.create),
         .status = .ok,
     });
     try packet_3.batch_enqueue(
@@ -927,7 +928,7 @@ test "batch_enqueue: multibatch event_count" {
         .data = undefined,
         .data_size = TestOperation.create.event_size() * 2,
         .user_tag = 0,
-        .operation = @intFromEnum(TestOperation.create),
+        .operation = @backingInt(TestOperation.create),
         .status = .ok,
     });
     try packet_4.batch_enqueue(
@@ -977,7 +978,7 @@ test "batch_enqueue: multibatch result_expected_count" {
         .data = &QueryFilter{ .limit = 1 },
         .data_size = @sizeOf(QueryFilter),
         .user_tag = 0,
-        .operation = @intFromEnum(TestOperation.query),
+        .operation = @backingInt(TestOperation.query),
         .status = .ok,
     });
 
@@ -1005,7 +1006,7 @@ test "batch_enqueue: multibatch result_expected_count" {
         .data = &QueryFilter{ .limit = 2 },
         .data_size = @sizeOf(QueryFilter),
         .user_tag = 0,
-        .operation = @intFromEnum(TestOperation.query),
+        .operation = @backingInt(TestOperation.query),
         .status = .ok,
     });
     try packet_2.batch_enqueue(
@@ -1039,7 +1040,7 @@ test "batch_enqueue: multibatch result_expected_count" {
         .data = &QueryFilter{ .limit = result_max },
         .data_size = @sizeOf(QueryFilter),
         .user_tag = 0,
-        .operation = @intFromEnum(TestOperation.query),
+        .operation = @backingInt(TestOperation.query),
         .status = .ok,
     });
     try packet_3.batch_enqueue(
@@ -1066,7 +1067,7 @@ test "batch_enqueue: multibatch result_expected_count" {
         .data = &QueryFilter{ .limit = result_max - 3 },
         .data_size = @sizeOf(QueryFilter),
         .user_tag = 0,
-        .operation = @intFromEnum(TestOperation.query),
+        .operation = @backingInt(TestOperation.query),
         .status = .ok,
     });
     try packet_4.batch_enqueue(
@@ -1112,7 +1113,7 @@ test "batch_enqueue: no multibatch" {
         .data = undefined,
         .data_size = TestOperation.deprecated.event_size(),
         .user_tag = 0,
-        .operation = @intFromEnum(TestOperation.deprecated),
+        .operation = @backingInt(TestOperation.deprecated),
         .status = .ok,
     });
 
@@ -1140,7 +1141,7 @@ test "batch_enqueue: no multibatch" {
         .data = undefined,
         .data_size = TestOperation.deprecated.event_size(),
         .user_tag = 0,
-        .operation = @intFromEnum(TestOperation.deprecated),
+        .operation = @backingInt(TestOperation.deprecated),
         .status = .ok,
     });
 
@@ -1176,7 +1177,7 @@ test "batch_enqueue: batch_validate" {
             .data = undefined,
             .data_size = TestOperation.create.event_size() * 10,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.create),
+            .operation = @backingInt(TestOperation.create),
             .status = .ok,
         });
 
@@ -1205,7 +1206,7 @@ test "batch_enqueue: batch_validate" {
             .data = &filter,
             .data_size = @sizeOf(QueryFilter),
             .user_tag = 1,
-            .operation = @intFromEnum(TestOperation.query),
+            .operation = @backingInt(TestOperation.query),
             .status = .ok,
         });
 
@@ -1229,7 +1230,7 @@ test "batch_enqueue: batch_validate" {
             .data = undefined,
             .data_size = TestOperation.create.event_size() - 1,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.create),
+            .operation = @backingInt(TestOperation.create),
             .status = .ok,
         });
 
@@ -1253,7 +1254,7 @@ test "batch_enqueue: batch_validate" {
             .data = undefined,
             .data_size = TestOperation.query.event_size() - 1,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.query),
+            .operation = @backingInt(TestOperation.query),
             .status = .ok,
         });
 
@@ -1278,7 +1279,7 @@ test "batch_enqueue: batch_validate" {
             .data = undefined,
             .data_size = TestOperation.query.event_size() * 2,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.query),
+            .operation = @backingInt(TestOperation.query),
             .status = .ok,
         });
 
@@ -1303,7 +1304,7 @@ test "batch_enqueue: batch_validate" {
             .data = undefined,
             .data_size = 0,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.query),
+            .operation = @backingInt(TestOperation.query),
             .status = .ok,
         });
 
@@ -1375,7 +1376,7 @@ test "batch_enqueue: batch_validate" {
             .data = undefined,
             .data_size = 0,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.deprecated),
+            .operation = @backingInt(TestOperation.deprecated),
             .status = .ok,
         });
 
@@ -1402,7 +1403,7 @@ test "batch_write: multibatch" {
     var buffer: *align(constants.cache_line_size) [constants.message_body_size_max]u8 =
         @ptrCast(try testing.allocator.alignedAlloc(
             u8,
-            constants.cache_line_size,
+            .fromByteUnits(constants.cache_line_size),
             constants.message_body_size_max,
         ));
     defer testing.allocator.free(buffer);
@@ -1421,7 +1422,7 @@ test "batch_write: multibatch" {
             .data = &event,
             .data_size = @sizeOf(Event),
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.create),
+            .operation = @backingInt(TestOperation.create),
             .status = .ok,
         });
 
@@ -1460,7 +1461,7 @@ test "batch_write: multibatch" {
             .data = &event_1,
             .data_size = @sizeOf(QueryFilter),
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.query),
+            .operation = @backingInt(TestOperation.query),
             .status = .ok,
         });
 
@@ -1477,7 +1478,7 @@ test "batch_write: multibatch" {
             .data = &event_2,
             .data_size = @sizeOf(QueryFilter),
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.query),
+            .operation = @backingInt(TestOperation.query),
             .status = .ok,
         });
 
@@ -1516,7 +1517,7 @@ test "batch_write: multibatch" {
             .data = null,
             .data_size = 0,
             .user_tag = 0,
-            .operation = @intFromEnum(TestOperation.create),
+            .operation = @backingInt(TestOperation.create),
             .status = .ok,
         });
 
@@ -1560,7 +1561,7 @@ test "batch_write: no multibatch" {
         .data = &event,
         .data_size = @sizeOf(Event),
         .user_tag = 0,
-        .operation = @intFromEnum(TestOperation.deprecated),
+        .operation = @backingInt(TestOperation.deprecated),
         .status = .ok,
     });
 
@@ -1573,7 +1574,7 @@ test "batch_write: no multibatch" {
     var buffer: *align(constants.cache_line_size) [constants.message_body_size_max]u8 =
         @ptrCast(try testing.allocator.alignedAlloc(
             u8,
-            constants.cache_line_size,
+            .fromByteUnits(constants.cache_line_size),
             constants.message_body_size_max,
         ));
     defer testing.allocator.free(buffer);

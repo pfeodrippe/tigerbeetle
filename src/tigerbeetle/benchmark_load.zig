@@ -53,7 +53,7 @@ pub fn main(
     addresses: []const stdx.SocketAddress,
     cli_args: *const cli.Command.Benchmark,
 ) !void {
-    if (builtin.mode != .ReleaseSafe and builtin.mode != .ReleaseFast) {
+    if (builtin.mode != .safe and builtin.mode != .fast) {
         log.warn("Benchmark must be built with '-Drelease' for reasonable results.", .{});
     }
     if (!vsr.constants.config.process.direct_io) {
@@ -192,7 +192,7 @@ pub fn main(
     var benchmark = Benchmark{
         .io = io,
         .prng = &prng,
-        .timer = try stdx.Timer.start(),
+        .timer = stdx.Timer.init(time),
         .output = &stdout_writer.interface,
         .clients = clients.slice(),
         .client_timeouts = client_timeouts,
@@ -246,7 +246,7 @@ pub fn main(
 
         benchmark.timer.reset();
         _ = vsr.checksum(buffer);
-        const checksum_duration_ns = benchmark.timer.read();
+        const checksum_duration_ns = benchmark.timer.read().ns;
 
         benchmark.output.print(
             \\message size max = {} bytes
@@ -434,7 +434,7 @@ const Benchmark = struct {
 
         b.clients_busy.set(client_index);
         b.clients[client_index].register(register_callback, @bitCast(RequestContext{
-            .benchmark = b,
+            .benchmark_address = @intFromPtr(b),
             .client_index = @intCast(client_index),
             .request_index = undefined,
         }));
@@ -443,7 +443,7 @@ const Benchmark = struct {
 
     fn register_callback(user_data: u128, _: *const vsr.RegisterResult) void {
         const context: RequestContext = @bitCast(user_data);
-        const b: *Benchmark = context.benchmark;
+        const b: *Benchmark = @ptrFromInt(context.benchmark_address);
         assert(b.stage == .register);
         assert(b.clients_busy.is_set(context.client_index));
 
@@ -536,7 +536,7 @@ const Benchmark = struct {
         }
 
         const requests_complete = b.request_index - b.clients_busy.count();
-        const request_duration_ns = b.timer.read() - b.clients_request_ns[client_index];
+        const request_duration_ns = b.timer.read().ns - b.clients_request_ns[client_index];
         const request_duration_ms = @divTrunc(request_duration_ns, std.time.ns_per_ms);
         const transfers_created = @min(b.transfer_count, b.transfer_batch_count);
         b.transfers_created += transfers_created;
@@ -593,12 +593,12 @@ const Benchmark = struct {
             \\
         , .{
             .batch_count = b.request_index,
-            .batch_duration_s = @as(f64, @floatFromInt(b.timer.read())) / std.time.ns_per_s,
+            .batch_duration_s = @as(f64, @floatFromInt(b.timer.read().ns)) / std.time.ns_per_s,
             .batch_size = b.transfer_batch_count,
             .batch_delay = b.transfer_batch_delay,
             .transfer_rate = @divTrunc(
                 @as(u64, b.transfer_count) * std.time.ns_per_s,
-                b.timer.read(),
+                b.timer.read().ns,
             ),
         }) catch unreachable;
         print_percentiles_histogram(b.output, "batch", b.request_latency_histogram);
@@ -668,7 +668,7 @@ const Benchmark = struct {
 
         b.output.print("\n{[query_count]} queries in {[query_duration_s]d:.1} s\n", .{
             .query_count = b.request_index,
-            .query_duration_s = @as(f64, @floatFromInt(b.timer.read())) / std.time.ns_per_s,
+            .query_duration_s = @as(f64, @floatFromInt(b.timer.read().ns)) / std.time.ns_per_s,
         }) catch unreachable;
         print_percentiles_histogram(b.output, "query", b.request_latency_histogram);
 
@@ -841,8 +841,8 @@ const Benchmark = struct {
         b.run_finish();
     }
 
-    const RequestContext = extern struct {
-        benchmark: *Benchmark,
+    const RequestContext = packed struct(u128) {
+        benchmark_address: usize,
         client_index: u32,
         request_index: u32,
 
@@ -865,7 +865,7 @@ const Benchmark = struct {
         assert(!b.clients_busy.is_set(client_index));
 
         b.clients_busy.set(client_index);
-        b.clients_request_ns[client_index] = b.timer.read();
+        b.clients_request_ns[client_index] = b.timer.read().ns;
         b.request_index += 1;
 
         var encoder = vsr.multi_batch.MultiBatchEncoder.init(
@@ -878,7 +878,7 @@ const Benchmark = struct {
         b.clients[client_index].request(
             request_complete,
             @bitCast(RequestContext{
-                .benchmark = b,
+                .benchmark_address = @intFromPtr(b),
                 .client_index = @intCast(client_index),
                 .request_index = @intCast(b.request_index - 1),
             }),
@@ -896,14 +896,14 @@ const Benchmark = struct {
         const operation = operation_vsr.cast(tb.Operation);
         const context: RequestContext = @bitCast(user_data);
         const client = context.client_index;
-        const b: *Benchmark = context.benchmark;
+        const b: *Benchmark = @ptrFromInt(context.benchmark_address);
         assert(b.clients_busy.is_set(client));
         assert(b.stage != .idle);
         assert(timestamp > 0);
 
         b.clients_busy.unset(client);
 
-        const duration_ns = b.timer.read() - b.clients_request_ns[client];
+        const duration_ns = b.timer.read().ns - b.clients_request_ns[client];
         const duration_ms = @divTrunc(duration_ns, std.time.ns_per_ms);
         b.request_latency_histogram[@min(duration_ms, b.request_latency_histogram.len - 1)] += 1;
 

@@ -348,7 +348,7 @@ pub const Decoder = struct {
             .not_implemented_double,
             .not_implemented_decimal,
             .not_implemented_byte_array,
-            => fatal("AMQP type '{c}' not supported.", .{@intFromEnum(tag)}),
+            => fatal("AMQP type '{c}' not supported.", .{@backingInt(tag)}),
         };
         assert(value == tag);
         return value;
@@ -564,7 +564,7 @@ pub const Encoder = struct {
 
     pub fn write_field(self: *Encoder, field: FieldValue) void {
         const tag: FieldValueTag = field;
-        self.write_int(u8, @intFromEnum(tag));
+        self.write_int(u8, @backingInt(tag));
         switch (field) {
             .boolean => |value| self.write_bool(value),
             .uint8 => |value| self.write_int(u8, value),
@@ -585,7 +585,7 @@ pub const Encoder = struct {
             .not_implemented_double,
             .not_implemented_decimal,
             .not_implemented_byte_array,
-            => fatal("AMQP type '{c}' not supported.", .{@intFromEnum(tag)}),
+            => fatal("AMQP type '{c}' not supported.", .{@backingInt(tag)}),
         }
     }
 
@@ -624,8 +624,8 @@ pub const Encoder = struct {
         // and the frame end byte.
         const size: u32 = @intCast(restore_index - reference.index - FrameHeader.size_total);
         self.index = reference.index;
-        self.write_int(u8, @intFromEnum(reference.frame_header.type));
-        self.write_int(u16, @intFromEnum(reference.frame_header.channel));
+        self.write_int(u8, @backingInt(reference.frame_header.type));
+        self.write_int(u16, @backingInt(reference.frame_header.channel));
         self.write_int(u32, size);
 
         self.index = restore_index;
@@ -735,8 +735,8 @@ fn BasicPropertiesType(comptime target: enum { encode, decode }) type {
 
         fn property_flags(self: *const BasicProperties) u16 {
             var bitset: stdx.BitSetType(16) = .{};
-            inline for (std.meta.fields(BasicProperties), 0..) |field, index| {
-                bitset.set_value(index, @field(self, field.name) != null);
+            inline for (@typeInfo(BasicProperties).@"struct".field_names, 0..) |name, index| {
+                bitset.set_value(index, @field(self, name) != null);
             }
             return @bitReverse(bitset.bits);
         }
@@ -747,10 +747,10 @@ fn BasicPropertiesType(comptime target: enum { encode, decode }) type {
             var reader = Decoder.init(content);
             var bitset: stdx.BitSetType(16) = .{ .bits = @bitReverse(flags) };
             var properties: BasicProperties = .{};
-            inline for (std.meta.fields(BasicProperties), 0..) |field, index| {
+            inline for (@typeInfo(BasicProperties).@"struct".field_names, 0..) |name, index| {
                 if (bitset.is_set(index)) {
-                    const FieldType = std.meta.Child(field.type);
-                    @field(properties, field.name) = try switch (FieldType) {
+                    const FieldType = @typeInfo(@FieldType(BasicProperties, name)).optional.child;
+                    @field(properties, name) = try switch (FieldType) {
                         []const u8 => reader.read_short_string(),
                         Decoder.Table => reader.read_table(),
                         DeliveryMode => reader.read_enum(DeliveryMode),
@@ -768,12 +768,12 @@ fn BasicPropertiesType(comptime target: enum { encode, decode }) type {
             comptime assert(target == .encode);
 
             encoder.write_int(u16, self.property_flags());
-            inline for (std.meta.fields(BasicProperties)) |field| {
-                if (@field(self, field.name)) |value| {
+            inline for (@typeInfo(BasicProperties).@"struct".field_names) |name| {
+                if (@field(self, name)) |value| {
                     switch (@TypeOf(value)) {
                         []const u8 => encoder.write_short_string(value),
                         Encoder.Table => encoder.write_table(value),
-                        DeliveryMode => encoder.write_int(u8, @intFromEnum(value)),
+                        DeliveryMode => encoder.write_int(u8, @backingInt(value)),
                         u64 => encoder.write_int(u64, value),
                         u8 => encoder.write_int(u8, value),
                         else => unreachable,
@@ -877,7 +877,7 @@ test "amqp: Encoder/Decoder enums" {
 
     for (std.enums.values(Enum)) |value| {
         var encoder: Encoder = Encoder.init(buffer);
-        encoder.write_int(u8, @intFromEnum(value));
+        encoder.write_int(u8, @backingInt(value));
 
         var decoder: Decoder = Decoder.init(buffer[0..buffer.len]);
         try testing.expectEqual(value, try decoder.read_enum(Enum));
@@ -1077,9 +1077,9 @@ const TestingTable = struct {
             .write = &struct {
                 fn write(context: *const anyopaque, encoder: *Encoder.TableEncoder) void {
                     const object: *const TestingTable = @ptrCast(@alignCast(context));
-                    inline for (std.meta.fields(TestingTable)) |field| {
-                        if (@field(object, field.name)) |value| {
-                            encoder.put(field.name, switch (std.meta.Child(field.type)) {
+                    inline for (@typeInfo(TestingTable).@"struct".field_names) |field| {
+                        if (@field(object, field)) |value| {
+                            encoder.put(field, switch (std.meta.Child(@FieldType(TestingTable, field))) {
                                 bool => .{ .boolean = value },
                                 []const u8 => .{ .string = value },
                                 i64 => .{ .int64 = value },
@@ -1133,14 +1133,14 @@ const TestingTable = struct {
     }
 
     fn eql(table1: *const TestingTable, table2: *const TestingTable) bool {
-        inline for (std.meta.fields(TestingTable)) |field| {
-            const both_null = @field(table1, field.name) == null and
-                @field(table2, field.name) == null;
+        inline for (@typeInfo(TestingTable).@"struct".field_names) |field| {
+            const both_null = @field(table1, field) == null and
+                @field(table2, field) == null;
             if (!both_null) {
-                const value1 = @field(table1, field.name) orelse return false;
-                const value2 = @field(table2, field.name) orelse return false;
+                const value1 = @field(table1, field) orelse return false;
+                const value2 = @field(table2, field) orelse return false;
 
-                const equals = switch (std.meta.Child(field.type)) {
+                const equals = switch (std.meta.Child(@FieldType(TestingTable, field))) {
                     bool => value1 == value2,
                     []const u8 => std.mem.eql(u8, value1, value2),
                     i64, u32, i32, u16, i16, u8, i8 => value1 == value2,
@@ -1166,35 +1166,35 @@ const TestingTable = struct {
         if (is_empty) return &TestingTable.empty;
 
         var object = try options.arena.create(TestingTable);
-        inline for (std.meta.fields(TestingTable)) |field| {
+        inline for (@typeInfo(TestingTable).@"struct".field_names) |field| {
             const is_null = options.prng.chance(ratio(5, 100));
             if (is_null) {
-                @field(object, field.name) = null;
-            } else switch (std.meta.Child(field.type)) {
+                @field(object, field) = null;
+            } else switch (std.meta.Child(@FieldType(TestingTable, field))) {
                 bool => {
-                    @field(object, field.name) = options.prng.boolean();
+                    @field(object, field) = options.prng.boolean();
                 },
                 []const u8 => {
                     const size = options.prng.range_inclusive(u32, 0, 255);
                     const str = try options.arena.alloc(u8, size);
                     options.prng.fill(str);
-                    @field(object, field.name) = str;
+                    @field(object, field) = str;
                 },
                 u32, u16, u8 => |Int| {
-                    @field(object, field.name) = options.prng.int(Int);
+                    @field(object, field) = options.prng.int(Int);
                 },
                 i64, i32, i16, i8 => |Int| {
-                    const Unsigned = std.meta.Int(.unsigned, @bitSizeOf(Int));
-                    @field(object, field.name) = @bitCast(options.prng.int(Unsigned));
+                    const Unsigned = @Int(.unsigned, @bitSizeOf(Int));
+                    @field(object, field) = @bitCast(options.prng.int(Unsigned));
                 },
                 *const TestingTable => {
-                    @field(object, field.name) = if (options.recursive)
+                    @field(object, field) = if (options.recursive)
                         try random(options)
                     else
                         null;
                 },
                 Timestamp => {
-                    @field(object, field.name) = options.prng.int(Timestamp);
+                    @field(object, field) = options.prng.int(Timestamp);
                 },
                 else => comptime unreachable,
             }
@@ -1211,23 +1211,23 @@ pub const TestingBasicProperties = struct {
     }) !Encoder.BasicProperties {
         const is_null = stdx.PRNG.ratio(5, 100);
         var properties: Encoder.BasicProperties = .{};
-        inline for (std.meta.fields(Encoder.BasicProperties)) |field| {
-            if (@field(options.default, field.name)) |default| {
-                @field(properties, field.name) = default;
+        inline for (@typeInfo(Encoder.BasicProperties).@"struct".field_names) |field| {
+            if (@field(options.default, field)) |default| {
+                @field(properties, field) = default;
             } else if (options.prng.chance(is_null)) {
-                @field(properties, field.name) = null;
-            } else switch (std.meta.Child(field.type)) {
+                @field(properties, field) = null;
+            } else switch (std.meta.Child(@FieldType(Encoder.BasicProperties, field))) {
                 []const u8 => {
                     const size = options.prng.range_inclusive(u32, 0, 255);
                     const str = try options.arena.alloc(u8, size);
                     options.prng.fill(str);
-                    @field(properties, field.name) = str;
+                    @field(properties, field) = str;
                 },
                 u64, u8 => |Int| {
-                    @field(properties, field.name) = options.prng.int(Int);
+                    @field(properties, field) = options.prng.int(Int);
                 },
                 DeliveryMode => {
-                    @field(properties, field.name) = options.prng.enum_uniform(DeliveryMode);
+                    @field(properties, field) = options.prng.enum_uniform(DeliveryMode);
                 },
                 Encoder.Table => {
                     const object = try TestingTable.random(.{
@@ -1235,7 +1235,7 @@ pub const TestingBasicProperties = struct {
                         .prng = options.prng,
                         .recursive = false,
                     });
-                    @field(properties, field.name) = object.table();
+                    @field(properties, field) = object.table();
                 },
                 else => comptime unreachable,
             }
@@ -1248,14 +1248,14 @@ pub const TestingBasicProperties = struct {
         properties1: Encoder.BasicProperties,
         properties2: Decoder.BasicProperties,
     ) !bool {
-        inline for (std.meta.fields(Encoder.BasicProperties)) |field| {
-            const both_null = @field(properties1, field.name) == null and
-                @field(properties2, field.name) == null;
+        inline for (@typeInfo(Encoder.BasicProperties).@"struct".field_names) |field| {
+            const both_null = @field(properties1, field) == null and
+                @field(properties2, field) == null;
             if (!both_null) {
-                const value1 = @field(properties1, field.name) orelse return false;
-                const value2 = @field(properties2, field.name) orelse return false;
+                const value1 = @field(properties1, field) orelse return false;
+                const value2 = @field(properties2, field) orelse return false;
 
-                const equals = switch (std.meta.Child(field.type)) {
+                const equals = switch (std.meta.Child(@FieldType(Encoder.BasicProperties, field))) {
                     []const u8 => std.mem.eql(u8, value1, value2),
                     u64, u8 => value1 == value2,
                     DeliveryMode => value1 == value2,

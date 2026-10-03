@@ -39,9 +39,10 @@ pub const ConnectionProperties = struct {
             .write = &struct {
                 fn write(context: *const anyopaque, encoder: *Encoder.TableEncoder) void {
                     const properties: *const ConnectionProperties = @ptrCast(@alignCast(context));
-                    inline for (std.meta.fields(ConnectionProperties)) |field| {
-                        const value = @field(properties, field.name);
-                        encoder.put(field.name, switch (field.type) {
+                    const info = @typeInfo(ConnectionProperties).@"struct";
+                    inline for (info.field_names, info.field_types) |name, T| {
+                        const value = @field(properties, name);
+                        encoder.put(name, switch (T) {
                             []const u8 => .{ .string = value },
                             *const ClientCapabilities => .{ .field_table = value.table() },
                             else => comptime unreachable,
@@ -186,12 +187,12 @@ pub const QueueDeclareArguments = struct {
             .write = &struct {
                 fn write(context: *const anyopaque, encoder: *Encoder.TableEncoder) void {
                     const arguments: *const QueueDeclareArguments = @ptrCast(@alignCast(context));
-                    inline for (std.meta.fields(QueueDeclareArguments)) |field| {
-                        if (@field(arguments, field.name)) |value| {
+                    inline for (@typeInfo(QueueDeclareArguments).@"struct".field_names) |name| {
+                        if (@field(arguments, name)) |value| {
                             const FieldType = @TypeOf(value);
                             // Keys are follow the pattern "x-max-length":
                             const key = comptime "x-" ++
-                                vsr.stdx.to_case(field.name, .@"kebab-case");
+                                vsr.stdx.to_case(name, .@"kebab-case");
                             switch (FieldType) {
                                 []const u8 => encoder.put(key, .{ .string = value }),
                                 QueueOverflow => encoder.put(key, .{ .string = switch (value) {

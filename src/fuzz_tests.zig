@@ -71,10 +71,7 @@ pub fn main(process_init: std.process.Init) !void {
 
     fuzz.limit_ram();
 
-    var gpa_allocator: std.heap.DebugAllocator(.{}) = .init;
-    // Zig 0.16's page allocator no longer keeps the mmap address hint that the old custom
-    // forwarding allocator had to clear to avoid stack-probe collisions.
-    gpa_allocator.backing_allocator = std.heap.page_allocator;
+    var gpa_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
     const gpa = gpa_allocator.allocator();
 
     var flags = stdx.Flags.init(gpa);

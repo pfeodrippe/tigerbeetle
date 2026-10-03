@@ -107,7 +107,7 @@ pub fn PacketSimulatorType(comptime Packet: type) type {
             queue: std.PriorityQueue(LinkPacket, void, LinkPacket.less_than),
             /// Commands in the set are delivered.
             /// Commands not in the set are dropped.
-            filter: LinkFilter = LinkFilter.initFull(),
+            filter: LinkFilter = .full,
             drop_packet_fn: ?LinkDropPacketFn = null,
             /// Commands in the set are recorded for a later replay.
             record: LinkFilter = .{},
@@ -357,7 +357,7 @@ pub fn PacketSimulatorType(comptime Packet: type) type {
                         (self.options.partition_symmetry == .asymmetric and
                             partition[from] == asymmetric_partition_side);
                     self.links[self.path_index(path)].filter =
-                        if (enabled) LinkFilter.initFull() else LinkFilter{};
+                        if (enabled) .full else .empty;
                 }
             }
         }
@@ -394,7 +394,7 @@ pub fn PacketSimulatorType(comptime Packet: type) type {
                         self.auto_partition_active = false;
                         self.auto_partition_stability = self.options.unpartition_stability;
                         @memset(self.auto_partition, false);
-                        for (self.links) |*link| link.filter = LinkFilter.initFull();
+                        for (self.links) |*link| link.filter = .full;
                         log.warn("unpartitioned network: partition={any}", .{self.auto_partition});
                     }
                 } else {

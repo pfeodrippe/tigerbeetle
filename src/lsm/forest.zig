@@ -29,56 +29,31 @@ const compaction_input_tables_max = @import("compaction.zig").compaction_tables_
 pub const table_count_max = @import("tree.zig").table_count_max;
 
 pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
-    const groove_count = std.meta.fields(@TypeOf(groove_cfg)).len;
-    var groove_fields: [groove_count]std.builtin.Type.StructField = undefined;
-    var groove_options_fields: [groove_count]std.builtin.Type.StructField = undefined;
+    const groove_names = @typeInfo(@TypeOf(groove_cfg)).@"struct".field_names;
+    const groove_count = groove_names.len;
+    var groove_types: [groove_count]type = undefined;
+    var groove_options_types: [groove_count]type = undefined;
+    var groove_attrs: [groove_count]std.lang.Type.Struct.FieldAttributes = undefined;
 
-    for (std.meta.fields(@TypeOf(groove_cfg)), 0..) |field, i| {
-        const Groove = @field(groove_cfg, field.name);
-        groove_fields[i] = .{
-            .name = field.name,
-            .type = Groove,
-            .default_value_ptr = null,
-            .is_comptime = false,
-            .alignment = @alignOf(Groove),
-        };
-
-        groove_options_fields[i] = .{
-            .name = field.name,
-            .type = Groove.Options,
-            .default_value_ptr = null,
-            .is_comptime = false,
-            .alignment = @alignOf(Groove),
-        };
+    for (groove_names, 0..) |field_name, i| {
+        const Groove = @field(groove_cfg, field_name);
+        groove_types[i] = Groove;
+        groove_options_types[i] = Groove.Options;
+        groove_attrs[i] = .{ .@"align" = @alignOf(Groove) };
     }
 
-    const _Grooves = stdx.type_from_info(.{
-        .@"struct" = .{
-            .layout = .auto,
-            .fields = &groove_fields,
-            .decls = &.{},
-            .is_tuple = false,
-        },
-    });
-
-    const _GroovesOptions = stdx.type_from_info(.{
-        .@"struct" = .{
-            .layout = .auto,
-            .fields = &groove_options_fields,
-            .decls = &.{},
-            .is_tuple = false,
-        },
-    });
+    const _Grooves = @Struct(.auto, null, groove_names, &groove_types, &groove_attrs);
+    const _GroovesOptions = @Struct(.auto, null, groove_names, &groove_options_types, &groove_attrs);
 
     {
         // Verify that every tree id is unique.
         comptime var ids: []const u16 = &.{};
 
-        inline for (std.meta.fields(_Grooves)) |groove_field| {
-            const Groove = groove_field.type;
+        inline for (groove_names) |groove_name| {
+            const Groove = @FieldType(_Grooves, groove_name);
 
-            for (std.meta.fields(@TypeOf(Groove.config.ids))) |field| {
-                const id = @field(Groove.config.ids, field.name);
+            for (@typeInfo(@TypeOf(Groove.config.ids)).@"struct".field_names) |field_name| {
+                const id = @field(Groove.config.ids, field_name);
                 assert(id > 0);
                 assert(std.mem.indexOfScalar(u16, ids, id) == null);
 
@@ -102,24 +77,24 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
         @setEvalBranchQuota(32_000);
 
         var tree_infos: []const TreeInfo = &[_]TreeInfo{};
-        for (std.meta.fields(_Grooves)) |groove_field| {
-            const Groove = groove_field.type;
+        for (groove_names) |groove_name| {
+            const Groove = @FieldType(_Grooves, groove_name);
 
             tree_infos = tree_infos ++ &[_]TreeInfo{.{
                 .Tree = Groove.ObjectTree,
-                .tree_name = groove_field.name,
+                .tree_name = groove_name,
                 .tree_id = @field(Groove.config.ids, "timestamp"),
-                .groove_name = groove_field.name,
+                .groove_name = groove_name,
                 .groove_tree = .objects,
             }};
 
-            for (std.meta.fields(Groove.IndexTrees)) |tree_field| {
+            for (@typeInfo(Groove.IndexTrees).@"struct".field_names) |tree_name| {
                 tree_infos = tree_infos ++ &[_]TreeInfo{.{
-                    .Tree = tree_field.type,
-                    .tree_name = groove_field.name ++ "." ++ tree_field.name,
-                    .tree_id = @field(Groove.config.ids, tree_field.name),
-                    .groove_name = groove_field.name,
-                    .groove_tree = .{ .indexes = tree_field.name },
+                    .Tree = @FieldType(Groove.IndexTrees, tree_name),
+                    .tree_name = groove_name ++ "." ++ tree_name,
+                    .tree_id = @field(Groove.config.ids, tree_name),
+                    .groove_name = groove_name,
+                    .groove_tree = .{ .indexes = tree_name },
                 }};
             }
         }
@@ -144,19 +119,13 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
     };
 
     const _TreeID = comptime tree_id: {
-        var fields: [_tree_infos.len]std.builtin.Type.EnumField = undefined;
+        var names: [_tree_infos.len][:0]const u8 = undefined;
+        var values: [_tree_infos.len]u16 = undefined;
         for (_tree_infos, 0..) |tree_info, i| {
-            fields[i] = .{
-                .name = @ptrCast(tree_info.tree_name),
-                .value = tree_info.tree_id,
-            };
+            names[i] = @ptrCast(tree_info.tree_name);
+            values[i] = tree_info.tree_id;
         }
-        break :tree_id stdx.type_from_info(.{ .@"enum" = .{
-            .tag_type = u16,
-            .fields = &fields,
-            .decls = &.{},
-            .is_exhaustive = true,
-        } });
+        break :tree_id @Enum(u16, .exhaustive, &names, &values);
     };
 
     comptime {
@@ -280,10 +249,10 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             errdefer forest.manifest_log.deinit(allocator);
 
             var grooves_initialized: usize = 0;
-            errdefer inline for (std.meta.fields(Grooves), 0..) |field, field_index| {
+            errdefer inline for (@typeInfo(Grooves).@"struct".field_names, 0..) |field_name, field_index| {
                 if (grooves_initialized >= field_index + 1) {
-                    const Groove = field.type;
-                    const groove: *Groove = &@field(forest.grooves, field.name);
+                    const Groove = @FieldType(Grooves, field_name);
+                    const groove: *Groove = &@field(forest.grooves, field_name);
                     groove.deinit(allocator);
                 }
             };
@@ -306,10 +275,10 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 try ResourcePool.init(allocator, grid, options.compaction_block_count);
             errdefer forest.resource_pool.deinit(allocator, grid);
 
-            inline for (std.meta.fields(Grooves)) |field| {
-                const Groove = field.type;
-                const groove: *Groove = &@field(forest.grooves, field.name);
-                const groove_options: Groove.Options = @field(grooves_options, field.name);
+            inline for (@typeInfo(Grooves).@"struct".field_names) |field_name| {
+                const Groove = @FieldType(Grooves, field_name);
+                const groove: *Groove = &@field(forest.grooves, field_name);
+                const groove_options: Groove.Options = @field(grooves_options, field_name);
 
                 try groove.init(
                     allocator,
@@ -325,9 +294,9 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
         }
 
         pub fn deinit(forest: *Forest, allocator: mem.Allocator) void {
-            inline for (std.meta.fields(Grooves)) |field| {
-                const Groove = field.type;
-                const groove: *Groove = &@field(forest.grooves, field.name);
+            inline for (@typeInfo(Grooves).@"struct".field_names) |field_name| {
+                const Groove = @FieldType(Grooves, field_name);
+                const groove: *Groove = &@field(forest.grooves, field_name);
                 groove.deinit(allocator);
             }
 
@@ -342,8 +311,8 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             // Components using the node_pool must release all nodes they acquired upon reset.
             defer assert(forest.node_pool.free.count() == forest.node_pool.free.bit_length);
 
-            inline for (std.meta.fields(Grooves)) |field| {
-                @field(forest.grooves, field.name).reset();
+            inline for (@typeInfo(Grooves).@"struct".field_names) |field_name| {
+                @field(forest.grooves, field_name).reset();
             }
 
             forest.grid.trace.cancel(.lookup);
@@ -372,8 +341,8 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
 
             forest.progress = .{ .open = .{ .callback = callback } };
 
-            inline for (std.meta.fields(Grooves)) |field| {
-                @field(forest.grooves, field.name).open_commence(&forest.manifest_log);
+            inline for (@typeInfo(Grooves).@"struct".field_names) |field_name| {
+                @field(forest.grooves, field_name).open_commence(&forest.manifest_log);
             }
 
             forest.manifest_log.open(manifest_log_open_event, manifest_log_open_callback);
@@ -405,8 +374,8 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             assert(forest.progress.? == .open);
             forest.verify_tables_recovered();
 
-            inline for (std.meta.fields(Grooves)) |field| {
-                @field(forest.grooves, field.name).open_complete();
+            inline for (@typeInfo(Grooves).@"struct".field_names) |field_name| {
+                @field(forest.grooves, field_name).open_complete();
             }
             forest.verify_table_extents();
 
@@ -738,8 +707,8 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
             }
 
             // Groove sync compaction - must be done after all async work for the beat completes.
-            inline for (std.meta.fields(Grooves)) |field| {
-                @field(forest.grooves, field.name).compact(op);
+            inline for (@typeInfo(Grooves).@"struct".field_names) |field_name| {
+                @field(forest.grooves, field_name).compact(op);
             }
 
             if (last_beat or last_half_beat) {
@@ -840,8 +809,8 @@ pub fn ForestType(comptime _Storage: type, comptime groove_cfg: anytype) type {
                 };
             }
 
-            inline for (std.meta.fields(Grooves)) |field| {
-                @field(forest.grooves, field.name).assert_between_bars();
+            inline for (@typeInfo(Grooves).@"struct".field_names) |field_name| {
+                @field(forest.grooves, field_name).assert_between_bars();
             }
 
             inline for (comptime std.enums.values(TreeID)) |tree_id| {

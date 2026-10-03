@@ -56,7 +56,6 @@ pub const ReplicaReformatType = @import("vsr/replica_reformat.zig").ReplicaRefor
 pub const format = @import("vsr/replica_format.zig").format;
 pub const Status = @import("vsr/replica.zig").Status;
 pub const SyncStage = @import("vsr/sync.zig").Stage;
-pub const SyncTarget = @import("vsr/sync.zig").Target;
 pub const ClientType = @import("vsr/client.zig").ClientType;
 pub const Clock = @import("vsr/clock.zig").Clock;
 pub const GridType = @import("vsr/grid.zig").GridType;
@@ -361,10 +360,10 @@ pub const Operation = enum(u8) {
     pub fn tag_name(self: Operation, comptime StateMachineOperation: type) []const u8 {
         assert(self.valid(StateMachineOperation));
         inline for (.{ Operation, StateMachineOperation }) |Enum| {
-            inline for (@typeInfo(Enum).@"enum".fields) |field| {
-                const op = @field(Enum, field.name);
+            inline for (@typeInfo(Enum).@"enum".field_names) |name| {
+                const op = @field(Enum, name);
                 if (@backingInt(self) == @backingInt(op)) {
-                    return field.name;
+                    return name;
                 }
             }
         }
@@ -375,17 +374,17 @@ pub const Operation = enum(u8) {
         comptime {
             @setEvalBranchQuota(20_000);
             assert(@typeInfo(StateMachineOperation) == .@"enum");
-            assert(@typeInfo(StateMachineOperation).@"enum".is_exhaustive);
+            assert(@typeInfo(StateMachineOperation).@"enum".mode == .exhaustive);
             assert(@typeInfo(StateMachineOperation).@"enum".tag_type ==
                 @typeInfo(Operation).@"enum".tag_type);
-            for (@typeInfo(StateMachineOperation).@"enum".fields) |field| {
-                const operation = @field(StateMachineOperation, field.name);
+            for (@typeInfo(StateMachineOperation).@"enum".field_names) |name| {
+                const operation = @field(StateMachineOperation, name);
                 if (@backingInt(operation) < constants.vsr_operations_reserved) {
                     @compileError("StateMachine Operation is reserved");
                 }
             }
-            for (@typeInfo(Operation).@"enum".fields) |field| {
-                const vsr_operation = @field(Operation, field.name);
+            for (@typeInfo(Operation).@"enum".field_names) |name| {
+                const vsr_operation = @field(Operation, name);
                 switch (vsr_operation) {
                     // The StateMachine Operation can convert
                     // a `vsr.Operation.pulse` into a valid operation.
@@ -669,9 +668,9 @@ test "ReconfigurationRequest" {
         .configuration_is_no_op,
     );
 
-    assert(t.tested.count() < ResultSet.initFull().count());
+    assert(t.tested.count() < ResultSet.full.count());
     t.tested.insert(.reserved);
-    assert(t.tested.count() == ResultSet.initFull().count());
+    assert(t.tested.count() == ResultSet.full.count());
 
     t.epoch = std.math.maxInt(u32);
     try t.check(r, .epoch_in_the_past);

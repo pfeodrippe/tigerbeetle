@@ -721,7 +721,7 @@ pub const MultiversionOS = struct {
             .detect => constants.multiversion_binary_size_max,
             .native => constants.multiversion_binary_platform_size_max(.{
                 .macos = builtin.target.os.tag == .macos,
-                .debug = builtin.mode != .ReleaseSafe,
+                .debug = builtin.mode != .safe,
             }),
         };
 
@@ -740,7 +740,7 @@ pub const MultiversionOS = struct {
         const nonce = stdx.crypto_u128();
 
         const target_path: [:0]const u8 = switch (builtin.target.os.tag) {
-            .linux => try allocator.dupeZ(u8, multiversion_uuid),
+            .linux => try allocator.dupeSentinel(u8, multiversion_uuid, 0),
             .macos, .windows => blk: {
                 const suffix = if (builtin.target.os.tag == .windows) ".exe" else "";
                 const temporary_directory = try system_temporary_directory(allocator);
@@ -805,7 +805,7 @@ pub const MultiversionOS = struct {
                 const args = try allocator.allocSentinel(?[*:0]const u8, argv.len, null);
                 errdefer allocator.free(args);
 
-                args[0] = try allocator.dupeZ(u8, exe_path);
+                args[0] = try allocator.dupeSentinel(u8, exe_path, 0);
                 errdefer allocator.free(args[0]);
 
                 for (1..argv.len) |i| args[i] = argv[i];
@@ -1563,7 +1563,7 @@ pub fn self_exe_path(allocator: std.mem.Allocator) ![:0]const u8 {
 
         if (wine_get_version != null) {
             log.warn("wine doesn't support std.fs.selfExePath", .{});
-            return allocator.dupeZ(u8, "");
+            return allocator.dupeSentinel(u8, "", 0);
         }
     }
 
@@ -1605,18 +1605,18 @@ pub fn self_exe_path(allocator: std.mem.Allocator) ![:0]const u8 {
 
         assert(std.fs.path.isAbsolute(path));
 
-        return try allocator.dupeZ(u8, path);
+        return try allocator.dupeSentinel(u8, path, 0);
     }
 
     // Not running from a memfd or temp path. `native_self_exe_path` is the real path.
-    return try allocator.dupeZ(u8, native_self_exe_path);
+    return try allocator.dupeSentinel(u8, native_self_exe_path, 0);
 }
 
 fn self_exe_path_argv0(allocator: std.mem.Allocator) ![:0]const u8 {
     var args = try stdx.process_args.iterateAllocator(allocator);
     defer args.deinit();
 
-    const path = try allocator.dupeZ(u8, args.next().?);
+    const path = try allocator.dupeSentinel(u8, args.next().?, 0);
     assert(std.fs.path.isAbsolute(path));
     return path;
 }
@@ -1877,22 +1877,22 @@ pub fn parse_macho(buffer: []const u8) !HeaderBodyOffsets {
         const fat_arch_cpu_type = @byteSwap(fat_arch.cputype);
 
         switch (fat_arch_cpu_type) {
-            @intFromEnum(section_to_macho_cpu.tb_mvb_aarch64) => {
+            @backingInt(section_to_macho_cpu.tb_mvb_aarch64) => {
                 if (body_offset_aarch64 != null) return error.InvalidMachoDuplicate;
                 assert(body_offset_aarch64 == null and body_size_aarch64 == null);
                 body_offset_aarch64 = @byteSwap(fat_arch.offset);
                 body_size_aarch64 = @byteSwap(fat_arch.size);
             },
-            @intFromEnum(section_to_macho_cpu.tb_mvh_aarch64) => {
+            @backingInt(section_to_macho_cpu.tb_mvh_aarch64) => {
                 if (header_offset_aarch64 != null) return error.InvalidMachoDuplicate;
                 header_offset_aarch64 = @byteSwap(fat_arch.offset);
             },
-            @intFromEnum(section_to_macho_cpu.tb_mvb_x86_64) => {
+            @backingInt(section_to_macho_cpu.tb_mvb_x86_64) => {
                 if (body_offset_x86_64 != null) return error.InvalidMachoDuplicate;
                 body_offset_x86_64 = @byteSwap(fat_arch.offset);
                 body_size_x86_64 = @byteSwap(fat_arch.size);
             },
-            @intFromEnum(section_to_macho_cpu.tb_mvh_x86_64) => {
+            @backingInt(section_to_macho_cpu.tb_mvh_x86_64) => {
                 if (header_offset_x86_64 != null) return error.InvalidMachoDuplicate;
                 header_offset_x86_64 = @byteSwap(fat_arch.offset);
             },

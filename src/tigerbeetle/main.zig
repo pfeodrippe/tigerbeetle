@@ -32,8 +32,6 @@ const ReplicaReformat =
     vsr.ReplicaReformatType(StateMachine, MessageBus, Storage);
 const data_file_size_min = vsr.superblock.data_file_size_min;
 
-const GeneralPurposeAllocator = std.heap.DebugAllocator(.{});
-
 const KiB = stdx.KiB;
 const MiB = stdx.MiB;
 const GiB = stdx.GiB;
@@ -49,7 +47,7 @@ pub fn log_runtime(
     args: anytype,
 ) void {
     // A microbenchmark places the cost of this if at somewhere around 1600us for 10 million calls.
-    if (@intFromEnum(message_level) <= @intFromEnum(log_level_runtime)) {
+    if (@backingInt(message_level) <= @backingInt(log_level_runtime)) {
         stdx.log_with_timestamp(message_level, scope, format, args);
     }
 }
@@ -65,15 +63,10 @@ pub fn main(process_init: std.process.Init) !void {
     stdx.set_process_context(process_init);
     if (builtin.os.tag == .windows) try vsr.multiversion.wait_for_parent_to_exit();
 
-    var allocator = GeneralPurposeAllocator.init;
-    allocator.backing_allocator = stdx.huge_page_allocator;
+    var allocator: std.heap.SafeAllocator = .init(stdx.huge_page_allocator, .{});
     const gpa = allocator.allocator();
     defer {
-        _ = allocator.detectLeaks();
-        switch (allocator.deinit()) {
-            .ok => {},
-            .leak => @panic("memory leaked"),
-        }
+        if (allocator.deinit() != 0) @panic("memory leaked");
     }
 
     var flags = stdx.Flags.init(gpa);

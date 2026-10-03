@@ -39,11 +39,6 @@ pub fn ReplicaReformatType(
     return struct {
         const ReplicaReformat = @This();
 
-        const Result = union(enum) {
-            failed: anyerror,
-            ok,
-        };
-
         allocator: std.mem.Allocator,
         options: SuperBlock.FormatOptions,
         client: *Client,
@@ -72,10 +67,6 @@ pub fn ReplicaReformatType(
         pub fn deinit(reformat: *ReplicaReformat, allocator: std.mem.Allocator) void {
             _ = reformat;
             _ = allocator;
-        }
-        pub fn done(reformat: *const ReplicaReformat) ?Result {
-            assert(reformat.requests_done <= constants.pipeline_prepare_queue_max);
-            return reformat.result;
         }
 
         pub fn start(reformat: *ReplicaReformat) void {

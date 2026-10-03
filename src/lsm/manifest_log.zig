@@ -157,11 +157,11 @@ pub fn ManifestLogType(comptime Storage: type) type {
                 .tables_removed = undefined,
             };
 
-            inline for (std.meta.fields(Pace)) |pace_field| {
+            inline for (@typeInfo(Pace).@"struct".field_names) |name| {
                 log.debug("{?}: Manifest.Pace.{s} = {d}", .{
                     grid.superblock.replica_index,
-                    pace_field.name,
-                    @field(manifest_log.pace, pace_field.name),
+                    name,
+                    @field(manifest_log.pace, name),
                 });
             }
 
@@ -928,7 +928,7 @@ pub fn ManifestLogType(comptime Storage: type) type {
 
             const newest_checksum = manifest_log.log_block_checksums.tail() orelse 0;
             const newest_address = manifest_log.log_block_addresses.tail() orelse 0;
-            header.metadata_bytes = @bitCast(schema.ManifestNode.Metadata{
+            header.metadata_bytes = std.mem.toBytes(schema.ManifestNode.Metadata{
                 .previous_manifest_block_checksum = newest_checksum,
                 .previous_manifest_block_address = newest_address,
                 .entry_count = entry_count,
@@ -1111,10 +1111,10 @@ pub const Pace = struct {
                 .compact_extra_blocks = constants.lsm_manifest_compact_extra_blocks,
             });
 
-            for (std.meta.fields(Pace)) |pace_field| {
+            for (@typeInfo(Pace).@"struct".field_names) |name| {
                 @compileLog(std.fmt.comptimePrint("ManifestLog.Pace.{s} = {d}", .{
-                    pace_field.name,
-                    @field(pace, pace_field.name),
+                    name,
+                    @field(pace, name),
                 }));
             }
         }

@@ -28,13 +28,14 @@ const statsd_line_size_max = line_size_max: {
     // For each type of event, build a payload containing the maximum possible values for that
     // event. This is essentially maxInt for unsigned integer payloads, minInt for signed integer
     // payloads, and the longest enum tag name for enum payloads.
-    var events_metric: [std.meta.fieldNames(EventMetric).len]EventMetricAggregate = undefined;
-    for (&events_metric, std.meta.fields(EventMetric)) |*event_metric, EventMetricInner| {
+    const metric_info = @typeInfo(EventMetric).@"union";
+    var events_metric: [metric_info.field_names.len]EventMetricAggregate = undefined;
+    for (&events_metric, metric_info.field_names, metric_info.field_types) |*event_metric, name, T| {
         event_metric.* = .{
             .event = @unionInit(
                 EventMetric,
-                EventMetricInner.name,
-                struct_size_max(EventMetricInner.type),
+                name,
+                struct_size_max(T),
             ),
             .value = if (@typeInfo(EventMetricAggregate.ValueType).int.signedness == .signed)
                 std.math.minInt(EventMetricAggregate.ValueType)
@@ -43,13 +44,14 @@ const statsd_line_size_max = line_size_max: {
         };
     }
 
-    var events_timing: [std.meta.fieldNames(EventTiming).len]EventTimingAggregate = undefined;
-    for (&events_timing, std.meta.fields(EventTiming)) |*event_timing, EventTimingInner| {
+    const timing_info = @typeInfo(EventTiming).@"union";
+    var events_timing: [timing_info.field_names.len]EventTimingAggregate = undefined;
+    for (&events_timing, timing_info.field_names, timing_info.field_types) |*event_timing, name, T| {
         event_timing.* = .{
             .event = @unionInit(
                 EventTiming,
-                EventTimingInner.name,
-                struct_size_max(EventTimingInner.type),
+                name,
+                struct_size_max(T),
             ),
             .values = .{
                 .duration_min = .{ .ns = std.math.maxInt(u64) },
@@ -407,21 +409,21 @@ fn format_metric(
                 inline else => |data| {
                     const Tags = @TypeOf(data);
                     if (@typeInfo(Tags) == .@"struct") {
-                        const fields = std.meta.fields(@TypeOf(data));
-                        inline for (fields) |data_field| {
-                            comptime assert(!std.mem.eql(u8, data_field.name, "cluster"));
-                            comptime assert(!std.mem.eql(u8, data_field.name, "replica"));
-                            comptime assert(@typeInfo(data_field.type) == .int or
-                                @typeInfo(data_field.type) == .@"enum" or
-                                @typeInfo(data_field.type) == .@"union");
+                        const info = @typeInfo(Tags).@"struct";
+                        inline for (info.field_names, info.field_types) |name, T| {
+                            comptime assert(!std.mem.eql(u8, name, "cluster"));
+                            comptime assert(!std.mem.eql(u8, name, "replica"));
+                            comptime assert(@typeInfo(T) == .int or
+                                @typeInfo(T) == .@"enum" or
+                                @typeInfo(T) == .@"union");
 
-                            const data_field_value = @field(data, data_field.name);
+                            const data_field_value = @field(data, name);
                             try writer.writeByte(',');
-                            try writer.writeAll(data_field.name);
+                            try writer.writeAll(name);
                             try writer.writeByte(':');
 
-                            if (@typeInfo(data_field.type) == .@"enum" or
-                                @typeInfo(data_field.type) == .@"union")
+                            if (@typeInfo(T) == .@"enum" or
+                                @typeInfo(T) == .@"union")
                             {
                                 try writer.print("{s}", .{@tagName(data_field_value)});
                             } else {
@@ -450,14 +452,15 @@ fn struct_size_max(StructOrVoid: type) StructOrVoid {
 
     var output: Struct = undefined;
 
-    for (std.meta.fields(Struct)) |field| {
-        const type_info = @typeInfo(field.type);
+    const info = @typeInfo(Struct).@"struct";
+    for (info.field_names, info.field_types) |name, T| {
+        const type_info = @typeInfo(T);
         assert(type_info == .int or type_info == .@"enum");
         assert(type_info != .int or type_info.int.signedness == .unsigned);
         switch (type_info) {
-            .int => @field(output, field.name) = std.math.maxInt(field.type),
-            .@"enum" => @field(output, field.name) =
-                std.meta.stringToEnum(field.type, enum_size_max(field.type)).?,
+            .int => @field(output, name) = std.math.maxInt(T),
+            .@"enum" => @field(output, name) =
+                std.meta.stringToEnum(T, enum_size_max(T)).?,
             else => @compileError("unsupported type"),
         }
     }
@@ -469,7 +472,7 @@ fn struct_size_max(StructOrVoid: type) StructOrVoid {
 fn enum_size_max(Enum: type) []const u8 {
     @setEvalBranchQuota(100_000);
     var tag_longest: []const u8 = "";
-    for (std.meta.fieldNames(Enum)) |field_name| {
+    for (@typeInfo(Enum).@"enum".field_names) |field_name| {
         if (tag_longest.len < field_name.len) {
             tag_longest = field_name;
         }

@@ -157,7 +157,8 @@ pub fn open_section(shell: *Shell, name: []const u8) !Section {
 const Section = struct {
     ci: bool,
     name: []const u8,
-    timer: stdx.Timer,
+    time: stdx.TimeOS,
+    started: stdx.Instant,
 
     fn open(ci: bool, name: []const u8) !Section {
         if (ci) {
@@ -170,15 +171,18 @@ const Section = struct {
             try stdout_writer.interface.flush();
         }
 
+        var time: stdx.TimeOS = .{};
+        const started = time.monotonic();
         return .{
             .ci = ci,
             .name = name,
-            .timer = try stdx.Timer.start(),
+            .time = time,
+            .started = started,
         };
     }
 
     pub fn close(section: *Section) void {
-        const elapsed_ns = section.timer.lap();
+        const elapsed_ns = section.started.elapsed(section.time.monotonic()).ns;
         std.debug.print("{s}: {f}\n", .{
             section.name,
             std.Io.Duration.fromNanoseconds(@intCast(elapsed_ns)),
@@ -647,7 +651,6 @@ fn run_with_stdin(
         .expand_arg0 = options.expand_arg0,
         .progress_node = options.progress_node,
         .create_no_window = options.create_no_window,
-        .disable_aslr = options.disable_aslr,
         .stdin = .pipe,
         .stdout = .pipe,
         .stderr = .pipe,
@@ -864,7 +867,7 @@ fn expand_argv(argv: *Argv, comptime cmd: []const u8, cmd_args: anytype) !void {
     comptime var concat_left: bool = false;
     comptime var concat_right: bool = false;
 
-    const arg_count = std.meta.fields(@TypeOf(cmd_args)).len;
+    const arg_count = @typeInfo(@TypeOf(cmd_args)).@"struct".field_names.len;
     comptime var args_used: stdx.BitSetType(arg_count) = .{};
     comptime assert(std.mem.indexOfScalar(u8, cmd, '\'') == null); // Intentionally unsupported.
     comptime assert(std.mem.indexOfScalar(u8, cmd, '"') == null);
@@ -1125,11 +1128,8 @@ pub fn http_post_multipart(
         break :b capacity;
     };
 
-    var body_multipart = try std.ArrayListUnmanaged(u8).initCapacity(
-        shell.arena.allocator(),
-        capacity,
-    );
-    const body_writer = body_multipart.fixedWriter();
+    const body_buffer = try shell.arena.allocator().alloc(u8, capacity);
+    var body_writer: std.Io.Writer = .fixed(body_buffer);
 
     for (fields) |field| {
         assert(std.mem.indexOf(u8, field.value, boundary) == null);
@@ -1141,15 +1141,14 @@ pub fn http_post_multipart(
         try body_writer.print("Content-Type: {s}\r\n\r\n", .{
             field.content_type orelse "text/plain",
         });
-        body_multipart.appendSliceAssumeCapacity(field.value);
-        body_multipart.appendSliceAssumeCapacity("\r\n");
+        try body_writer.writeAll(field.value);
+        try body_writer.writeAll("\r\n");
     }
-    body_multipart.appendSliceAssumeCapacity("--");
-    body_multipart.appendSliceAssumeCapacity(boundary);
-    body_multipart.appendSliceAssumeCapacity("--");
-    body_multipart.appendSliceAssumeCapacity("\r\n");
+    try body_writer.writeAll("--");
+    try body_writer.writeAll(boundary);
+    try body_writer.writeAll("--\r\n");
 
-    return shell.http_request(.{ .post = body_multipart.items }, url, options);
+    return shell.http_request(.{ .post = body_writer.buffered() }, url, options);
 }
 
 const HttpMethod = union(enum) { get, post: []const u8, put: []const u8 };

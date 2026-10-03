@@ -45,7 +45,7 @@ const CLIArgs = union(enum) {
 };
 
 pub fn main() !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    var gpa: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
     var arena = std.heap.ArenaAllocator.init(gpa.allocator());
     defer arena.deinit();
 

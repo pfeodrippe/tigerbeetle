@@ -57,6 +57,6 @@ test "u128 consistency test" {
     try std.testing.expectEqual(decimal, @as(u128, @bitCast(binary)));
     try std.testing.expectEqual(binary, @as([16]u8, @bitCast(decimal)));
 
-    try std.testing.expectEqual(decimal, @as(u128, @bitCast(pair)));
-    try std.testing.expectEqual(pair, @as(@TypeOf(pair), @bitCast(decimal)));
+    try std.testing.expectEqual(decimal, std.mem.bytesToValue(u128, std.mem.asBytes(&pair)));
+    try std.testing.expectEqual(pair, std.mem.bytesToValue(@TypeOf(pair), std.mem.asBytes(&decimal)));
 }

@@ -820,8 +820,9 @@ pub fn ReplType(comptime MessageBus: type) type {
                 @TypeOf(object.*) == tb.CreateTransferResult);
 
             try repl.terminal.print("{{\n", .{});
-            inline for (@typeInfo(@TypeOf(object.*)).@"struct".fields, 0..) |object_field, i| {
-                if (comptime std.mem.eql(u8, object_field.name, "reserved")) {
+            const object_info = @typeInfo(@TypeOf(object.*)).@"struct";
+            inline for (object_info.field_names, object_info.field_types, 0..) |name, T, i| {
+                if (comptime std.mem.eql(u8, name, "reserved")) {
                     continue;
                     // No need to print out reserved.
                 }
@@ -830,35 +831,35 @@ pub fn ReplType(comptime MessageBus: type) type {
                     try repl.terminal.print(",\n", .{});
                 }
 
-                if (comptime std.mem.eql(u8, object_field.name, "flags")) {
-                    try repl.terminal.print("  \"" ++ object_field.name ++ "\": [", .{});
+                if (comptime std.mem.eql(u8, name, "flags")) {
+                    try repl.terminal.print("  \"" ++ name ++ "\": [", .{});
                     var needs_comma = false;
 
-                    inline for (@typeInfo(object_field.type).@"struct".fields) |flag_field| {
-                        if (comptime !std.mem.eql(u8, flag_field.name, "padding")) {
-                            if (@field(@field(object, "flags"), flag_field.name)) {
+                    inline for (@typeInfo(T).@"struct".field_names) |flag_name| {
+                        if (comptime !std.mem.eql(u8, flag_name, "padding")) {
+                            if (@field(@field(object, "flags"), flag_name)) {
                                 if (needs_comma) {
                                     try repl.terminal.print(",", .{});
                                     needs_comma = false;
                                 }
 
-                                try repl.terminal.print("\"{s}\"", .{flag_field.name});
+                                try repl.terminal.print("\"{s}\"", .{flag_name});
                                 needs_comma = true;
                             }
                         }
                     }
 
                     try repl.terminal.print("]", .{});
-                } else if (comptime @typeInfo(object_field.type) == .@"enum") {
-                    const value = @field(object, object_field.name);
+                } else if (comptime @typeInfo(T) == .@"enum") {
+                    const value = @field(object, name);
                     try repl.terminal.print(
                         "  \"{s}\": \"{s}.{s}\"",
-                        .{ object_field.name, @typeName(object_field.type), @tagName(value) },
+                        .{ name, @typeName(T), @tagName(value) },
                     );
                 } else {
                     try repl.terminal.print(
                         "  \"{s}\": \"{}\"",
-                        .{ object_field.name, @field(object, object_field.name) },
+                        .{ name, @field(object, name) },
                     );
                 }
             }

@@ -446,9 +446,9 @@ test chances {
 }
 
 pub fn error_uniform(prng: *PRNG, Error: type) Error {
-    const errors = @typeInfo(Error).error_set.?;
+    const errors = @typeInfo(Error).error_set.error_names.?;
     return switch (prng.index(errors)) {
-        inline 0...(errors.len - 1) => |i| @field(Error, errors[i].name),
+        inline 0...(errors.len - 1) => |i| @field(Error, errors[i]),
         else => unreachable,
     };
 }
@@ -485,16 +485,16 @@ pub fn enum_weighted(prng: *PRNG, Enum: type, weights: EnumWeightsType(Enum)) En
 }
 
 fn enum_weighted_impl(prng: *PRNG, Enum: type, weights: anytype) Enum {
-    const fields = @typeInfo(Enum).@"enum".fields;
+    const field_names = @typeInfo(Enum).@"enum".field_names;
     var total: u64 = 0;
-    inline for (fields) |field| {
-        total += @field(weights, field.name);
+    inline for (field_names) |name| {
+        total += @field(weights, name);
     }
     assert(total > 0);
     var pick = prng.int_inclusive(u64, total - 1);
-    inline for (fields) |field| {
-        const weight = @field(weights, field.name);
-        if (pick < weight) return @as(Enum, @enumFromInt(field.value));
+    inline for (field_names) |name| {
+        const weight = @field(weights, name);
+        if (pick < weight) return @field(Enum, name);
         pick -= weight;
     }
     unreachable;
@@ -691,7 +691,8 @@ test "no floating point please" {
 // Automatically determine a reasonable amount of iterations for a unit fuzz-test, based on time.
 pub const FuzzIterations = struct {
     // Don't inject time for test-only code.
-    timer: ?stdx.Timer = null,
+    time: stdx.TimeOS = .{},
+    started: ?stdx.Instant = null,
     iteration: u32 = 0,
 
     iterations_min: u32 = 10,
@@ -699,12 +700,12 @@ pub const FuzzIterations = struct {
 
     pub fn more(clock: *FuzzIterations) bool {
         comptime assert(builtin.is_test);
-        if (clock.timer == null) {
-            clock.timer = stdx.Timer.start() catch @panic("timer failed");
+        if (clock.started == null) {
+            clock.started = clock.time.monotonic();
         }
 
         if (clock.iteration > clock.iterations_min and
-            clock.timer.?.read() > clock.duration_max.ns)
+            clock.started.?.elapsed(clock.time.monotonic()).ns > clock.duration_max.ns)
         {
             return false;
         }

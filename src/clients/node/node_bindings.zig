@@ -93,7 +93,7 @@ fn typescript_type(comptime Type: type) []const u8 {
         ),
         .@"struct" => |info| switch (info.layout) {
             .@"packed" => return comptime typescript_type(
-                std.meta.Int(.unsigned, @bitSizeOf(Type)),
+                @Int(.unsigned, @bitSizeOf(Type)),
             ),
             else => return comptime get_mapped_type_name(Type) orelse @compileError(
                 "Type " ++ @typeName(Type) ++ " not mapped.",
@@ -130,15 +130,15 @@ fn emit_enum(
 
     try buffer.writer.print("export enum {s} {{\n", .{mapping.name});
 
-    inline for (@typeInfo(Type).@"enum".fields) |field| {
-        if (comptime std.mem.startsWith(u8, field.name, "deprecated_")) continue;
-        if (comptime mapping.hidden(field.name)) continue;
+    inline for (@typeInfo(Type).@"enum".field_names) |field_name| {
+        if (comptime std.mem.startsWith(u8, field_name, "deprecated_")) continue;
+        if (comptime mapping.hidden(field_name)) continue;
 
-        try emit_docs(buffer, mapping, 1, field.name);
+        try emit_docs(buffer, mapping, 1, field_name);
 
-        const int_value = @backingInt(@field(Type, field.name));
+        const int_value = @backingInt(@field(Type, field_name));
         try buffer.writer.print("  {s} = {s},\n", .{
-            field.name,
+            field_name,
             if (int_value == std.math.maxInt(@TypeOf(int_value)))
                 std.fmt.comptimePrint("0x{X}", .{int_value})
             else
@@ -163,13 +163,13 @@ fn emit_packed_struct(
         \\
     , .{mapping.name});
 
-    inline for (type_info.fields, 0..) |field, i| {
-        if (comptime mapping.hidden(field.name)) continue;
+    inline for (type_info.field_names, 0..) |field_name, i| {
+        if (comptime mapping.hidden(field_name)) continue;
 
-        try emit_docs(buffer, mapping, 1, field.name);
+        try emit_docs(buffer, mapping, 1, field_name);
 
         try buffer.writer.print("  {s} = (1 << {d}),\n", .{
-            field.name,
+            field_name,
             i,
         });
     }
@@ -188,20 +188,20 @@ fn emit_struct(
         mapping.name,
     });
 
-    inline for (type_info.fields) |field| {
-        if (comptime mapping.hidden(field.name)) continue;
+    inline for (type_info.field_names, type_info.field_types) |field_name, Field| {
+        if (comptime mapping.hidden(field_name)) continue;
 
-        try emit_docs(buffer, mapping, 1, field.name);
+        try emit_docs(buffer, mapping, 1, field_name);
 
-        switch (@typeInfo(field.type)) {
+        switch (@typeInfo(Field)) {
             .array => try buffer.writer.print("  {s}: Buffer\n", .{
-                field.name,
+                field_name,
             }),
             else => try buffer.writer.print(
                 "  {s}: {s}\n",
                 .{
-                    field.name,
-                    typescript_type(field.type),
+                    field_name,
+                    typescript_type(Field),
                 },
             ),
         }

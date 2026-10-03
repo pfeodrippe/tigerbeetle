@@ -424,7 +424,7 @@ pub fn CheckpointTrailerType(comptime Storage: type) type {
             const header = mem.bytesAsValue(vsr.Header.Block, block.*[0..@sizeOf(vsr.Header)]);
             header.* = .{
                 .cluster = trailer.grid.?.superblock.working.cluster,
-                .metadata_bytes = @bitCast(metadata),
+                .metadata_bytes = std.mem.toBytes(metadata),
                 .address = trailer.block_addresses[trailer.block_index],
                 .snapshot = 0, // TODO(snapshots): Set this properly; it is useful for debugging.
                 .size = @sizeOf(vsr.Header) + chunk_size,

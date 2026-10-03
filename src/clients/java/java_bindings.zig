@@ -175,7 +175,7 @@ fn java_type(
             "Type " ++ @typeName(Type) ++ " not mapped.",
         ),
         .@"struct" => |info| switch (info.layout) {
-            .@"packed" => return comptime java_type(std.meta.Int(.unsigned, @bitSizeOf(Type))),
+            .@"packed" => return comptime java_type(@Int(.unsigned, @bitSizeOf(Type))),
             else => return comptime get_mapped_type_name(Type) orelse @compileError(
                 "Type " ++ @typeName(Type) ++ " not mapped.",
             ),
@@ -391,10 +391,10 @@ fn batch_type(comptime Type: type) []const u8 {
             }
         },
         .@"struct" => |info| switch (info.layout) {
-            .@"packed" => return batch_type(std.meta.Int(.unsigned, @bitSizeOf(Type))),
+            .@"packed" => return batch_type(@Int(.unsigned, @bitSizeOf(Type))),
             else => {},
         },
-        .@"enum" => return batch_type(std.meta.Int(.unsigned, @bitSizeOf(Type))),
+        .@"enum" => return batch_type(@Int(.unsigned, @bitSizeOf(Type))),
         else => {},
     }
 
@@ -916,7 +916,7 @@ pub fn generate_bindings(
                 buffer,
                 info,
                 mapping,
-                comptime java_type(std.meta.Int(.unsigned, @bitSizeOf(ZigType))),
+                comptime java_type(@Int(.unsigned, @bitSizeOf(ZigType))),
             ),
             .@"extern" => try emit_batch(
                 buffer,
@@ -929,7 +929,7 @@ pub fn generate_bindings(
             buffer,
             ZigType,
             mapping,
-            comptime java_type(std.meta.Int(.unsigned, @bitSizeOf(ZigType))),
+            comptime java_type(@Int(.unsigned, @bitSizeOf(ZigType))),
         ),
         else => @compileError("Type cannot be represented: " ++ @typeName(ZigType)),
     }

@@ -198,7 +198,7 @@ pub fn GrooveType(
     assert(@hasField(GrooveOptions, "optional"));
     assert(@hasField(GrooveOptions, "derived"));
     assert(@hasField(GrooveOptions, "objects_cache"));
-    assert(std.meta.fields(GrooveOptions).len == 9);
+    assert(@typeInfo(GrooveOptions).@"struct".field_names.len == 9);
 
     assert(@hasField(Object, "timestamp"));
     assert(@FieldType(Object, "timestamp") == u64);
@@ -302,58 +302,52 @@ pub fn GrooveType(
         comptime maybe(optional);
     }
 
-    comptime var index_fields: []const std.builtin.Type.StructField = &.{};
+    comptime var index_names: []const [:0]const u8 = &.{};
+    comptime var index_types: []const type = &.{};
 
     // Generate index LSM trees from the struct fields.
-    for (std.meta.fields(Object)) |field| {
+    for (@typeInfo(Object).@"struct".field_names) |field_name| {
         // See if we should ignore this field from the options.
         // By default, we ignore the "timestamp" and the unique keys.
-        comptime var ignored = mem.eql(u8, field.name, "timestamp");
+        comptime var ignored = mem.eql(u8, field_name, "timestamp");
         for (groove_options.ignored) |ignored_field_name| {
             comptime assert(!std.mem.eql(u8, ignored_field_name, "timestamp"));
-            ignored = ignored or std.mem.eql(u8, field.name, ignored_field_name);
+            ignored = ignored or std.mem.eql(u8, field_name, ignored_field_name);
         }
         if (ignored) continue;
 
         comptime var unique_key: bool = false;
         for (groove_options.unique_keys) |unique_key_name| {
-            unique_key = unique_key or std.mem.eql(u8, field.name, unique_key_name);
+            unique_key = unique_key or std.mem.eql(u8, field_name, unique_key_name);
         }
 
         const table_value_count_max = constants.lsm_compaction_ops *
-            @field(groove_options.batch_value_count_max, field.name);
+            @field(groove_options.batch_value_count_max, field_name);
         const IndexTree = if (unique_key)
-            UniqueKeyTreeType(Storage, field.type, table_value_count_max)
+            UniqueKeyTreeType(Storage, @FieldType(Object, field_name), table_value_count_max)
         else
-            IndexTreeType(Storage, field.type, table_value_count_max);
+            IndexTreeType(Storage, @FieldType(Object, field_name), table_value_count_max);
 
-        index_fields = index_fields ++ [_]std.builtin.Type.StructField{
-            .{
-                .name = field.name,
-                .type = IndexTree,
-                .default_value_ptr = null,
-                .is_comptime = false,
-                .alignment = @alignOf(IndexTree),
-            },
-        };
+        index_names = index_names ++ [_][:0]const u8{field_name};
+        index_types = index_types ++ [_]type{IndexTree};
     }
 
     // Generate IndexTrees for fields derived from the Value in groove_options.
-    const derived_fields = std.meta.fields(@TypeOf(groove_options.derived));
-    for (derived_fields) |field| {
+    const derived_fields = @typeInfo(@TypeOf(groove_options.derived)).@"struct".field_names;
+    for (derived_fields) |field_name| {
         // Get the function info for the derived field.
-        const derive_func = @field(groove_options.derived, field.name);
+        const derive_func = @field(groove_options.derived, field_name);
         const derive_func_info = @typeInfo(@TypeOf(derive_func)).@"fn";
 
         // Make sure it has only one argument.
-        if (derive_func_info.params.len != 1) {
+        if (derive_func_info.param_types.len != 1) {
             @compileError("expected derive fn to take in *const " ++ @typeName(Object));
         }
 
         // Make sure the function takes in a reference to the Value:
-        const derive_arg = derive_func_info.params[0];
-        if (derive_arg.is_generic) @compileError("expected derive fn arg to not be generic");
-        if (derive_arg.type != *const Object) {
+        const derive_arg = derive_func_info.param_types[0] orelse
+            @compileError("expected derive fn arg to not be generic");
+        if (derive_arg != *const Object) {
             @compileError("expected derive fn to take in *const " ++ @typeName(Object));
         }
 
@@ -369,37 +363,23 @@ pub fn GrooveType(
 
         comptime var unique_key: bool = false;
         for (groove_options.unique_keys) |unique_key_name| {
-            unique_key = unique_key or std.mem.eql(u8, field.name, unique_key_name);
+            unique_key = unique_key or std.mem.eql(u8, field_name, unique_key_name);
         }
 
         const DerivedType = derive_return_type.optional.child;
         const table_value_count_max = constants.lsm_compaction_ops *
-            @field(groove_options.batch_value_count_max, field.name);
+            @field(groove_options.batch_value_count_max, field_name);
         const IndexTree = if (unique_key)
             UniqueKeyTreeType(Storage, DerivedType, table_value_count_max)
         else
             IndexTreeType(Storage, DerivedType, table_value_count_max);
-        index_fields = index_fields ++ [_]std.builtin.Type.StructField{
-            .{
-                .name = field.name,
-                .type = IndexTree,
-                .default_value_ptr = null,
-                .is_comptime = false,
-                .alignment = @alignOf(IndexTree),
-            },
-        };
+        index_names = index_names ++ [_][:0]const u8{field_name};
+        index_types = index_types ++ [_]type{IndexTree};
     }
 
-    comptime var index_options_fields: [index_fields.len]std.builtin.Type.StructField = undefined;
-    for (index_fields, 0..) |index_field, i| {
-        const IndexTree = index_field.type;
-        index_options_fields[i] = .{
-            .name = index_field.name,
-            .type = IndexTree.Options,
-            .default_value_ptr = null,
-            .is_comptime = false,
-            .alignment = @alignOf(IndexTree.Options),
-        };
+    comptime var index_options_types: [index_names.len]type = undefined;
+    for (index_types, 0..) |IndexTree, i| {
+        index_options_types[i] = IndexTree.Options;
     }
 
     const ObjectTreeHelper = ObjectTreeHelperType(Object);
@@ -420,34 +400,21 @@ pub fn GrooveType(
         break :T TreeType(Table, Storage);
     };
 
-    const _IndexTrees = stdx.type_from_info(.{
-        .@"struct" = .{
-            .layout = .auto,
-            .fields = index_fields,
-            .decls = &.{},
-            .is_tuple = false,
-        },
-    });
-    const _IndexTreeOptions = stdx.type_from_info(.{
-        .@"struct" = .{
-            .layout = .auto,
-            .fields = &index_options_fields,
-            .decls = &.{},
-            .is_tuple = false,
-        },
-    });
+    const index_attrs: [index_names.len]std.lang.Type.Struct.FieldAttributes = @splat(.{});
+    const _IndexTrees = @Struct(.auto, null, index_names, index_types, &index_attrs);
+    const _IndexTreeOptions = @Struct(.auto, null, index_names, &index_options_types, &index_attrs);
 
-    const has_scan = index_fields.len > 0;
+    const has_scan = index_names.len > 0;
 
     // Verify groove index count:
-    const indexes_count_actual = std.meta.fields(_IndexTrees).len;
-    const indexes_count_expect = std.meta.fields(Object).len +
-        std.meta.fields(@TypeOf(groove_options.derived)).len -
+    const indexes_count_actual = @typeInfo(_IndexTrees).@"struct".field_names.len;
+    const indexes_count_expect = @typeInfo(Object).@"struct".field_names.len +
+        derived_fields.len -
         groove_options.ignored.len -
         // The timestamp field is implicitly ignored since it's the primary key for ObjectTree:
         @as(usize, 1);
     assert(indexes_count_actual == indexes_count_expect);
-    assert(indexes_count_actual == std.meta.fields(_IndexTreeOptions).len);
+    assert(indexes_count_actual == @typeInfo(_IndexTreeOptions).@"struct".field_names.len);
 
     const _IndexHelperType = struct {
         fn HelperType(comptime field_name: []const u8) type {
@@ -480,7 +447,7 @@ pub fn GrooveType(
 
                 pub const is_derived: bool = is_derived: {
                     for (derived_fields) |derived_field| {
-                        if (std.mem.eql(u8, derived_field.name, field_name)) break :is_derived true;
+                        if (std.mem.eql(u8, derived_field, field_name)) break :is_derived true;
                     }
                     break :is_derived false;
                 };
@@ -499,7 +466,7 @@ pub fn GrooveType(
                     return switch (@typeInfo(Type)) {
                         .void => {},
                         .int => index,
-                        .@"enum" => @intFromEnum(index),
+                        .@"enum" => @backingInt(index),
                         else => unreachable,
                     };
                 }
@@ -653,11 +620,11 @@ pub fn GrooveType(
                         );
                         comptime assert(size_bytes >= @sizeOf(Value) + @sizeOf(Tag));
 
-                        const Int = std.meta.Int(.unsigned, size_bytes * 8);
+                        const Int = @Int(.unsigned, size_bytes * 8);
                         comptime assert(stdx.no_padding(Int));
 
                         const tag_shift = @bitSizeOf(Int) - @bitSizeOf(Tag);
-                        break :value (@as(Int, @intFromEnum(tag)) << tag_shift) |
+                        break :value (@as(Int, @backingInt(tag)) << tag_shift) |
                             @as(Int, value);
                     },
                 });
@@ -675,7 +642,7 @@ pub fn GrooveType(
                     inline else => |value, tag| {
                         // Disable runtime safety: we do not have to check the tag of `b` when
                         // accessing the field, since it has already been checked against `a`.
-                        @setRuntimeSafety(builtin.mode != .ReleaseSafe);
+                        @setRuntimeSafety(builtin.mode != .safe);
                         return b == tag and
                             value == @field(b, @tagName(tag));
                     },
@@ -807,28 +774,28 @@ pub fn GrooveType(
 
             var index_trees_initialized: usize = 0;
             // Make sure to deinit initialized index LSM trees on error.
-            errdefer inline for (std.meta.fields(IndexTrees), 0..) |field, field_index| {
+            errdefer inline for (@typeInfo(IndexTrees).@"struct".field_names, 0..) |field_name, field_index| {
                 if (index_trees_initialized >= field_index + 1) {
-                    const Tree = field.type;
-                    const tree: *Tree = &@field(groove.indexes, field.name);
+                    const Tree = @FieldType(IndexTrees, field_name);
+                    const tree: *Tree = &@field(groove.indexes, field_name);
                     tree.deinit(allocator);
                 }
             };
 
             // Initialize index LSM trees.
-            inline for (std.meta.fields(IndexTrees)) |field| {
-                const Tree = field.type;
-                const tree: *Tree = &@field(groove.indexes, field.name);
+            inline for (@typeInfo(IndexTrees).@"struct".field_names) |field_name| {
+                const Tree = @FieldType(IndexTrees, field_name);
+                const tree: *Tree = &@field(groove.indexes, field_name);
                 try tree.init(
                     allocator,
                     node_pool,
                     grid,
                     radix_buffer,
                     .{
-                        .id = @field(groove_options.ids, field.name),
-                        .name = ObjectTree.tree_name() ++ "." ++ field.name,
+                        .id = @field(groove_options.ids, field_name),
+                        .name = ObjectTree.tree_name() ++ "." ++ field_name,
                     },
-                    @field(options.tree_options_index, field.name),
+                    @field(options.tree_options_index, field_name),
                 );
                 index_trees_initialized += 1;
             }
@@ -847,8 +814,8 @@ pub fn GrooveType(
         }
 
         pub fn deinit(groove: *Groove, allocator: mem.Allocator) void {
-            inline for (std.meta.fields(IndexTrees)) |field| {
-                @field(groove.indexes, field.name).deinit(allocator);
+            inline for (@typeInfo(IndexTrees).@"struct".field_names) |field_name| {
+                @field(groove.indexes, field_name).deinit(allocator);
             }
 
             groove.objects.deinit(allocator);
@@ -862,8 +829,8 @@ pub fn GrooveType(
         }
 
         pub fn reset(groove: *Groove) void {
-            inline for (std.meta.fields(IndexTrees)) |field| {
-                @field(groove.indexes, field.name).reset();
+            inline for (@typeInfo(IndexTrees).@"struct".field_names) |field_name| {
+                @field(groove.indexes, field_name).reset();
             }
             groove.objects.reset();
 
@@ -1373,7 +1340,7 @@ pub fn GrooveType(
                 assert(context.workers_pending == 0);
 
                 context.groove.grid.trace.start(.{
-                    .lookup = .{ .tree = @enumFromInt(context.groove.objects.config.id) },
+                    .lookup = .{ .tree = @fromBackingInt(@intCast(context.groove.objects.config.id)) },
                 });
 
                 // Track an extra "worker" that will finish after the loop.
@@ -1392,7 +1359,7 @@ pub fn GrooveType(
                     context.groove.grid.trace.start(
                         .{ .lookup_worker = .{
                             .index = worker.index,
-                            .tree = @enumFromInt(context.groove.objects.config.id),
+                            .tree = @fromBackingInt(@intCast(context.groove.objects.config.id)),
                         } },
                     );
 
@@ -1487,7 +1454,7 @@ pub fn GrooveType(
                     }
                 }
                 context.groove.grid.trace.stop(.{
-                    .lookup = .{ .tree = @enumFromInt(context.groove.objects.config.id) },
+                    .lookup = .{ .tree = @fromBackingInt(@intCast(context.groove.objects.config.id)) },
                 });
 
                 context.callback(context);
@@ -1557,7 +1524,7 @@ pub fn GrooveType(
                     worker.context.groove.grid.trace.stop(
                         .{ .lookup_worker = .{
                             .index = worker.index,
-                            .tree = @enumFromInt(worker.context.groove.objects.config.id),
+                            .tree = @fromBackingInt(@intCast(worker.context.groove.objects.config.id)),
                         } },
                     );
                     worker.context.worker_finished();
@@ -1782,11 +1749,11 @@ pub fn GrooveType(
             groove.objects.put(object);
             groove.objects.key_range_update(object.timestamp);
 
-            inline for (std.meta.fields(IndexTrees)) |field| {
-                const IndexHelper = IndexHelperType(field.name);
+            inline for (@typeInfo(IndexTrees).@"struct".field_names) |field_name| {
+                const IndexHelper = IndexHelperType(field_name);
                 if (IndexHelper.index_from_object(object)) |value| {
-                    const Tree = field.type;
-                    const tree: *Tree = &@field(groove.indexes, field.name);
+                    const Tree = @FieldType(IndexTrees, field_name);
+                    const tree: *Tree = &@field(groove.indexes, field_name);
                     tree.put(&.{
                         .timestamp = object.timestamp,
                         .field = value,
@@ -1835,8 +1802,8 @@ pub fn GrooveType(
                 assert(!tombstone(old) and !tombstone(new));
             }
 
-            inline for (std.meta.fields(IndexTrees)) |field| {
-                const IndexHelper = IndexHelperType(field.name);
+            inline for (@typeInfo(IndexTrees).@"struct".field_names) |field_name| {
+                const IndexHelper = IndexHelperType(field_name);
                 const old_index = IndexHelper.index_from_object(old);
                 const new_index = IndexHelper.index_from_object(new);
 
@@ -1851,13 +1818,13 @@ pub fn GrooveType(
                 // Only update the indexes that change.
                 if (old_index != new_index) {
                     if (old_index) |value| {
-                        @field(groove.indexes, field.name).remove(&.{
+                        @field(groove.indexes, field_name).remove(&.{
                             .timestamp = old.timestamp,
                             .field = value,
                         });
                     }
                     if (new_index) |value| {
-                        @field(groove.indexes, field.name).put(&.{
+                        @field(groove.indexes, field_name).put(&.{
                             .timestamp = new.timestamp,
                             .field = value,
                         });
@@ -1892,11 +1859,11 @@ pub fn GrooveType(
             // see `key_range_update`.
             groove.objects.remove(object);
 
-            inline for (std.meta.fields(IndexTrees)) |field| {
-                const IndexHelper = IndexHelperType(field.name);
+            inline for (@typeInfo(IndexTrees).@"struct".field_names) |field_name| {
+                const IndexHelper = IndexHelperType(field_name);
                 if (IndexHelper.index_from_object(object)) |value| {
-                    const IndexTree = @FieldType(IndexTrees, field.name);
-                    const tree: *IndexTree = &@field(groove.indexes, field.name);
+                    const IndexTree = @FieldType(IndexTrees, field_name);
+                    const tree: *IndexTree = &@field(groove.indexes, field_name);
                     tree.remove(&.{
                         .timestamp = object.timestamp,
                         .field = value,
@@ -1967,8 +1934,8 @@ pub fn GrooveType(
             if (ObjectsCache != void) groove.objects_cache.scope_open();
             groove.objects.scope_open();
 
-            inline for (std.meta.fields(IndexTrees)) |field| {
-                @field(groove.indexes, field.name).scope_open();
+            inline for (@typeInfo(IndexTrees).@"struct".field_names) |field_name| {
+                @field(groove.indexes, field_name).scope_open();
             }
         }
 
@@ -1976,16 +1943,16 @@ pub fn GrooveType(
             if (ObjectsCache != void) groove.objects_cache.scope_close(mode);
             groove.objects.scope_close(mode);
 
-            inline for (std.meta.fields(IndexTrees)) |field| {
-                @field(groove.indexes, field.name).scope_close(mode);
+            inline for (@typeInfo(IndexTrees).@"struct".field_names) |field_name| {
+                @field(groove.indexes, field_name).scope_close(mode);
             }
         }
 
         pub fn compact(groove: *Groove, op: u64) void {
             groove.objects.compact();
 
-            inline for (std.meta.fields(IndexTrees)) |field| {
-                @field(groove.indexes, field.name).compact();
+            inline for (@typeInfo(IndexTrees).@"struct".field_names) |field_name| {
+                @field(groove.indexes, field_name).compact();
             }
 
             // Compact the objects_cache on the last beat of the bar, just like the trees do to
@@ -2026,24 +1993,24 @@ pub fn GrooveType(
         pub fn open_commence(groove: *Groove, manifest_log: *ManifestLog) void {
             groove.objects.open_commence(manifest_log);
 
-            inline for (std.meta.fields(IndexTrees)) |field| {
-                @field(groove.indexes, field.name).open_commence(manifest_log);
+            inline for (@typeInfo(IndexTrees).@"struct".field_names) |field_name| {
+                @field(groove.indexes, field_name).open_commence(manifest_log);
             }
         }
 
         pub fn open_complete(groove: *Groove) void {
             groove.objects.open_complete();
 
-            inline for (std.meta.fields(IndexTrees)) |field| {
-                @field(groove.indexes, field.name).open_complete();
+            inline for (@typeInfo(IndexTrees).@"struct".field_names) |field_name| {
+                @field(groove.indexes, field_name).open_complete();
             }
         }
 
         pub fn assert_between_bars(groove: *const Groove) void {
             groove.objects.assert_between_bars();
 
-            inline for (std.meta.fields(IndexTrees)) |field| {
-                @field(groove.indexes, field.name).assert_between_bars();
+            inline for (@typeInfo(IndexTrees).@"struct".field_names) |field_name| {
+                @field(groove.indexes, field_name).assert_between_bars();
             }
         }
     };

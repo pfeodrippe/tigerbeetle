@@ -172,10 +172,11 @@ pub const IO = struct {
             struct {
                 fn do_operation(io: *IO, op: anytype) ReadError!usize {
                     const sector_marked_in_fault_map = if (io.files[op.fd].fault_map) |fault_map|
-                        std.mem.readPackedIntNative(
+                        std.mem.readPackedInt(
                             u1,
                             fault_map,
                             @divExact(op.offset, constants.sector_size),
+                            @import("builtin").cpu.arch.endian(),
                         ) != 0
                     else
                         false;

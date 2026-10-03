@@ -32,8 +32,8 @@ pub fn ewah(comptime Word: type) type {
         const marker_uniform_word_count_max = (1 << ((word_bits / 2) - 1)) - 1;
         const marker_literal_word_count_max = (1 << (word_bits / 2)) - 1;
 
-        pub const MarkerUniformCount = std.meta.Int(.unsigned, word_bits / 2 - 1); // Word=u64 → u31
-        pub const MarkerLiteralCount = std.meta.Int(.unsigned, word_bits / 2); // Word=u64 → u32
+        pub const MarkerUniformCount = @Int(.unsigned, word_bits / 2 - 1); // Word=u64 → u31
+        pub const MarkerLiteralCount = @Int(.unsigned, word_bits / 2); // Word=u64 → u32
 
         pub const Marker = packed struct(Word) {
             // Whether the uniform word is all 0s or all 1s.

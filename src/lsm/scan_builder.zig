@@ -349,47 +349,35 @@ pub fn ScanType(
         /// };
         /// ```
         pub const Dispatcher = T: {
-            var type_info = @typeInfo(union(enum) {
+            const base = @typeInfo(union(enum) {
                 timestamp: ScanTreeType(*Context, Groove.ObjectTree, Storage),
 
                 merge_union: ScanMergeUnionType(Groove, Storage),
                 merge_intersection: ScanMergeIntersectionType(Groove, Storage),
                 merge_difference: ScanMergeDifferenceType(Groove, Storage),
-            });
+            }).@"union";
+            var names = base.field_names;
+            var types = base.field_types;
+            var attrs = base.field_attrs;
 
             // Union fields for each index tree:
-            for (std.meta.fields(Groove.IndexTrees)) |field| {
-                const IndexTree = field.type;
+            for (@typeInfo(Groove.IndexTrees).@"struct".field_names) |name| {
+                const IndexTree = @FieldType(Groove.IndexTrees, name);
                 const ScanTree = ScanTreeType(*Context, IndexTree, Storage);
-                type_info.@"union".fields = type_info.@"union".fields ++
-                    [_]std.builtin.Type.UnionField{.{
-                        .name = field.name,
-                        .type = ScanTree,
-                        .alignment = @alignOf(ScanTree),
-                    }};
+                names = names ++ .{name};
+                types = types ++ .{ScanTree};
+                attrs = attrs ++ [_]std.builtin.Type.Union.FieldAttributes{.{
+                    .@"align" = @alignOf(ScanTree),
+                }};
             }
 
             // We need a tagged union for dynamic dispatching.
-            type_info.@"union".tag_type = blk: {
-                const union_fields = type_info.@"union".fields;
-                var tag_fields: [union_fields.len]std.builtin.Type.EnumField =
-                    undefined;
-                for (&tag_fields, union_fields, 0..) |*tag_field, union_field, i| {
-                    tag_field.* = .{
-                        .name = union_field.name,
-                        .value = i,
-                    };
-                }
+            const Tag = std.math.IntFittingRange(0, names.len - 1);
+            var values: [names.len]Tag = undefined;
+            for (&values, 0..) |*value, i| value.* = i;
+            const tag_type = @Enum(Tag, .exhaustive, names, &values);
 
-                break :blk stdx.type_from_info(.{ .@"enum" = .{
-                    .tag_type = std.math.IntFittingRange(0, tag_fields.len - 1),
-                    .fields = &tag_fields,
-                    .decls = &.{},
-                    .is_exhaustive = true,
-                } });
-            };
-
-            break :T stdx.type_from_info(type_info);
+            break :T @Union(base.layout, tag_type, names, types, attrs);
         };
 
         dispatcher: Dispatcher,

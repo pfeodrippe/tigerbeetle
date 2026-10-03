@@ -6,9 +6,7 @@ const Operation = vsr.tigerbeetle.Operation;
 
 // We could have used the idiomatic Zig API exposed by `vsr.tb_client`,
 // but we want to test the actual FFI exposed by `libtb_client`.
-const c = @cImport({
-    @cInclude("tb_client.h");
-});
+const c = @import("tb_client_c");
 
 const assert = std.debug.assert;
 
@@ -30,11 +28,8 @@ pub const CLIArgs = struct {
 
 pub fn main(process_init: std.process.Init) !void {
     stdx.set_process_context(process_init);
-    var gpa_allocator = std.heap.DebugAllocator(.{}).init;
-    defer switch (gpa_allocator.deinit()) {
-        .ok => {},
-        .leak => @panic("memory leak"),
-    };
+    var gpa_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
+    defer if (gpa_allocator.deinit() != 0) @panic("memory leak");
 
     const allocator = gpa_allocator.allocator();
     var flags = stdx.Flags.init(allocator);
@@ -71,7 +66,7 @@ pub fn main(process_init: std.process.Init) !void {
             defer context.lock.unlock(stdx.process_io);
 
             var packet: c.tb_packet_t = undefined;
-            packet.operation = @intFromEnum(operation);
+            packet.operation = @backingInt(operation);
             packet.user_data = @ptrCast(@constCast(&context));
             packet.data = @constCast(events.ptr);
             packet.data_size = @intCast(events.len);

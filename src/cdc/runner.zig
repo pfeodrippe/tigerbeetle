@@ -1474,9 +1474,10 @@ pub const Message = struct {
     /// Fill all fields for the largest string representation.
     fn worse_case(comptime T: type) T {
         var value: T = undefined;
-        for (std.meta.fields(T)) |field| {
-            @field(value, field.name) = switch (@typeInfo(field.type)) {
-                .int => std.math.maxInt(field.type),
+        const info = @typeInfo(T).@"struct";
+        for (info.field_names, info.field_types) |field_name, FieldType| {
+            @field(value, field_name) = switch (@typeInfo(FieldType)) {
+                .int => std.math.maxInt(FieldType),
                 .@"enum" => max: {
                     var name: []const u8 = "";
                     for (std.enums.values(tb.ChangeEventType)) |tag| {
@@ -1484,9 +1485,9 @@ pub const Message = struct {
                             name = @tagName(tag);
                         }
                     }
-                    break :max @field(field.type, name);
+                    break :max @field(FieldType, name);
                 },
-                .@"struct" => worse_case(field.type),
+                .@"struct" => worse_case(FieldType),
                 else => unreachable,
             };
         }

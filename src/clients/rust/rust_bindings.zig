@@ -83,7 +83,7 @@ fn resolve_rust_type(comptime Type: type) []const u8 {
                 }
             }
 
-            return resolve_rust_type(std.meta.Int(.unsigned, @bitSizeOf(Type)));
+            return resolve_rust_type(@Int(.unsigned, @bitSizeOf(Type)));
         },
         .bool => return "u8", // todo "bool"
         .int => |info| {

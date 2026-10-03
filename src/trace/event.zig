@@ -13,69 +13,51 @@ const tigerbeetle = @import("../tigerbeetle.zig");
 const Duration = stdx.Duration;
 
 const Operation = operation_enum: {
-    var operation_fields: []const std.builtin.Type.EnumField = &[_]std.builtin.Type.EnumField{};
+    var names: []const [:0]const u8 = &.{};
+    var values: []const u8 = &.{};
 
     for (.{ vsr.Operation, tigerbeetle.Operation }, 0..) |Operation_, i| {
-        for (std.meta.fieldNames(Operation_)) |field_name| {
+        for (@typeInfo(Operation_).@"enum".field_names) |field_name| {
             if (i == 1 and std.mem.eql(u8, field_name, "pulse")) {
                 // Pulse is included by both Operation types.
                 continue;
             }
-            operation_fields = operation_fields ++ &[_]std.builtin.Type.EnumField{.{
-                .name = "Operation." ++ field_name,
-                .value = @intFromEnum(@field(Operation_, field_name)),
-            }};
+            names = names ++ [_][:0]const u8{"Operation." ++ field_name};
+            values = values ++ [_]u8{@intFromEnum(@field(Operation_, field_name))};
         }
     }
 
-    break :operation_enum stdx.type_from_info(.{ .@"enum" = .{
-        .tag_type = u8,
-        .fields = operation_fields,
-        .decls = &.{},
-        .is_exhaustive = true,
-    } });
+    break :operation_enum @Enum(u8, .exhaustive, names, values);
 };
 
 const TreeEnum = tree_enum: {
     const tree_ids = @import("../state_machine.zig").tree_ids;
-    var tree_fields: []const std.builtin.Type.EnumField = &[_]std.builtin.Type.EnumField{};
+    var names: []const [:0]const u8 = &.{};
+    var values: []const u32 = &.{};
 
-    for (std.meta.declarations(tree_ids)) |groove_field| {
-        const tree_ids_groove = @field(tree_ids, groove_field.name);
-        for (std.meta.fieldNames(@TypeOf(tree_ids_groove))) |field_name| {
-            tree_fields = tree_fields ++ &[_]std.builtin.Type.EnumField{.{
-                .name = groove_field.name ++ "." ++ field_name,
-                .value = @field(tree_ids_groove, field_name),
-            }};
+    for (@typeInfo(tree_ids).@"struct".decl_names) |groove_name| {
+        const tree_ids_groove = @field(tree_ids, groove_name);
+        for (@typeInfo(@TypeOf(tree_ids_groove)).@"struct".field_names) |field_name| {
+            names = names ++ [_][:0]const u8{groove_name ++ "." ++ field_name};
+            values = values ++ [_]u32{@field(tree_ids_groove, field_name)};
         }
     }
 
-    break :tree_enum stdx.type_from_info(.{ .@"enum" = .{
-        .tag_type = u32,
-        .fields = tree_fields,
-        .decls = &.{},
-        .is_exhaustive = true,
-    } });
+    break :tree_enum @Enum(u32, .exhaustive, names, values);
 };
 
 const GrooveEnum = groove_enum: {
     const tree_ids = @import("../state_machine.zig").tree_ids;
-    var groove_fields: []const std.builtin.Type.EnumField = &[_]std.builtin.Type.EnumField{};
+    var names: []const [:0]const u8 = &.{};
+    var values: []const u32 = &.{};
 
-    for (std.meta.declarations(tree_ids)) |groove_field| {
-        const tree_ids_groove = @field(tree_ids, groove_field.name);
-        groove_fields = groove_fields ++ &[_]std.builtin.Type.EnumField{.{
-            .name = groove_field.name,
-            .value = @field(tree_ids_groove, "timestamp"),
-        }};
+    for (@typeInfo(tree_ids).@"struct".decl_names) |groove_name| {
+        const tree_ids_groove = @field(tree_ids, groove_name);
+        names = names ++ [_][:0]const u8{groove_name};
+        values = values ++ [_]u32{@field(tree_ids_groove, "timestamp")};
     }
 
-    break :groove_enum stdx.type_from_info(.{ .@"enum" = .{
-        .tag_type = u32,
-        .fields = groove_fields,
-        .decls = &.{},
-        .is_exhaustive = true,
-    } });
+    break :groove_enum @Enum(u32, .exhaustive, names, values);
 };
 
 /// Returns the count of an exhaustive enum.
@@ -87,9 +69,9 @@ fn enum_count(EnumOrUnion: type) u8 {
         type_info.@"enum"
     else
         @typeInfo(type_info.@"union".tag_type.?).@"enum";
-    assert(Enum.is_exhaustive);
+    assert(Enum.mode == .exhaustive);
 
-    return Enum.fields.len;
+    return Enum.field_names.len;
 }
 
 /// Maps an exhaustive enum value from an enum type that might potentially start with a non-zero
@@ -102,10 +84,10 @@ fn index_from_enum(enum_tag: anytype) u8 {
         type_info.@"enum"
     else
         @typeInfo(type_info.@"union".tag_type.?).@"enum";
-    assert(Enum.is_exhaustive);
+    assert(Enum.mode == .exhaustive);
 
-    inline for (Enum.fields, 0..) |enum_field, i| {
-        if (enum_field.value == @intFromEnum(enum_tag)) {
+    inline for (Enum.field_values, 0..) |value, i| {
+        if (value == @intFromEnum(enum_tag)) {
             return i;
         }
     } else unreachable;
@@ -204,7 +186,7 @@ pub const Event = union(enum) {
                     .void => {},
                     .@"struct" => blk: {
                         var target_payload: TargetPayload = undefined;
-                        inline for (comptime std.meta.fieldNames(TargetPayload)) |field| {
+                        inline for (comptime @typeInfo(TargetPayload).@"struct".field_names) |field| {
                             @field(target_payload, field) = @field(source_payload, field);
                         }
                         break :blk target_payload;
@@ -690,19 +672,20 @@ pub fn format_data(
     const Data = @TypeOf(data);
     if (Data == void) return;
 
-    const fields = std.meta.fields(Data);
-    inline for (fields, 0..) |data_field, i| {
-        assert(data_field.type == bool or
-            @typeInfo(data_field.type) == .int or
-            @typeInfo(data_field.type) == .@"enum" or
-            @typeInfo(data_field.type) == .@"union");
+    const fields = @typeInfo(Data).@"struct".field_names;
+    inline for (fields, 0..) |field_name, i| {
+        const Field = @FieldType(Data, field_name);
+        assert(Field == bool or
+            @typeInfo(Field) == .int or
+            @typeInfo(Field) == .@"enum" or
+            @typeInfo(Field) == .@"union");
 
-        const data_field_value = @field(data, data_field.name);
-        try writer.writeAll(data_field.name);
+        const data_field_value = @field(data, field_name);
+        try writer.writeAll(field_name);
         try writer.writeByte('=');
 
-        if (@typeInfo(data_field.type) == .@"enum" or
-            @typeInfo(data_field.type) == .@"union")
+        if (@typeInfo(Field) == .@"enum" or
+            @typeInfo(Field) == .@"union")
         {
             try writer.print("{s}", .{@tagName(data_field_value)});
         } else {

@@ -1853,7 +1853,7 @@ pub fn ReplicaType(
                 return;
             }
 
-            self.send_header_to_replica(message.header.replica, @bitCast(Header.Pong{
+            self.send_header_to_replica(message.header.replica, (Header.Pong{
                 .command = .pong,
                 .cluster = self.cluster,
                 .replica = self.replica,
@@ -1862,7 +1862,7 @@ pub fn ReplicaType(
                 // Copy the ping's monotonic timestamp to our pong and add our wall clock sample:
                 .ping_timestamp_monotonic = message.header.ping_timestamp_monotonic,
                 .pong_timestamp_wall = @bitCast(self.clock.realtime()),
-            }));
+            }).frame_const().*);
 
             if (message.header.replica < self.replica_count) {
                 const upgrade_targets = &self.upgrade_targets[message.header.replica];
@@ -1918,14 +1918,14 @@ pub fn ReplicaType(
 
             if (self.ignore_ping_client(message)) return;
 
-            self.send_header_to_client(message.header.client, @bitCast(Header.PongClient{
+            self.send_header_to_client(message.header.client, (Header.PongClient{
                 .command = .pong_client,
                 .cluster = self.cluster,
                 .replica = self.replica,
                 .view = self.log_view_durable(),
                 .release = self.release,
                 .ping_timestamp_monotonic = message.header.ping_timestamp_monotonic,
-            }));
+            }).frame_const().*);
         }
 
         /// When there is free space in the pipeline's prepare queue:
@@ -3782,13 +3782,13 @@ pub fn ReplicaType(
             });
             self.send_header_to_replica(
                 self.primary_index(self.view),
-                @bitCast(Header.GetView{
+                (Header.GetView{
                     .command = .get_view,
                     .cluster = self.cluster,
                     .replica = self.replica,
                     .view = self.view,
                     .nonce = self.random_nonce,
-                }),
+                }).frame_const().*,
             );
         }
 
@@ -3825,13 +3825,13 @@ pub fn ReplicaType(
                 });
                 self.send_header_to_replica(
                     self.primary_index(self.view),
-                    @bitCast(Header.GetView{
+                    (Header.GetView{
                         .command = .get_view,
                         .cluster = self.cluster,
                         .replica = self.replica,
                         .view = self.view,
                         .nonce = self.random_nonce,
-                    }),
+                    }).frame_const().*,
                 );
             }
         }
@@ -6671,7 +6671,7 @@ pub fn ReplicaType(
             assert(message.header.request == entry.header.request);
 
             if (entry.header.size == @sizeOf(Header)) {
-                const reply = self.create_message_from_header(@bitCast(entry.header))
+                const reply = self.create_message_from_header(entry.header.frame_const().*)
                     .into(.reply).?;
                 defer self.message_bus.unref(reply);
 
@@ -7628,13 +7628,13 @@ pub fn ReplicaType(
                 );
                 self.send_header_to_replica(
                     self.primary_index(self.view),
-                    @bitCast(Header.GetView{
+                    (Header.GetView{
                         .command = .get_view,
                         .cluster = self.cluster,
                         .replica = self.replica,
                         .view = self.view,
                         .nonce = self.random_nonce,
-                    }),
+                    }).frame_const().*,
                 );
             }
 
@@ -7698,7 +7698,7 @@ pub fn ReplicaType(
                     );
                     self.send_header_to_replica(
                         self.choose_any_other_replica(),
-                        @bitCast(Header.GetHeaders{
+                        (Header.GetHeaders{
                             .command = .get_headers,
                             .cluster = self.cluster,
                             .replica = self.replica,
@@ -7707,7 +7707,7 @@ pub fn ReplicaType(
                             // repair earlier breaks.
                             .op_min = op_min,
                             .op_max = op_max,
-                        }),
+                        }).frame_const().*,
                     );
                 }
             }
@@ -7746,14 +7746,14 @@ pub fn ReplicaType(
 
                 self.send_header_to_replica(
                     self.choose_any_other_replica(),
-                    @bitCast(Header.GetReply{
+                    (Header.GetReply{
                         .command = .get_reply,
                         .cluster = self.cluster,
                         .replica = self.replica,
                         .reply_client = entry.header.client,
                         .reply_op = entry.header.op,
                         .reply_checksum = entry.header.checksum,
-                    }),
+                    }).frame_const().*,
                 );
             }
 
@@ -8456,11 +8456,11 @@ pub fn ReplicaType(
                 if (self.status == .view_change) {
                     // Only the primary is allowed to do repairs in a view change.
                     assert(self.primary_index(self.view) == self.replica);
-                    self.send_header_to_other_replicas(@bitCast(get_prepare));
+                    self.send_header_to_other_replicas(get_prepare.frame_const().*);
                 } else {
                     self.send_header_to_replica(
                         replica_index,
-                        @bitCast(get_prepare),
+                        get_prepare.frame_const().*,
                     );
                 }
 
@@ -8722,7 +8722,7 @@ pub fn ReplicaType(
                 // primary of the prepare header's view:
                 self.send_header_to_replica(
                     self.primary_index(self.view),
-                    @bitCast(Header.PrepareOk{
+                    (Header.PrepareOk{
                         .command = .prepare_ok,
                         .checkpoint_id = checkpoint_id,
                         .parent = header.parent,
@@ -8737,7 +8737,7 @@ pub fn ReplicaType(
                         .commit_min = self.commit_min,
                         .timestamp = header.timestamp,
                         .operation = header.operation,
-                    }),
+                    }).frame_const().*,
                 );
             } else {
                 log.debug("{f}: send_prepare_ok: not sending (dirty)", .{self.log_prefix()});
@@ -8965,7 +8965,7 @@ pub fn ReplicaType(
                 @tagName(reason),
             });
 
-            self.send_header_to_client(client, @bitCast(Header.Eviction{
+            self.send_header_to_client(client, (Header.Eviction{
                 .command = .eviction,
                 .cluster = self.cluster,
                 .release = self.release,
@@ -8973,7 +8973,7 @@ pub fn ReplicaType(
                 .view = self.log_view_durable(),
                 .client = client,
                 .reason = reason,
-            }));
+            }).frame_const().*);
         }
 
         fn send_reply_message_to_client(self: *Replica, reply: *Message.Reply) void {
@@ -9136,7 +9136,7 @@ pub fn ReplicaType(
         /// `message` is a `*MessageType(command)`.
         fn send_message_to_other_replicas(self: *Replica, message: anytype) void {
             assert(@typeInfo(@TypeOf(message)) == .pointer);
-            assert(!@typeInfo(@TypeOf(message)).pointer.is_const);
+            assert(!@typeInfo(@TypeOf(message)).pointer.attrs.@"const");
 
             self.send_message_to_other_replicas_base(message.base());
         }
@@ -9162,7 +9162,7 @@ pub fn ReplicaType(
         /// `message` is a `*MessageType(command)`.
         fn send_message_to_replica(self: *Replica, replica: u8, message: anytype) void {
             assert(@typeInfo(@TypeOf(message)) == .pointer);
-            assert(!@typeInfo(@TypeOf(message)).pointer.is_const);
+            assert(!@typeInfo(@TypeOf(message)).pointer.attrs.@"const");
 
             self.send_message_to_replica_base(replica, message.base());
         }
@@ -11178,13 +11178,13 @@ pub fn ReplicaType(
                     });
                     self.send_header_to_replica(
                         self.primary_index(header.view),
-                        @bitCast(Header.GetView{
+                        (Header.GetView{
                             .command = .get_view,
                             .cluster = self.cluster,
                             .replica = self.replica,
                             .view = header.view,
                             .nonce = self.random_nonce,
-                        }),
+                        }).frame_const().*,
                     );
                 },
                 .view_change => {
@@ -11418,7 +11418,7 @@ pub fn ReplicaType(
                 }
             };
 
-            self.send_header_to_other_replicas_and_standbys(@bitCast(Header.Commit{
+            self.send_header_to_other_replicas_and_standbys((Header.Commit{
                 .command = .commit,
                 .cluster = self.cluster,
                 .replica = self.replica,
@@ -11428,7 +11428,7 @@ pub fn ReplicaType(
                 .timestamp_monotonic = self.clock.monotonic().ns,
                 .checkpoint_op = self.superblock.working.vsr_state.checkpoint.header.op,
                 .checkpoint_id = self.superblock.working.checkpoint_id(),
-            }));
+            }).frame_const().*);
         }
 
         fn pulse_enabled(self: *Replica) bool {

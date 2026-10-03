@@ -32,10 +32,11 @@ pub fn main(process_init: std.process.Init) !void {
         log.debug("download: no hash", .{});
     }
 
+    try process_init.environ_map.put("ZIG_GLOBAL_CACHE_DIR", global_cache);
     const hash = try fetch(arena, .{
         .io = process_init.io,
         .zig = zig,
-        .cache = global_cache,
+        .environment = process_init.environ_map,
         .tmp = path_join(arena, &.{ global_cache, "tmp" }),
         .url = url,
     });
@@ -55,9 +56,7 @@ pub fn main(process_init: std.process.Init) !void {
     try copy_from_cache(arena, process_init.io, global_cache, hash, file_name, out);
 }
 
-/// Zig 0.16 stores fetched packages as `p/<hash>.tar.gz` instead of an
-/// extracted `p/<hash>/` directory. Stream just the requested artifact out of
-/// the archive so the build does not depend on an external `tar` executable.
+/// Stream the requested artifact from Zig's `p/<hash>.tar.gz` package archive.
 fn copy_from_cache(
     arena: Allocator,
     io: std.Io,
@@ -121,7 +120,7 @@ fn copy_from_cache(
 fn fetch(arena: Allocator, options: struct {
     io: std.Io,
     zig: []const u8,
-    cache: []const u8,
+    environment: *const std.process.Environ.Map,
     tmp: []const u8,
     url: []const u8,
 }) ![]const u8 {
@@ -162,10 +161,28 @@ fn fetch(arena: Allocator, options: struct {
             log.err("curl error: {}", .{curl_result.term});
             return error.Exec;
         }
-        return try stdb.exec(arena, options.io, &.{ options.zig, "fetch", "--global-cache-dir", options.cache, curl_output });
+        return try zig_fetch(arena, options.io, options.environment, options.zig, curl_output);
     }
     log.debug("download: zig fetch", .{});
-    return try stdb.exec(arena, options.io, &.{ options.zig, "fetch", "--global-cache-dir", options.cache, options.url });
+    return try zig_fetch(arena, options.io, options.environment, options.zig, options.url);
+}
+
+fn zig_fetch(
+    arena: Allocator,
+    io: std.Io,
+    environment: *const std.process.Environ.Map,
+    zig: []const u8,
+    source: []const u8,
+) ![]const u8 {
+    const result = try std.process.run(arena, io, .{
+        .argv = &.{ zig, "fetch", source },
+        .environ_map = environment,
+    });
+    if (result.term != .exited or result.term.exited != 0) {
+        log.err("zig fetch failed: {s}", .{result.stderr});
+        return error.Exec;
+    }
+    return std.mem.trim(u8, result.stdout, "\r\n");
 }
 
 fn path_join(arena: Allocator, components: []const []const u8) []const u8 {

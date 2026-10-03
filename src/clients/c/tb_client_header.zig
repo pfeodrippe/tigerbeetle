@@ -44,7 +44,7 @@ fn resolve_c_type(comptime Type: type) []const u8 {
     switch (@typeInfo(Type)) {
         .array => |info| return resolve_c_type(info.child),
         .@"enum" => |info| return resolve_c_type(info.tag_type),
-        .@"struct" => return resolve_c_type(std.meta.Int(.unsigned, @bitSizeOf(Type))),
+        .@"struct" => return resolve_c_type(@Int(.unsigned, @bitSizeOf(Type))),
         .bool => return "uint8_t",
         .int => |info| {
             assert(info.signedness == .unsigned);
@@ -63,7 +63,7 @@ fn resolve_c_type(comptime Type: type) []const u8 {
         },
         .pointer => |info| {
             assert(info.size != .slice);
-            assert(!info.is_allowzero);
+            assert(!info.attrs.@"allowzero");
 
             inline for (type_mappings) |type_mapping| {
                 const ZigType = type_mapping[0];
@@ -75,7 +75,7 @@ fn resolve_c_type(comptime Type: type) []const u8 {
                 }
             }
 
-            return comptime (if (info.is_const) "const " else "") ++
+            return comptime (if (info.attrs.@"const") "const " else "") ++
                 resolve_c_type(info.child) ++ "*";
         },
         .void, .@"opaque" => return "void",
@@ -95,17 +95,17 @@ fn emit_enum(
 
     try buffer.writer.print("typedef enum {s} {{\n", .{c_name});
 
-    inline for (type_info.fields, 0..) |field, i| {
-        if (comptime std.mem.startsWith(u8, field.name, "deprecated_")) continue;
+    inline for (type_info.field_names, 0..) |name, i| {
+        if (comptime std.mem.startsWith(u8, name, "deprecated_")) continue;
         comptime var skip = false;
         inline for (skip_fields) |sf| {
-            skip = skip or comptime std.mem.eql(u8, sf, field.name);
+            skip = skip or comptime std.mem.eql(u8, sf, name);
         }
 
         if (!skip) {
-            const field_name = stdx.to_case(field.name, .UPPER_CASE);
+            const field_name = stdx.to_case(name, .UPPER_CASE);
             if (@typeInfo(Type) == .@"enum") {
-                const int_value = @intFromEnum(@field(Type, field.name));
+                const int_value = @backingInt(@field(Type, name));
                 try buffer.writer.print("    {s}_{s} = {s},\n", .{
                     c_name[0..suffix_pos],
                     field_name,
@@ -135,13 +135,13 @@ fn emit_struct(
 ) !void {
     try buffer.writer.print("typedef struct {s} {{\n", .{c_name});
 
-    inline for (type_info.fields) |field| {
+    inline for (type_info.field_names, type_info.field_types) |name, Field| {
         try buffer.writer.print("    {s} {s}", .{
-            resolve_c_type(field.type),
-            field.name,
+            resolve_c_type(Field),
+            name,
         });
 
-        switch (@typeInfo(field.type)) {
+        switch (@typeInfo(Field)) {
             .array => |array| try buffer.writer.print("[{d}]", .{array.len}),
             else => {},
         }

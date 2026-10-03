@@ -75,7 +75,7 @@ fn zig_to_ctype(comptime Type: type) []const u8 {
             });
         },
         .@"enum" => |info| return zig_to_ctype(info.tag_type),
-        .@"struct" => return zig_to_ctype(std.meta.Int(.unsigned, @bitSizeOf(Type))),
+        .@"struct" => return zig_to_ctype(@Int(.unsigned, @bitSizeOf(Type))),
         .bool => return "ctypes.c_bool",
         .int => |info| {
             assert(info.signedness == .unsigned);
